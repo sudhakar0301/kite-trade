@@ -1,0 +1,19 @@
+.container {
+  padding: 20px;
+  font-family: Arial, sans-serif;
+}
+.tick-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.tick-table th, .tick-table td {
+  border: 1px solid #ccc;
+  padding: 8px;
+  text-align: center;
+}
+.rsi-overbought {
+  background-color: #f8d7da;
+}
+.rsi-oversold {
+  background-color: #d4edda;
+}
