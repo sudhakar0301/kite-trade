@@ -1,12 +1,19 @@
 const fs = require('fs');
 const path = require('path');
-const PQueue = require('p-queue').default;
 const instruments = require('../data/nse500.json');
 const { broadcastLog } = require('../ws/logger');
 const { calculateVWAP, calculateEMA, calculateRSI } = require('./indicators');
 const { getHistoricalData } = require('../utils/dataFetcher');
 
-const queue = new PQueue({ interval: 1000, intervalCap: 2 });
+let PQueue;
+let queue;
+
+// Initialize PQueue with dynamic import
+(async () => {
+  const { default: PQueueClass } = await import('p-queue');
+  PQueue = PQueueClass;
+  queue = new PQueue({ interval: 1000, intervalCap: 2 });
+})();
 const outputPath = path.join(__dirname, '../data/filtered_instruments.json');
 
 function delay(ms) {
@@ -25,6 +32,10 @@ function getFromDate(daysAgo) {
 }
 
 async function fetchTF(token, interval, daysBack) {
+  // Wait for queue to be initialized
+  while (!queue) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
   const from = formatDate(getFromDate(daysBack));
   const to = formatDate(new Date());
   return await queue.add(() => getHistoricalData(token, interval, from, to));

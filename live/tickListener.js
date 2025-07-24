@@ -26,6 +26,7 @@ try {
 let ticker = null;
 let subscribedTokens = [];
 let csvWatcher = null;
+let vwapUpdateTimer = null; // Timer for periodic VWAP updates
 
 // Simple order cooldown to prevent multiple orders for same token
 const lastOrderTime = {};
@@ -98,43 +99,41 @@ async function initializeCacheForToken(token, symbol) {
 
     // Fetch today's data separately for accurate VWAP calculation
     const todaysCandles = await getHistoricalData(token, "minute", fromToday, to1);
-  //  console.log(`📅 Fetched today's data for ${symbol}: ${todaysCandles?.length || 0} candles for VWAP`);
-// Calculate initial VWAP from today's data
-// Calculate initial VWAP from today's data
-let initialVWAP = null;
-if (todaysCandles && todaysCandles.length > 0) {
-  
-     try {
-    const highs = todaysCandles.map(c => c.high);
-    const lows = todaysCandles.map(c => c.low);
-    const closes = todaysCandles.map(c => c.close);
-    const volumes = todaysCandles.map(c => c.volume || 0);
-    const vwapArray = calculateVWAP(highs, lows, closes, volumes);
-    if(token == '1510401'){
-      console.log(`📅 Fetched today's data for ${symbol}: ${todaysCandles?.length || 0} candles for VWAP`);
+    console.log(`📅 Fetched today's data for ${symbol}: ${todaysCandles?.length || 0} candles for VWAP calculation`);
+
+    // Calculate initial VWAP from today's historical data only
+    let initialVWAP = null;
+    if (todaysCandles && todaysCandles.length > 0) {
+      try {
+        const highs = todaysCandles.map(c => c.high);
+        const lows = todaysCandles.map(c => c.low);
+        const closes = todaysCandles.map(c => c.close);
+        const volumes = todaysCandles.map(c => c.volume || 0);
+        const vwapArray = calculateVWAP(highs, lows, closes, volumes);
+        
+        initialVWAP = vwapArray && vwapArray.length > 0 ? vwapArray[vwapArray.length - 1] : null;
+        if (initialVWAP !== null && initialVWAP !== undefined && !isNaN(initialVWAP)) {
+          console.log(`📊 Initial VWAP for ${symbol}: ${initialVWAP.toFixed(2)} (from ${todaysCandles.length} historical candles)`);
+        } else {
+          console.log(`⚠️ VWAP calculation returned invalid value for ${symbol}: ${initialVWAP}`);
+          initialVWAP = null;
+        }
+      } catch (error) {
+        console.error(`❌ Error calculating initial VWAP for ${symbol}: ${error.message}`);
+        initialVWAP = null;
+      }
     }
-    initialVWAP = vwapArray && vwapArray.length > 0 ? vwapArray[vwapArray.length - 1] : null;
-    if (initialVWAP !== null && initialVWAP !== undefined && !isNaN(initialVWAP)) {
-  
-      console.log(`📊 Initial VWAP for ${symbol}: ${initialVWAP.toFixed(2)} (from ${todaysCandles.length} today's candles)`);
-    } else {
-      console.log(`⚠️ VWAP calculation returned invalid value for ${symbol}: ${initialVWAP}`);
-      initialVWAP = null;
-    }
-  } catch (error) {
-    console.error(`❌ Error calculating initial VWAP for ${symbol}: ${error.message}`);
-    initialVWAP = null;
-  }
-}
-    // Initialize cache with more historical data
- candleCache.set(token, {
-  historical: historicalCandles.slice(-MAX_CACHE_CANDLES),
-  todaysHistorical: todaysCandles.slice() || [],
-  current: null,
-  latestVWAP: initialVWAP, // Store the initial VWAP value
-  lastUpdate: Date.now(),
-  symbol: symbol
-});
+
+    // Initialize cache with historical data and VWAP info
+    candleCache.set(token, {
+      historical: historicalCandles.slice(-MAX_CACHE_CANDLES),
+      todaysHistorical: todaysCandles.slice() || [],
+      current: null,
+      latestVWAP: initialVWAP, // Store the VWAP value (updated only per minute)
+      lastVWAPUpdate: Date.now(), // Track when VWAP was last updated
+      lastUpdate: Date.now(),
+      symbol: symbol
+    });
 
    // console.log(`✅ Cache initialized for ${symbol} with ${Math.min(historicalCandles.length, MAX_CACHE_CANDLES)} historical candles (total available: ${historicalCandles.length}) and ${todaysCandles?.length || 0} today's candles`);
     return true;
@@ -166,20 +165,8 @@ function processTickForCache(tick) {
         cache.historical = cache.historical.slice(-MAX_CACHE_CANDLES);
       }
 
-           // ✅ Update VWAP based on today's candles + this completed one
-      const todayCandles = (cache.todaysHistorical || []).concat(cache.current);
-      const highs = todayCandles.map(c => c.high);
-      const lows = todayCandles.map(c => c.low);
-      const closes = todayCandles.map(c => c.close);
-      const volumes = todayCandles.map(c => c.volume || 0);
-    //  const vwapArray = calculateVWAP(highs, lows, closes, volumes);
-    //  const vwapValue = vwapArray && vwapArray.length > 0 ? vwapArray[vwapArray.length - 1] : null;
-      // if (!isNaN(vwapValue)) {
-      //   cache.latestVWAP = vwapValue;
-      //   console.log(`📈 VWAP updated for ${cache.symbol}: ${vwapValue.toFixed(2)}`);
-      // } else {
-      //   console.warn(`⚠️ VWAP could not be calculated for ${cache.symbol}`);
-      // }
+      // Update today's historical candles for VWAP calculation
+      cache.todaysHistorical.push(cache.current);
 
       console.log(`📊 New candle completed for ${cache.symbol}: ${cache.current.close} (${cache.current.tickCount} ticks) - Cache: ${cache.historical.length} candles`);
     }
@@ -215,14 +202,13 @@ function calculateLiveIndicators(token) {
     //   return null; // Not enough data for proper indicator calculation
     // }
 
-    // Extract OHLCV data for RSI/EMA calculations
+    // Extract OHLCV data for RSI/EMA calculations only
     const closes = allCandles.map(c => c.close);
     const highs = allCandles.map(c => c.high);
     const lows = allCandles.map(c => c.low);
     const volumes = allCandles.map(c => c.volume || 0);
 
-    
-        // Get today's candle count for reporting (but VWAP uses cached value)
+    // Get today's candle count for reporting
     let todayCandleCount = 0;
     if (cache.todaysHistorical && cache.todaysHistorical.length > 0) {
       todayCandleCount = cache.todaysHistorical.length + (cache.current ? 1 : 0);
@@ -246,13 +232,14 @@ function calculateLiveIndicators(token) {
       todayCandleCount = todayCandles.length;
     }
 
-    // Use cached VWAP that's calculated only on candle formation (1-minute intervals)
-    // This avoids recalculating VWAP on every tick for better performance
+    // Use cached VWAP that's calculated from historical data only (once per minute)
+    // This avoids tick-by-tick VWAP recalculation for better performance and accuracy
     let vwap = cache.latestVWAP || null;
     
     // Only log VWAP debug info occasionally to reduce spam
     if (Math.random() < 0.02) { // 2% sampling
-      console.log(`📊 ${cache.symbol}: Using cached VWAP = ${vwap?.toFixed(2)} (${todayCandleCount} today's candles, updated on candle formation only)`);
+      const timeSinceVWAPUpdate = Date.now() - (cache.lastVWAPUpdate || 0);
+      console.log(`📊 ${cache.symbol}: Using cached historical VWAP = ${vwap?.toFixed(2)} (${todayCandleCount} today's candles, last updated ${Math.floor(timeSinceVWAPUpdate/1000)}s ago)`);
     }
 
     // Calculate RSI/EMA indicators - these need sufficient historical data
@@ -284,32 +271,30 @@ function calculateLiveIndicators(token) {
   }
 }
 
-// Recalculate VWAP for all tokens in cache every minute
-// Recalculate VWAP for all tokens in cache every minute
+// Update VWAP for all tokens in cache every minute using historical data only
 async function updateAllVWAPs() {
   console.log(`🔄 Starting periodic VWAP update for ${candleCache.size} tokens`);
   
   for (const [token, cache] of candleCache.entries()) {
     try {
-      // Fetch fresh today's historical data
-      const todaysCandles = await getHistoricalData(token, "minute", fromToday, to1);
-      if(token == '1510401'){
-        console.log(`📅 Fetched today's data for ${cache.symbol}: ${todaysCandles?.length || 0} candles for VWAP`)  ;
+      // Only update VWAP once per minute to avoid excessive API calls
+      const timeSinceLastUpdate = Date.now() - (cache.lastVWAPUpdate || 0);
+      if (timeSinceLastUpdate < 60000) { // Skip if updated within last minute
+        continue;
       }
+
+      // Fetch fresh today's historical data for VWAP calculation
+      const todaysCandles = await getHistoricalData(token, "minute", fromToday, to1);
+      
       if (todaysCandles && todaysCandles.length > 0) {
         // Update cache with fresh today's data
         cache.todaysHistorical = todaysCandles;
         
-        // Calculate VWAP from fresh data + current candle if exists
-        const allTodayCandles = [...todaysCandles];
-        if (cache.current) {
-          allTodayCandles.push(cache.current);
-        }
-        
-        const highs = allTodayCandles.map(c => c.high);
-        const lows = allTodayCandles.map(c => c.low);
-        const closes = allTodayCandles.map(c => c.close);
-        const volumes = allTodayCandles.map(c => c.volume || 0);
+        // Calculate VWAP using only historical data (no live tick data)
+        const highs = todaysCandles.map(c => c.high);
+        const lows = todaysCandles.map(c => c.low);
+        const closes = todaysCandles.map(c => c.close);
+        const volumes = todaysCandles.map(c => c.volume || 0);
         
         const vwapArray = calculateVWAP(highs, lows, closes, volumes);
         const newVWAP = vwapArray && vwapArray.length > 0 ? vwapArray[vwapArray.length - 1] : null;
@@ -317,7 +302,8 @@ async function updateAllVWAPs() {
         if (newVWAP !== null && !isNaN(newVWAP)) {
           const oldVWAP = cache.latestVWAP;
           cache.latestVWAP = newVWAP;
-          console.log(`📊 VWAP updated for ${cache.symbol}: ${oldVWAP?.toFixed(2)} → ${newVWAP.toFixed(2)} (${allTodayCandles.length} candles)`);
+          cache.lastVWAPUpdate = Date.now();
+          console.log(`📊 VWAP updated for ${cache.symbol}: ${oldVWAP?.toFixed(2)} → ${newVWAP.toFixed(2)} (${todaysCandles.length} historical candles)`);
         }
       }
     } catch (error) {
@@ -397,6 +383,13 @@ function initTickListener() {
 
   console.log("🚀 Starting ticker connection...");
   ticker.connect();
+
+  // Start periodic VWAP update timer (every minute)
+  if (vwapUpdateTimer) {
+    clearInterval(vwapUpdateTimer);
+  }
+  vwapUpdateTimer = setInterval(updateAllVWAPs, 60000); // Update every 60 seconds
+  console.log("⏰ Started periodic VWAP update timer (every 60 seconds)");
 }
 
 // Handle incoming ticks - calculate live indicators and check conditions
@@ -619,7 +612,6 @@ function startTickListener() {
   
   // Start periodic status checks
   setInterval(checkTickerStatus, 30000); // Check every 30 seconds
-  setInterval(updateAllVWAPs, 60 * 1000); // 🔁 Update VWAP every 1 min
   console.log("✅ Conditional tick listener started - waiting for CSV tokens");
   console.log("🔍 Status checks will run every 30 seconds");
 }
@@ -629,6 +621,14 @@ function stopTickListener() {
   console.log("🛑 Stopping tick listener...");
   unsubscribeAll();
   stopCSVWatching();
+  
+  // Clear VWAP update timer
+  if (vwapUpdateTimer) {
+    clearInterval(vwapUpdateTimer);
+    vwapUpdateTimer = null;
+    console.log("⏰ VWAP update timer stopped");
+  }
+  
   if (ticker) {
     ticker.disconnect();
     ticker = null;

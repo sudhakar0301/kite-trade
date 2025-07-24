@@ -29,6 +29,7 @@ const TRADED_SYMBOLS_CACHE_DURATION = 60000; // 1 minute cache for traded symbol
 
 // Import enhanced candle cache from shared cache module
 const { candleCache } = require("../cache/sharedCache");
+const { ema } = require("technicalindicators");
 
 // Function to get live indicators from enhanced candle cache
 function getLiveIndicatorsFromCache(token) {
@@ -755,11 +756,12 @@ async function checkAndSellOnSubscription(token, symbol) {
 
     // Place sell order if conditions met
     if (
-      ema9 != null && vwap != null && ema21 != null && rsi != null &&
-      ema9 < vwap && vwap < ema21 && rsi < 42
+     // ema9 != null && vwap != null && ema21 != null && rsi != null &&
+      //ema9 < vwap && vwap < ema21 && rsi < 42
+      ema9  < ema21 && rsi < 42
     ) {
       console.log(`✅ Sell condition met for ${symbol}: ema9(${ema9.toFixed(2)}) < vwap(${vwap.toFixed(2)}) < ema21(${ema21.toFixed(2)}) && rsi(${rsi.toFixed(2)}) < 42`);
-     // await placeSellOrder(token, symbol, ltp);
+     await placeSellOrder(token, symbol, ltp);
     } else {
       console.log(`❌ Sell condition NOT met for ${symbol}: EMA9=${ema9?.toFixed(2)}, VWAP=${vwap?.toFixed(2)}, EMA21=${ema21?.toFixed(2)}, RSI=${rsi?.toFixed(2)}`);
     }
