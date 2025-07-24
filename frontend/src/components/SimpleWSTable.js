@@ -21,7 +21,11 @@ function SimpleWSTable({ data }) {
       
       if (prev) {
         // Check for changes in key fields
-        const fieldsToCheck = ['ltp', 'rsi1m', 'rsiArray', 'ema9_1m', 'ema21_1m', 'vwap1m'];
+        const fieldsToCheck = [
+          'ltp', 'rsi1m', 'ema9_1m', 'ema21_1m',
+          'buyCondition', 'sellCondition',
+          'rsi1h', 'rsi15m'
+        ];
         let hasChanges = false;
         
         fieldsToCheck.forEach(field => {
@@ -76,10 +80,11 @@ function SimpleWSTable({ data }) {
   const getHighlightStyle = (token, field) => {
     if (changedFields[token] && changedFields[token][field]) {
       return {
-        background: '#f0f9ff',
+        background: '#dbeafe',
         border: '1px solid #0ea5e9',
         borderRadius: '3px',
-        transition: 'all 0.3s ease'
+        transition: 'all 0.3s ease',
+        position: 'relative'
       };
     }
     return {};
@@ -90,13 +95,18 @@ function SimpleWSTable({ data }) {
     const firstItem = data[0];
     console.log("🔍 Debug first item values:", {
       symbol: firstItem.symbol,
+      // 1-minute indicators
       ema9_1m: firstItem.ema9_1m,
       ema21_1m: firstItem.ema21_1m,
-      vwap1m: firstItem.vwap1m,
       rsi1m: firstItem.rsi1m,
+      rsi1h: firstItem.rsi1h,
+      rsi15m: firstItem.rsi15m,
       rsiArrayExists: !!firstItem.rsiArray,
       rsiArrayLength: firstItem.rsiArray?.length || 0,
-      last10RSI: firstItem.rsiArray?.slice(-10) || []
+      last10RSI: firstItem.rsiArray?.slice(-10) || [],
+      // Condition flags
+      buyCondition: firstItem.buyCondition,
+      sellCondition: firstItem.sellCondition
     });
   }
   
@@ -140,14 +150,16 @@ function SimpleWSTable({ data }) {
     }}>
       <style>{`
         .modern-table {
-          width: 70%;
+          width: 95%;
+          max-width: 1600px;
           margin: 0 auto;
           border-collapse: collapse;
           background: white;
-          border-radius: 12px;
+          border-radius: 10px;
           overflow: hidden;
-          box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+          box-shadow: 0 3px 6px rgba(0, 0, 0, 0.1);
           font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+          font-size: 12px;
         }
         .modern-table th {
           background: linear-gradient(135deg, #3b82f6, #1d4ed8);
@@ -157,13 +169,15 @@ function SimpleWSTable({ data }) {
           padding: 12px 8px;
           text-align: center;
           border: none;
+          white-space: nowrap;
         }
         .modern-table td {
-          padding: 8px;
+          padding: 10px 7px;
           text-align: center;
           border-bottom: 1px solid #f1f5f9;
-          font-size: 11px;
+          font-size: 12px;
           vertical-align: middle;
+          white-space: nowrap;
         }
         .modern-table tbody tr:hover {
           background-color: #f1f5f9;
@@ -171,6 +185,36 @@ function SimpleWSTable({ data }) {
         }
         .modern-table tbody tr:nth-child(even) {
           background-color: #fafafa;
+        }
+        @keyframes pulse-blue {
+          0% { 
+            background-color: #dbeafe; 
+            border-color: #60a5fa;
+          }
+          50% { 
+            background-color: #bfdbfe; 
+            border-color: #3b82f6;
+          }
+          100% { 
+            background-color: #dbeafe; 
+            border-color: #60a5fa;
+          }
+        }
+        .updated-cell {
+          animation: pulse-blue 0.8s ease-in-out;
+        }
+        .update-indicator {
+          display: inline-block;
+          width: 6px;
+          height: 6px;
+          background: #0ea5e9;
+          border-radius: 50%;
+          margin-left: 4px;
+          animation: pulse 1s ease-in-out infinite;
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.5; }
         }
       `}</style>
       <div style={{
@@ -198,39 +242,97 @@ function SimpleWSTable({ data }) {
       <table className="modern-table">
         <thead>
           <tr>
-            <th>Symbol</th>
-            <th>Price</th>
-            <th>RSI (1m)</th>
-            <th>Last 10 RSI</th>
-            <th>EMA9</th>
-            <th>EMA21</th>
-            <th>VWAP</th>
+            <th style={{minWidth: '100px'}}>Symbol</th>
+            <th style={{minWidth: '80px'}}>RSI 1M</th>
+            <th style={{minWidth: '80px'}}>EMA9</th>
+            <th style={{minWidth: '80px'}}>EMA21</th>
+            <th style={{minWidth: '90px'}}>RSI 1H</th>
+            <th style={{minWidth: '90px'}}>RSI 15M</th>
+            <th style={{minWidth: '70px'}}>BUY</th>
+            <th style={{minWidth: '70px'}}>SELL</th>
           </tr>
         </thead>
         <tbody>
           {data.map((item, index) => (
             <tr key={`${item.token}-${index}`}>
-              <td style={{ fontWeight: '600', color: '#374151' }}>{item.symbol || 'N/A'}</td>
-              <td style={{ fontWeight: '500', color: '#1f2937', ...getHighlightStyle(item.token, 'ltp') }}>₹{(item.ltp || 0).toFixed(2)}</td>
-              <td style={{ ...getHighlightStyle(item.token, 'rsi1m') }}>{item.rsi1m?.toFixed(2) || 'N/A'}</td>
-              <td style={{ ...getHighlightStyle(item.token, 'rsiArray') }}>
-                <div style={{ display: 'flex', gap: '2px', fontSize: '10px', justifyContent: 'center' }}>
-                  {item.rsiArray && item.rsiArray.length >= 10
-                    ? item.rsiArray.slice(-10).map((rsiVal, idx) => (
-                        <span key={idx} style={{
-                          padding: '2px 4px',
-                          borderRadius: '2px',
-                          background: rsiVal > 68 ? '#fee2e2' : rsiVal < 32 ? '#fef3c7' : '#f0f9ff',
-                          color: rsiVal > 68 ? '#dc2626' : rsiVal < 32 ? '#d97706' : '#1e40af',
-                          fontWeight: '500'
-                        }}>{rsiVal.toFixed(0)}</span>
-                      ))
-                    : <span style={{ color: '#d97706', fontStyle: 'italic' }}>Waiting...</span>}
-                </div>
+              <td style={{ fontWeight: '600', color: '#374151', fontSize: '13px' }}>{item.symbol || 'N/A'}</td>
+              
+              {/* RSI 1M */}
+              <td style={{
+                color: item.rsi1m ? (item.rsi1m > 70 ? 'red' : item.rsi1m < 30 ? 'green' : '#666') : '#999',
+                fontWeight: 'bold', 
+                fontSize: '12px',
+                ...getHighlightStyle(item.token, 'rsi1m')
+              }}>
+                {item.rsi1m?.toFixed(1) || '-'}
+                {changedFields[item.token]?.rsi1m && <span className="update-indicator"></span>}
               </td>
-              <td style={{ ...getHighlightStyle(item.token, 'ema9_1m') }}>{item.ema9_1m?.toFixed(2) || 'N/A'}</td>
-              <td style={{ ...getHighlightStyle(item.token, 'ema21_1m') }}>{item.ema21_1m?.toFixed(2) || 'N/A'}</td>
-              <td style={{ ...getHighlightStyle(item.token, 'vwap1m') }}>{item.vwap1m?.toFixed(2) || 'N/A'}</td>
+              
+              {/* EMA9 */}
+              <td style={{
+                color: '#4a5568',
+                fontWeight: 'bold', 
+                fontSize: '12px',
+                ...getHighlightStyle(item.token, 'ema9_1m')
+              }}>
+                {item.ema9_1m?.toFixed(2) || '-'}
+                {changedFields[item.token]?.ema9_1m && <span className="update-indicator"></span>}
+              </td>
+              
+              {/* EMA21 */}
+              <td style={{
+                color: '#4a5568',
+                fontWeight: 'bold', 
+                fontSize: '12px',
+                ...getHighlightStyle(item.token, 'ema21_1m')
+              }}>
+                {item.ema21_1m?.toFixed(2) || '-'}
+                {changedFields[item.token]?.ema21_1m && <span className="update-indicator"></span>}
+              </td>
+              
+              {/* RSI 1H */}
+              <td style={{
+                color: item.rsi1h ? (item.rsi1h > 70 ? 'red' : item.rsi1h < 30 ? 'green' : '#666') : '#999',
+                fontWeight: 'bold', 
+                fontSize: '12px',
+                ...getHighlightStyle(item.token, 'rsi1h')
+              }}>
+                {item.rsi1h?.toFixed(1) || '-'}
+                {changedFields[item.token]?.rsi1h && <span className="update-indicator"></span>}
+              </td>
+              
+              {/* RSI 15M */}
+              <td style={{
+                color: item.rsi15m ? (item.rsi15m > 70 ? 'red' : item.rsi15m < 30 ? 'green' : '#666') : '#999',
+                fontWeight: 'bold', 
+                fontSize: '12px',
+                ...getHighlightStyle(item.token, 'rsi15m')
+              }}>
+                {item.rsi15m?.toFixed(1) || '-'}
+                {changedFields[item.token]?.rsi15m && <span className="update-indicator"></span>}
+              </td>
+              
+              {/* BUY Condition */}
+              <td style={{
+                color: item.buyCondition ? 'green' : 'gray', 
+                fontWeight: 'bold', 
+                fontSize: '14px',
+                ...getHighlightStyle(item.token, 'buyCondition')
+              }}>
+                {item.buyCondition ? 'BUY' : 'WAIT'}
+                {changedFields[item.token]?.buyCondition && <span className="update-indicator"></span>}
+              </td>
+              
+              {/* SELL Condition */}
+              <td style={{
+                color: item.sellCondition ? 'red' : 'gray', 
+                fontWeight: 'bold', 
+                fontSize: '14px',
+                ...getHighlightStyle(item.token, 'sellCondition')
+              }}>
+                {item.sellCondition ? 'SELL' : 'HOLD'}
+                {changedFields[item.token]?.sellCondition && <span className="update-indicator"></span>}
+              </td>
             </tr>
           ))}
         </tbody>

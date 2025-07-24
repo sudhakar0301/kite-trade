@@ -53,6 +53,30 @@ wss.on('connection', (ws) => {
   console.log('🟢 WebSocket client connected');
   clients.push(ws);
 
+  // Handle incoming messages from clients
+  ws.on('message', (message) => {
+    try {
+      const msg = JSON.parse(message);
+      console.log('📨 Received WebSocket message:', msg.type);
+      
+      if (msg.type === 'request_subscription_state') {
+        // Send current subscription state to client
+        const { getSubscribedTokens } = require('./live/tickListener');
+        const currentTokens = getSubscribedTokens();
+        
+        ws.send(JSON.stringify({
+          type: 'subscription_state',
+          tokens: currentTokens,
+          message: `Current subscription state: ${currentTokens.length} tokens`
+        }));
+        
+        console.log(`📋 Sent subscription state to client: ${currentTokens.length} tokens`);
+      }
+    } catch (error) {
+      console.error('❌ Error handling WebSocket message:', error.message);
+    }
+  });
+
   // Send existing token data to the newly connected client
   setTimeout(() => {
     console.log('📤 Sending existing token data to new WebSocket client...');

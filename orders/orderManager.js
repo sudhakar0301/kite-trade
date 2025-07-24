@@ -107,6 +107,12 @@ function getLiveIndicatorsFromCache(token) {
       ema9,
       ema21,
       vwap,
+      
+      // Add hourly indicators from cache
+      hourlyEMA9: cache.hourlyEMA9,
+      hourlyVWAP: cache.hourlyVWAP,
+      currentHourOpen: cache.currentHourOpen,
+      
       ltp: currentPrice,
       totalCandles: allCandles.length,
       todayCandles: vwapCandles.length,
@@ -325,7 +331,7 @@ async function placeBuyOrder(orderData) {
       return null;
     }
 
-    const availableFunds = margins.equity.available.cash;
+    const availableFunds = margins.equity.available.live_balance;
     const quantity = Math.floor(calculateQuantity(availableFunds, price));
 
     const orderParams = {
@@ -729,9 +735,31 @@ async function checkAndSellOnSubscription(token, symbol) {
       return;
     }
     
-    const { rsi, ema9, ema21, vwap, ltp, totalCandles, todayCandles, rsiArray } = indicators;
+    const { rsi, ema9, ema21, vwap, ltp, totalCandles, todayCandles, rsiArray, hourlyEMA9, hourlyVWAP, currentHourOpen } = indicators;
     
-    console.log(`📊 ${symbol} Enhanced Cache Indicators (${totalCandles} total, ${todayCandles} today): RSI=${rsi?.toFixed(2)}, EMA9=${ema9?.toFixed(2)}, EMA21=${ema21?.toFixed(2)}, VWAP=${vwap?.toFixed(2)}, LTP=${ltp}`);
+    console.log(`📊 ${symbol} Enhanced Cache Indicators (${totalCandles} total, ${todayCandles} today):`);
+    console.log(`   1M: RSI=${rsi?.toFixed(2)}, EMA9=${ema9?.toFixed(2)}, EMA21=${ema21?.toFixed(2)}, VWAP=${vwap?.toFixed(2)}, LTP=${ltp}`);
+    console.log(`   1H: EMA9=${hourlyEMA9?.toFixed(2)}, VWAP=${hourlyVWAP?.toFixed(2)}, HourOpen=${currentHourOpen?.toFixed(2)}`);
+    
+    // NEW MULTI-TIMEFRAME SELL CONDITIONS - Calculate first
+    
+    // 1-hour timeframe condition: Only check 1H Open > 1H VWAP
+    const hourly1hOpenAboveVWAP = currentHourOpen && hourlyVWAP ? 
+      currentHourOpen > hourlyVWAP : false;
+    const hourlyCondition = hourly1hOpenAboveVWAP;
+    
+    // 1-minute timeframe conditions
+    const minuteEMA9BelowVWAP = ema9 && vwap ? ema9 < vwap : false;
+    
+    // RSI safety check - none of last 10 RSI values should be < 40
+    const rsiSafetyCheck = (() => {
+      if (!rsiArray || rsiArray.length < 10) return false;
+      const last10RSI = rsiArray.slice(-10);
+      return !last10RSI.some(rsi => rsi < 40); // Return true if NO RSI < 40
+    })();
+    
+    // Final sell condition: All must be true
+    const sellCondition = hourlyCondition && minuteEMA9BelowVWAP && rsiSafetyCheck;
     
     // Broadcast comprehensive indicator values for UI
     if (global.broadcastToClients) {
@@ -746,6 +774,19 @@ async function checkAndSellOnSubscription(token, symbol) {
           ema9_1m: ema9,
           ema21_1m: ema21,
           vwap1m: vwap,
+          
+          // Add hourly indicators to broadcast
+          hourlyEMA9: hourlyEMA9,
+          hourlyVWAP: hourlyVWAP,
+          currentHourOpen: currentHourOpen,
+          
+          // Add individual condition flags for UI table
+          hourly1hOpenAboveVWAP: hourly1hOpenAboveVWAP,
+          hourlyCondition: hourlyCondition,
+          minuteEMA9BelowVWAP: minuteEMA9BelowVWAP,
+          rsiSafetyCheck: rsiSafetyCheck,
+          sellCondition: sellCondition,
+          
           timestamp: new Date().toISOString(),
           totalCandles: totalCandles,
           todayCandles: todayCandles,
@@ -753,20 +794,132 @@ async function checkAndSellOnSubscription(token, symbol) {
         }
       });
     }
-
     // Place sell order if conditions met
-    if (
-     // ema9 != null && vwap != null && ema21 != null && rsi != null &&
-      //ema9 < vwap && vwap < ema21 && rsi < 42
-      ema9  < ema21 && rsi < 42
-    ) {
-      console.log(`✅ Sell condition met for ${symbol}: ema9(${ema9.toFixed(2)}) < vwap(${vwap.toFixed(2)}) < ema21(${ema21.toFixed(2)}) && rsi(${rsi.toFixed(2)}) < 42`);
-     await placeSellOrder(token, symbol, ltp);
+    if (sellCondition) {
+      console.log(`✅ NEW MULTI-TIMEFRAME SELL CONDITION MET for ${symbol}:`);
+      console.log(`   📈 1H: Open(${currentHourOpen?.toFixed(2)}) > VWAP(${hourlyVWAP?.toFixed(2)}) → ${hourly1hOpenAboveVWAP}`);
+      console.log(`   📉 1M: EMA9(${ema9?.toFixed(2)}) < VWAP(${vwap?.toFixed(2)}) → ${minuteEMA9BelowVWAP}`);
+      console.log(`   🛡️ RSI Safety: No RSI<40 in last 10 → ${rsiSafetyCheck} (Current RSI: ${rsi?.toFixed(2)})`);
+      
+      // Uncomment the line below when ready to place actual orders
+      // await placeSellOrder(token, symbol, ltp);
     } else {
-      console.log(`❌ Sell condition NOT met for ${symbol}: EMA9=${ema9?.toFixed(2)}, VWAP=${vwap?.toFixed(2)}, EMA21=${ema21?.toFixed(2)}, RSI=${rsi?.toFixed(2)}`);
+      console.log(`❌ NEW MULTI-TIMEFRAME Sell condition NOT met for ${symbol}:`);
+      console.log(`   Hourly=${hourlyCondition} (OpenVsVWAP=${hourly1hOpenAboveVWAP})`);
+      console.log(`   Minute=${minuteEMA9BelowVWAP}, RSI_Safety=${rsiSafetyCheck}`);
     }
   } catch (err) {
     console.error(`❌ Error in checkAndSellOnSubscription for ${symbol}: ${err.message}`);
+  }
+}
+
+/**
+ * Check buy conditions and place buy order if conditions are met
+ * @param {string|number} token - instrument token
+ * @param {string} symbol - trading symbol
+ * @param {number} ltp - last traded price
+ * @returns {Promise<void>}
+ */
+async function checkAndBuyOnSubscription(token, symbol, ltp) {
+  try {
+    console.log(`🔍 Checking BUY conditions for ${symbol} at LTP: ${ltp}`);
+    
+    // Check if symbol has been traded today (prevent re-trading)
+    const hasBeenTraded = await hasSymbolBeenTraded(symbol);
+    if (hasBeenTraded) {
+      console.log(`🚫 Symbol ${symbol} has already been traded today, skipping BUY order`);
+      return null;
+    }
+
+    // Get appropriate product type based on current time
+    const productType = getProductType();
+    console.log(`📊 Using product type: ${productType} for BUY order on ${symbol}`);
+
+    // Check if ANY MIS positions exist (only relevant for MIS orders)
+    if (productType === 'MIS') {
+      const hasPosition = await hasAnyPosition();
+      if (hasPosition) {
+        console.log(`📊 Existing MIS positions found, skipping BUY order for ${symbol}`);
+        return null;
+      }
+    }
+
+    // Check cooldown
+    if (isCooldownActive(symbol)) {
+      console.log(`⏳ Cooldown active for ${symbol}, skipping BUY order`);
+      return null;
+    }
+
+    // Check if a recent order exists for this symbol
+    if (hasRecentOrder(symbol, 'BUY')) {
+      console.log(`📝 Recent BUY order exists for ${symbol}, skipping`);
+      return null;
+    }
+
+    // Calculate quantity based on available funds
+    const { quantity, availableFunds } = await calculateQuantity(ltp, productType);
+    if (quantity <= 0) {
+      console.log(`💰 Insufficient funds for BUY order on ${symbol} (Available: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
+      return null;
+    }
+
+    console.log(`💹 Placing BUY order for ${symbol}: ${quantity} shares (Available funds: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
+
+    // Place the buy order
+    const orderReason = "New Strategy Buy Order - Multi-timeframe Conditions Met";
+    const order = await placeOrder(token, "BUY", quantity, ltp, productType, orderReason, symbol);
+    
+    if (order && order.order_id) {
+      console.log(`✅ BUY Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Product: ${productType}) - ${orderReason}`);
+      
+      // Update cooldown tracker
+      const now = Date.now();
+      if (!cooldownTracker[symbol]) cooldownTracker[symbol] = {};
+      cooldownTracker[symbol].lastOrderTime = now;
+      cooldownTracker[symbol].lastBuyOrder = now;
+      
+      // Add to traded symbols cache
+      tradedSymbolsCache.add(symbol);
+      
+      // Track open order for potential exit strategies
+      openOrdersTracker[symbol] = {
+        orderId: order.order_id,
+        quantity: quantity,
+        price: ltp,
+        productType: productType,
+        side: 'BUY',
+        timestamp: now,
+        exitOrderId: null
+      };
+      
+      // Broadcast order to UI if available
+      if (global.broadcastToClients) {
+        console.log(`📡 Broadcasting BUY order for ${symbol}`);
+        global.broadcastToClients({
+          type: "new_buy_order",
+          data: {
+            symbol: symbol,
+            token: token,
+            side: "BUY",
+            quantity: quantity,
+            price: ltp,
+            orderId: order.order_id,
+            productType: productType,
+            timestamp: new Date().toISOString(),
+            reason: `New Strategy Buy Order (${productType})`,
+            availableFunds: availableFunds
+          }
+        });
+      }
+      
+      return order;
+    } else {
+      console.log(`❌ Failed to place BUY order for ${symbol}`);
+      return null;
+    }
+  } catch (err) {
+    console.error(`❌ Error placing BUY order for ${symbol}: ${err.message}`);
+    return null;
   }
 }
 
@@ -787,5 +940,6 @@ module.exports = {
   isMISTimeOver,
   getProductType,
   checkAndSellOnSubscription,
+  checkAndBuyOnSubscription, // Export new buy function
   getLiveIndicatorsFromCache // Export new function
 };

@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import SimpleWSTable from "./components/SimpleWSTable";
+import TokenSubscriptionMonitor from "./components/TokenSubscriptionMonitor";
 
 function App() {
   const [wsData, setWsData] = useState([]);
@@ -7,6 +8,9 @@ function App() {
   const [lastMessage, setLastMessage] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState("Connecting...");
   const [debugMessages, setDebugMessages] = useState([]);
+  const [socket, setSocket] = useState(null);
+  const [subscribedTokens, setSubscribedTokens] = useState(new Set()); // Track subscribed tokens
+  const [hasReceivedSubscriptionState, setHasReceivedSubscriptionState] = useState(false); // Track if we got initial state
 
   const addDebugMessage = (message) => {
     setDebugMessages(prev => [...prev.slice(-4), `${new Date().toLocaleTimeString()}: ${message}`]);
@@ -14,17 +18,66 @@ function App() {
 
   useEffect(() => {
     console.log("🔌 Connecting to WebSocket...");
-    const socket = new WebSocket("ws://localhost:5000");
+    const ws = new WebSocket("ws://localhost:5000");
+    setSocket(ws);
 
-    socket.onmessage = (event) => {
+    ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
         console.log("📨 WS MESSAGE:", msg.type, msg.data);
         addDebugMessage(`Received: ${msg.type}`);
         
+        // Handle token subscription updates
+        if (msg.type === "token_subscription_update") {
+          console.log("🔄 Token subscription update:", msg);
+          
+          // Update subscribed tokens set
+          setSubscribedTokens(prev => {
+            const newSet = new Set(prev);
+            
+            // Add new tokens
+            if (msg.tokensAdded) {
+              msg.tokensAdded.forEach(token => newSet.add(String(token)));
+            }
+            
+            // Remove unsubscribed tokens
+            if (msg.tokensRemoved) {
+              msg.tokensRemoved.forEach(token => newSet.delete(String(token)));
+            }
+            
+            console.log(`📊 Updated subscribed tokens: ${newSet.size} total`);
+            return newSet;
+          });
+          
+          // Remove data for unsubscribed tokens from wsData
+          if (msg.tokensRemoved && msg.tokensRemoved.length > 0) {
+            setWsData(prev => {
+              const filtered = prev.filter(item => !msg.tokensRemoved.includes(String(item.token)));
+              console.log(`🗑️ Removed ${prev.length - filtered.length} unsubscribed tokens from display`);
+              return filtered;
+            });
+          }
+        }
+        
+        // Handle subscription state response
+        if (msg.type === "subscription_state" && msg.tokens) {
+          console.log("📋 Received current subscription state:", msg.tokens.length, "tokens");
+          setSubscribedTokens(new Set(msg.tokens.map(String)));
+          setHasReceivedSubscriptionState(true);
+          addDebugMessage(`Loaded ${msg.tokens.length} subscribed tokens`);
+        }
+        
         if ((msg.type === "filtered_token_update" || msg.type === "simplified_strategy_update" || msg.type === "tick_update") && msg.data) {
           console.log("🔥 PROCESSING TOKEN:", msg.data.symbol, msg.data.token);
           addDebugMessage(`Processing: ${msg.data.symbol}`);
+          
+          // Only apply subscription filtering if we've received the initial subscription state
+          const tokenStr = String(msg.data.token);
+          if (hasReceivedSubscriptionState && !subscribedTokens.has(tokenStr)) {
+            console.log(`⏭️ SKIPPED (not subscribed): ${msg.data.symbol} (${tokenStr})`);
+            addDebugMessage(`Skipped (not subscribed): ${msg.data.symbol}`);
+            return;
+          }
           
           setCounter(prev => prev + 1);
           setLastMessage(msg.data);
@@ -54,24 +107,35 @@ function App() {
       }
     };
 
-    socket.onopen = () => {
+    ws.onopen = () => {
       console.log("✅ WebSocket connected");
       setConnectionStatus("Connected");
       addDebugMessage("WebSocket connected!");
+      
+      // Request current subscription state
+      ws.send(JSON.stringify({
+        type: "request_subscription_state",
+        message: "Frontend requesting current token subscriptions"
+      }));
     };
-    socket.onerror = (err) => {
+    ws.onerror = (err) => {
       console.error("❌ WebSocket error:", err);
       setConnectionStatus("Error");
       addDebugMessage("WebSocket error occurred");
     };
-    socket.onclose = () => {
+    ws.onclose = () => {
       console.warn("🔌 WebSocket closed");
       setConnectionStatus("Disconnected");
       addDebugMessage("WebSocket disconnected");
     };
 
-    return () => socket.close();
+    return () => ws.close();
   }, []);
+
+  // Filter wsData to only show subscribed tokens (but only if we've received subscription state)
+  const filteredData = hasReceivedSubscriptionState 
+    ? wsData.filter(item => subscribedTokens.has(String(item.token)))
+    : wsData; // Show all data if we haven't received subscription state yet
 
   return (
     <div>
@@ -86,7 +150,9 @@ function App() {
         📊 LIVE WEBSOCKET DASHBOARD | 
         Status: {connectionStatus} | 
         Messages: {counter} | 
-        Tokens: {wsData.length} | 
+        Subscribed: {subscribedTokens.size} | 
+        Displaying: {filteredData.length} | 
+        SubState: {hasReceivedSubscriptionState ? '✅' : '⏳'} | 
         Time: {new Date().toLocaleTimeString()}
       </div>
       
@@ -119,7 +185,10 @@ function App() {
         </div>
       )}
       
-      <SimpleWSTable data={wsData} />
+      {/* Token Subscription Monitor */}
+      <TokenSubscriptionMonitor socket={socket} />
+      
+      <SimpleWSTable data={filteredData} />
     </div>
   );
 }

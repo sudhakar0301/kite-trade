@@ -1,10 +1,10 @@
 const { KiteTicker } = require("kiteconnect");
 const fs = require("fs");
 const path = require("path");
-const { checkAndSellOnSubscription } = require("../orders/orderManager");
-const { calculateRSIArray, calculateVWAP, calculateEMA } = require("../strategy/indicators");
+const { checkAndSellOnSubscription, placeBuyOrder, placeSellOrder } = require("../orders/orderManager");
+const { calculateRSIArray, calculateEMA } = require("../strategy/indicators");
 const { getHistoricalData } = require("../strategy/scanner");
-const { from15, to15, fromToday, to1 } = require("../utils/fromAndToDate");
+const { from1, from15, to15, fromToday, to1, from35 } = require("../utils/fromAndToDate");
 const { updateTokenSubscriptions, setupCSVFileWatcher, parseTokensFromCSVWithSymbols, cleanupCSVWatcher } = require("../utils/tokenSubscriptionManager");
 const instrumentsData = require("../data/nse500.json");
 const instruments = instrumentsData.instruments; // Extract the instruments array
@@ -26,7 +26,7 @@ try {
 let ticker = null;
 let subscribedTokens = [];
 let csvWatcher = null;
-let vwapUpdateTimer = null; // Timer for periodic VWAP updates
+let hourlyUpdateTimer = null; // Timer for periodic hourly indicators updates
 
 // Simple order cooldown to prevent multiple orders for same token
 const lastOrderTime = {};
@@ -97,40 +97,14 @@ async function initializeCacheForToken(token, symbol) {
       return false;
     }
 
-    // Fetch today's data separately for accurate VWAP calculation
-    const todaysCandles = await getHistoricalData(token, "minute", fromToday, to1);
-    console.log(`📅 Fetched today's data for ${symbol}: ${todaysCandles?.length || 0} candles for VWAP calculation`);
+    // Fetch today's data for initial setup (optional)
+    const todaysCandles = await getHistoricalData(token, "minute", fromToday, to15);
+    console.log(`📅 Fetched today's data for ${symbol}: ${todaysCandles?.length || 0} candles`);
 
-    // Calculate initial VWAP from today's historical data only
-    let initialVWAP = null;
-    if (todaysCandles && todaysCandles.length > 0) {
-      try {
-        const highs = todaysCandles.map(c => c.high);
-        const lows = todaysCandles.map(c => c.low);
-        const closes = todaysCandles.map(c => c.close);
-        const volumes = todaysCandles.map(c => c.volume || 0);
-        const vwapArray = calculateVWAP(highs, lows, closes, volumes);
-        
-        initialVWAP = vwapArray && vwapArray.length > 0 ? vwapArray[vwapArray.length - 1] : null;
-        if (initialVWAP !== null && initialVWAP !== undefined && !isNaN(initialVWAP)) {
-          console.log(`📊 Initial VWAP for ${symbol}: ${initialVWAP.toFixed(2)} (from ${todaysCandles.length} historical candles)`);
-        } else {
-          console.log(`⚠️ VWAP calculation returned invalid value for ${symbol}: ${initialVWAP}`);
-          initialVWAP = null;
-        }
-      } catch (error) {
-        console.error(`❌ Error calculating initial VWAP for ${symbol}: ${error.message}`);
-        initialVWAP = null;
-      }
-    }
-
-    // Initialize cache with historical data and VWAP info
+    // Initialize cache with historical data only
     candleCache.set(token, {
       historical: historicalCandles.slice(-MAX_CACHE_CANDLES),
-      todaysHistorical: todaysCandles.slice() || [],
       current: null,
-      latestVWAP: initialVWAP, // Store the VWAP value (updated only per minute)
-      lastVWAPUpdate: Date.now(), // Track when VWAP was last updated
       lastUpdate: Date.now(),
       symbol: symbol
     });
@@ -165,9 +139,6 @@ function processTickForCache(tick) {
         cache.historical = cache.historical.slice(-MAX_CACHE_CANDLES);
       }
 
-      // Update today's historical candles for VWAP calculation
-      cache.todaysHistorical.push(cache.current);
-
       console.log(`📊 New candle completed for ${cache.symbol}: ${cache.current.close} (${cache.current.tickCount} ticks) - Cache: ${cache.historical.length} candles`);
     }
 
@@ -184,9 +155,8 @@ function processTickForCache(tick) {
   return cache;
 }
 
-
-// Calculate live indicators using cache + current candle
-function calculateLiveIndicators(token) {
+// Calculate live indicators using cache + current candle + historical RSI
+async function calculateLiveIndicators(token) {
   const cache = candleCache.get(token);
   if (!cache) return null;
 
@@ -197,11 +167,6 @@ function calculateLiveIndicators(token) {
       allCandles.push(cache.current);
     }
 
-    // if (allCandles.length < 50) {
-    //   console.log(`⚠️ Not enough candles for ${cache.symbol}: ${allCandles.length}, need at least 50`);
-    //   return null; // Not enough data for proper indicator calculation
-    // }
-
     // Extract OHLCV data for RSI/EMA calculations only
     const closes = allCandles.map(c => c.close);
     const highs = allCandles.map(c => c.high);
@@ -210,37 +175,22 @@ function calculateLiveIndicators(token) {
 
     // Get today's candle count for reporting
     let todayCandleCount = 0;
-    if (cache.todaysHistorical && cache.todaysHistorical.length > 0) {
-      todayCandleCount = cache.todaysHistorical.length + (cache.current ? 1 : 0);
-    } else {
-      // Fallback: Count today's candles from all data
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const todayStart = today.getTime();
-      
-      const todayCandles = allCandles.filter(c => {
-        let candleTime;
-        if (c.timestamp) {
-          candleTime = c.timestamp;
-        } else if (c.date) {
-          candleTime = new Date(c.date).getTime();
-        } else {
-          return false;
-        }
-        return candleTime >= todayStart;
-      });
-      todayCandleCount = todayCandles.length;
-    }
-
-    // Use cached VWAP that's calculated from historical data only (once per minute)
-    // This avoids tick-by-tick VWAP recalculation for better performance and accuracy
-    let vwap = cache.latestVWAP || null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayStart = today.getTime();
     
-    // Only log VWAP debug info occasionally to reduce spam
-    if (Math.random() < 0.02) { // 2% sampling
-      const timeSinceVWAPUpdate = Date.now() - (cache.lastVWAPUpdate || 0);
-      console.log(`📊 ${cache.symbol}: Using cached historical VWAP = ${vwap?.toFixed(2)} (${todayCandleCount} today's candles, last updated ${Math.floor(timeSinceVWAPUpdate/1000)}s ago)`);
-    }
+    const todayCandles = allCandles.filter(c => {
+      let candleTime;
+      if (c.timestamp) {
+        candleTime = c.timestamp;
+      } else if (c.date) {
+        candleTime = new Date(c.date).getTime();
+      } else {
+        return false;
+      }
+      return candleTime >= todayStart;
+    });
+    todayCandleCount = todayCandles.length;
 
     // Calculate RSI/EMA indicators - these need sufficient historical data
     let rsi = null, ema9 = null, ema21 = null;
@@ -252,66 +202,70 @@ function calculateLiveIndicators(token) {
       ema9 = calculateEMA(closes, 9);
       ema21 = calculateEMA(closes, 21);
     } else {
-      console.log(`⚠️ ${cache.symbol}: Not enough candles for RSI/EMA (${allCandles.length}/${MIN_CANDLES_REQUIRED}), but VWAP calculated anyway`);
+      console.log(`⚠️ ${cache.symbol}: Not enough candles for RSI/EMA (${allCandles.length}/${MIN_CANDLES_REQUIRED})`);
     }
 
-    return {
+    // Calculate RSI 1H and 15M using historical API calls
+    let rsi1h = null, rsi15m = null;
+    
+    try {
+      console.log(`🔍 ${cache.symbol}: Starting RSI 1H/15M calculations...`);
+      
+      // Fetch 1-hour candles for RSI 1H calculation
+      console.log(`🔍 ${cache.symbol}: Fetching 1H candles from ${from35} to ${to15}`);
+      const hourlyCandles = await getHistoricalData(token, "60minute", from35, to15);
+      console.log(`🔍 ${cache.symbol}: Got ${hourlyCandles?.length || 0} hourly candles`);
+      
+      if (hourlyCandles && hourlyCandles.length >= 15) { // Need at least 15 hourly candles for RSI(14)
+        const hourlyCloses = hourlyCandles.map(c => c.close);
+        console.log(`🔍 ${cache.symbol}: Hourly closes sample: ${hourlyCloses.slice(-3).join(', ')}`);
+        const rsiArray1h = calculateRSIArray(hourlyCloses, 14);
+        rsi1h = rsiArray1h && rsiArray1h.length > 0 ? rsiArray1h[rsiArray1h.length - 1] : null;
+        console.log(`🔍 ${cache.symbol}: Calculated RSI 1H = ${rsi1h}`);
+      } else {
+        console.log(`⚠️ ${cache.symbol}: Not enough hourly candles: ${hourlyCandles?.length || 0}/15`);
+      }
+      
+      // Fetch 15-minute candles for RSI 15M calculation
+      console.log(`🔍 ${cache.symbol}: Fetching 15M candles from ${from15} to ${to15}`);
+      const fifteenMinCandles = await getHistoricalData(token, "15minute", from15, to15);
+      console.log(`🔍 ${cache.symbol}: Got ${fifteenMinCandles?.length || 0} 15-minute candles`);
+      
+      if (fifteenMinCandles && fifteenMinCandles.length >= 15) { // Need at least 15 candles for RSI(14)
+        const fifteenMinCloses = fifteenMinCandles.map(c => c.close);
+        console.log(`🔍 ${cache.symbol}: 15M closes sample: ${fifteenMinCloses.slice(-3).join(', ')}`);
+        const rsiArray15m = calculateRSIArray(fifteenMinCloses, 14);
+        rsi15m = rsiArray15m && rsiArray15m.length > 0 ? rsiArray15m[rsiArray15m.length - 1] : null;
+        console.log(`🔍 ${cache.symbol}: Calculated RSI 15M = ${rsi15m}`);
+      } else {
+        console.log(`⚠️ ${cache.symbol}: Not enough 15M candles: ${fifteenMinCandles?.length || 0}/15`);
+      }
+    } catch (error) {
+      console.error(`❌ ${cache.symbol}: Error fetching historical data for RSI calculations: ${error.message}`);
+    }
+
+    const result = {
       rsi1m: rsi,
       rsiArray: rsiArr?.slice(-10) || [],
       ema9_1m: ema9,
       ema21_1m: ema21,
-      vwap1m: vwap,
+      
+      // RSI values from historical API calls
+      rsi1h: rsi1h,
+      rsi15m: rsi15m,
+      
       ltp: cache.ltp || closes[closes.length - 1], // Use live LTP
       candleCount: allCandles.length,
-      todayCandleCount: todayCandleCount // Use corrected today candle count
+      todayCandleCount: todayCandleCount
     };
+    
+    console.log(`🔍 ${cache.symbol}: Final result - RSI1H=${result.rsi1h}, RSI15M=${result.rsi15m}`);
+    
+    return result;
   } catch (error) {
     console.error(`❌ Error calculating live indicators for token ${token}: ${error.message}`);
     return null;
   }
-}
-
-// Update VWAP for all tokens in cache every minute using historical data only
-async function updateAllVWAPs() {
-  console.log(`🔄 Starting periodic VWAP update for ${candleCache.size} tokens`);
-  
-  for (const [token, cache] of candleCache.entries()) {
-    try {
-      // Only update VWAP once per minute to avoid excessive API calls
-      const timeSinceLastUpdate = Date.now() - (cache.lastVWAPUpdate || 0);
-      if (timeSinceLastUpdate < 60000) { // Skip if updated within last minute
-        continue;
-      }
-
-      // Fetch fresh today's historical data for VWAP calculation
-      const todaysCandles = await getHistoricalData(token, "minute", fromToday, to1);
-      
-      if (todaysCandles && todaysCandles.length > 0) {
-        // Update cache with fresh today's data
-        cache.todaysHistorical = todaysCandles;
-        
-        // Calculate VWAP using only historical data (no live tick data)
-        const highs = todaysCandles.map(c => c.high);
-        const lows = todaysCandles.map(c => c.low);
-        const closes = todaysCandles.map(c => c.close);
-        const volumes = todaysCandles.map(c => c.volume || 0);
-        
-        const vwapArray = calculateVWAP(highs, lows, closes, volumes);
-        const newVWAP = vwapArray && vwapArray.length > 0 ? vwapArray[vwapArray.length - 1] : null;
-        
-        if (newVWAP !== null && !isNaN(newVWAP)) {
-          const oldVWAP = cache.latestVWAP;
-          cache.latestVWAP = newVWAP;
-          cache.lastVWAPUpdate = Date.now();
-          console.log(`📊 VWAP updated for ${cache.symbol}: ${oldVWAP?.toFixed(2)} → ${newVWAP.toFixed(2)} (${todaysCandles.length} historical candles)`);
-        }
-      }
-    } catch (error) {
-      console.error(`❌ Error updating VWAP for ${cache.symbol}: ${error.message}`);
-    }
-  }
-  
-  console.log(`✅ Completed periodic VWAP update`);
 }
 
 
@@ -383,13 +337,6 @@ function initTickListener() {
 
   console.log("🚀 Starting ticker connection...");
   ticker.connect();
-
-  // Start periodic VWAP update timer (every minute)
-  if (vwapUpdateTimer) {
-    clearInterval(vwapUpdateTimer);
-  }
-  vwapUpdateTimer = setInterval(updateAllVWAPs, 60000); // Update every 60 seconds
-  console.log("⏰ Started periodic VWAP update timer (every 60 seconds)");
 }
 
 // Handle incoming ticks - calculate live indicators and check conditions
@@ -422,19 +369,51 @@ async function handleTicks(ticks) {
     }
     
     // Calculate live indicators
-    const liveIndicators = calculateLiveIndicators(token);
+    const liveIndicators = await calculateLiveIndicators(token);
     if (liveIndicators) {
+      // Buy conditions: 1H RSI > 60, 15M RSI > 60, EMA9 > EMA21 on 1M, RSI 1M > 65
+      const buyCondition = (() => {
+        if (!liveIndicators.rsi1h || !liveIndicators.rsi15m || !liveIndicators.rsi1m || 
+            !liveIndicators.ema9_1m || !liveIndicators.ema21_1m) return false;
+        
+        const rsi1hBuy = liveIndicators.rsi1h > 60;
+        const rsi15mBuy = liveIndicators.rsi15m > 60;
+        const emaCrossoverBuy = liveIndicators.ema9_1m > liveIndicators.ema21_1m;
+        const rsi1mBuy = liveIndicators.rsi1m > 65;
+        
+        return rsi1hBuy && rsi15mBuy && emaCrossoverBuy && rsi1mBuy;
+      })();
+      
+      // Sell conditions: 1H RSI < 40, 15M RSI < 35, EMA9 < EMA21 on 1M, RSI 1M < 40
+      const sellCondition = (() => {
+        if (!liveIndicators.rsi1h || !liveIndicators.rsi15m || !liveIndicators.rsi1m || 
+            !liveIndicators.ema9_1m || !liveIndicators.ema21_1m) return false;
+        
+        const rsi1hSell = liveIndicators.rsi1h < 40;
+        const rsi15mSell = liveIndicators.rsi15m < 35;
+        const emaCrossoverSell = liveIndicators.ema9_1m < liveIndicators.ema21_1m;
+        const rsi1mSell = liveIndicators.rsi1m < 40;
+        
+        return rsi1hSell && rsi15mSell && emaCrossoverSell && rsi1mSell;
+      })();
+      
       const liveData = {
         token,
         symbol,
         ...liveIndicators,
+        
+        // Add condition flags for UI table
+        buyCondition: buyCondition,
+        sellCondition: sellCondition,
+        
         timestamp: new Date().toISOString()
       };
       
       liveDataToBroadcast.push(liveData);
       
       // Log indicator values with candle count info
-      console.log(`📈 ${symbol}: RSI=${liveIndicators.rsi1m?.toFixed(2)}, EMA9=${liveIndicators.ema9_1m?.toFixed(2)}, EMA21=${liveIndicators.ema21_1m?.toFixed(2)}, VWAP=${liveIndicators.vwap1m?.toFixed(2)}, LTP=${liveIndicators.ltp} [${liveIndicators.candleCount} candles, ${liveIndicators.todayCandleCount} today]`);
+      console.log(`📈 ${symbol}: RSI=${liveIndicators.rsi1m?.toFixed(2)}, EMA9=${liveIndicators.ema9_1m?.toFixed(2)}, EMA21=${liveIndicators.ema21_1m?.toFixed(2)}, LTP=${liveIndicators.ltp} [${liveIndicators.candleCount} candles, ${liveIndicators.todayCandleCount} today]`);
+      console.log(`🕐 ${symbol} Multi-timeframe RSI: RSI1H=${liveIndicators.rsi1h?.toFixed(2)}, RSI15M=${liveIndicators.rsi15m?.toFixed(2)}`);
       
       // Detailed debugging for accuracy verification (random sampling to avoid spam)
       if (Math.random() < 0.02) { // 2% sampling rate
@@ -445,7 +424,8 @@ async function handleTicks(ticks) {
           hasMinData: liveIndicators.candleCount >= MIN_CANDLES_REQUIRED,
           rsiValid: liveIndicators.rsi1m !== null && !isNaN(liveIndicators.rsi1m),
           emaValid: liveIndicators.ema9_1m !== null && !isNaN(liveIndicators.ema9_1m),
-          vwapValid: liveIndicators.vwap1m !== null && !isNaN(liveIndicators.vwap1m)
+          rsi1hValid: liveIndicators.rsi1h !== null && !isNaN(liveIndicators.rsi1h),
+          rsi15mValid: liveIndicators.rsi15m !== null && !isNaN(liveIndicators.rsi15m)
         });
       }
     }
@@ -485,87 +465,168 @@ async function handleTicks(ticks) {
     
     if (timeSinceLastOrder >= ORDER_COOLDOWN_MS) {
       // Get live indicators for this token
-      const indicators = calculateLiveIndicators(token);
+      const indicators = await calculateLiveIndicators(token);
       
-      if (indicators && indicators.rsi1m && indicators.ema9_1m && indicators.ema21_1m && indicators.vwap1m) {
-        // Check sell conditions
-        const sellCondition = 
-          (indicators.ema9_1m < indicators.vwap1m && 
-          indicators.vwap1m < indicators.ema21_1m && 
-          indicators.rsi1m < 42) || 
-          (indicators.ema9_1m < indicators.vwap1m && 
-          indicators.vwap1m < indicators.ema21_1m && 
-          indicators.rsi1m < 42);
+      if (indicators && indicators.rsi1m && indicators.ema9_1m && indicators.ema21_1m && 
+          indicators.rsi1h && indicators.rsi15m) {
+        
+        // Buy conditions: 1H RSI > 60, 15M RSI > 60, EMA9 > EMA21 on 1M, RSI 1M > 65
+        const rsi1hBuy = indicators.rsi1h > 60;
+        const rsi15mBuy = indicators.rsi15m > 60;
+        const emaCrossoverBuy = indicators.ema9_1m > indicators.ema21_1m;
+        const rsi1mBuy = indicators.rsi1m > 65;
+        const buyCondition = rsi1hBuy && rsi15mBuy && emaCrossoverBuy && rsi1mBuy;
+        
+        // Sell conditions: 1H RSI < 40, 15M RSI < 35, EMA9 < EMA21 on 1M, RSI 1M < 40
+        const rsi1hSell = indicators.rsi1h < 40;
+        const rsi15mSell = indicators.rsi15m < 35;
+        const emaCrossoverSell = indicators.ema9_1m < indicators.ema21_1m;
+        const rsi1mSell = indicators.rsi1m < 40;
+        const sellCondition = rsi1hSell && rsi15mSell && emaCrossoverSell && rsi1mSell;
+        
         if (sellCondition) {
           isProcessingOrder = true;
-          console.log(`✅ SELL CONDITION MET for ${symbol}: EMA9(${indicators.ema9_1m.toFixed(2)}) < VWAP(${indicators.vwap1m.toFixed(2)}) < EMA21(${indicators.ema21_1m.toFixed(2)}) && RSI(${indicators.rsi1m.toFixed(2)}) < 42`);
+          console.log(`✅ SELL CONDITION MET for ${symbol}:`);
+          console.log(`   RSI 1H: ${indicators.rsi1h.toFixed(2)} < 40 = ${rsi1hSell}`);
+          console.log(`   RSI 15M: ${indicators.rsi15m.toFixed(2)} < 35 = ${rsi15mSell}`);
+          console.log(`   EMA Crossover: ${indicators.ema9_1m.toFixed(2)} < ${indicators.ema21_1m.toFixed(2)} = ${emaCrossoverSell}`);
+          console.log(`   RSI 1M: ${indicators.rsi1m.toFixed(2)} < 40 = ${rsi1mSell}`);
           
           try {
-            // Use the existing order function
-            await checkAndSellOnSubscription(token, symbol);
+            // Use the existing sell order function
+            await placeSellOrder(token, symbol, ltp);
             lastOrderTime[token] = Date.now();
           } catch (error) {
             console.error(`❌ Error processing sell order for ${symbol}: ${error.message}`);
           } finally {
             isProcessingOrder = false;
           }
+        } else if (buyCondition) {
+          isProcessingOrder = true;
+          console.log(`📈 BUY CONDITION MET for ${symbol}:`);
+          console.log(`   RSI 1H: ${indicators.rsi1h.toFixed(2)} > 60 = ${rsi1hBuy}`);
+          console.log(`   RSI 15M: ${indicators.rsi15m.toFixed(2)} > 60 = ${rsi15mBuy}`);
+          console.log(`   EMA Crossover: ${indicators.ema9_1m.toFixed(2)} > ${indicators.ema21_1m.toFixed(2)} = ${emaCrossoverBuy}`);
+          console.log(`   RSI 1M: ${indicators.rsi1m.toFixed(2)} > 65 = ${rsi1mBuy}`);
+          
+          try {
+            // Use the existing buy order function
+            const orderData = {
+              symbol: symbol,
+              price: ltp,
+              token: token
+            };
+            await placeBuyOrder(orderData);
+            lastOrderTime[token] = Date.now();
+          } catch (error) {
+            console.error(`❌ Error processing buy order for ${symbol}: ${error.message}`);
+          } finally {
+            isProcessingOrder = false;
+          }
         } else {
-          console.log(`❌ Sell condition NOT met for ${symbol}: EMA9=${indicators.ema9_1m?.toFixed(2)}, VWAP=${indicators.vwap1m?.toFixed(2)}, EMA21=${indicators.ema21_1m?.toFixed(2)}, RSI=${indicators.rsi1m?.toFixed(2)}`);
+          // Only log occasionally to reduce spam
+          if (Math.random() < 0.05) { // 5% chance to reduce spam
+            console.log(`⏸️ No conditions met for ${symbol}:`);
+            console.log(`   BUY: RSI1H>${indicators.rsi1h?.toFixed(2)}>60=${rsi1hBuy}, RSI15M>${indicators.rsi15m?.toFixed(2)}>60=${rsi15mBuy}, EMA9>EMA21=${emaCrossoverBuy}, RSI1M>${indicators.rsi1m?.toFixed(2)}>65=${rsi1mBuy}`);
+            console.log(`   SELL: RSI1H<${indicators.rsi1h?.toFixed(2)}<40=${rsi1hSell}, RSI15M<${indicators.rsi15m?.toFixed(2)}<35=${rsi15mSell}, EMA9<EMA21=${emaCrossoverSell}, RSI1M<${indicators.rsi1m?.toFixed(2)}<40=${rsi1mSell}`);
+          }
         }
       }
     }
   }
 }
 
-// Subscribe to new tokens (replace all existing subscriptions)
+// Subscribe to new tokens and unsubscribe from removed tokens (incremental update)
 async function subscribeToTokens(tokens) {
-  console.log(`🔄 Replacing all subscriptions with ${tokens.length} new tokens`);
-  console.log(`🎯 First 10 tokens to subscribe:`, tokens.slice(0, 10));
+  const newTokens = [...new Set(tokens)]; // Remove duplicates
+  console.log(`🔄 Incremental token update: ${newTokens.length} tokens in new file`);
+  console.log(`📊 Current subscriptions: ${subscribedTokens.length} tokens`);
   
-  // Clear existing subscriptions
-  if (ticker && ticker.connected() && subscribedTokens.length > 0) {
-    const oldNumericTokens = subscribedTokens.map(Number);
-    ticker.unsubscribe(oldNumericTokens);
-    console.log(`📡 Unsubscribed from ${subscribedTokens.length} old tokens`);
+  // Find tokens to add and remove
+  const currentTokens = new Set(subscribedTokens.map(String));
+  const incomingTokens = new Set(newTokens.map(String));
+  
+  const tokensToAdd = newTokens.filter(token => !currentTokens.has(String(token)));
+  const tokensToRemove = subscribedTokens.filter(token => !incomingTokens.has(String(token)));
+  
+  console.log(`➕ Tokens to ADD: ${tokensToAdd.length}`);
+  console.log(`➖ Tokens to REMOVE: ${tokensToRemove.length}`);
+  console.log(`🔄 Tokens staying SAME: ${subscribedTokens.length - tokensToRemove.length}`);
+  
+  if (tokensToAdd.length > 0) {
+    console.log(`🎯 Adding tokens:`, tokensToAdd.slice(0, 10), tokensToAdd.length > 10 ? '...' : '');
   }
-  
-  // Update token list
-  subscribedTokens = [...new Set(tokens)]; // Remove duplicates
-  console.log(`📝 Updated subscribedTokens array: ${subscribedTokens.length} total tokens`);
+  if (tokensToRemove.length > 0) {
+    console.log(`🗑️ Removing tokens:`, tokensToRemove.slice(0, 10), tokensToRemove.length > 10 ? '...' : '');
+  }
 
-  // Subscribe to new tokens
+  // Broadcast update to UI
+  if (global.broadcastToClients) {
+    global.broadcastToClients({
+      type: "token_subscription_update",
+      message: "Incremental Token Update",
+      totalTokens: newTokens.length,
+      tokensAdded: tokensToAdd,
+      tokensRemoved: tokensToRemove,
+      tokensSame: subscribedTokens.length - tokensToRemove.length,
+      csvFile: global.lastCSVFile || 'Unknown'
+    });
+  }
+
   if (ticker && ticker.connected()) {
-    const numericNewTokens = subscribedTokens.map(Number);
-    console.log(`📡 Subscribing to tokens:`, numericNewTokens.slice(0, 10), numericNewTokens.length > 10 ? '...' : '');
-    ticker.subscribe(numericNewTokens);
-    ticker.setMode(ticker.modeFull, numericNewTokens);
-    console.log(`📡 Subscribed to ${numericNewTokens.length} new tokens in FULL mode`);
+    // Unsubscribe from removed tokens
+    if (tokensToRemove.length > 0) {
+      const numericTokensToRemove = tokensToRemove.map(Number);
+      ticker.unsubscribe(numericTokensToRemove);
+      console.log(`📡 Unsubscribed from ${tokensToRemove.length} removed tokens`);
+      
+      // Clear cache for removed tokens
+      tokensToRemove.forEach(token => {
+        if (candleCache.has(token)) {
+          candleCache.delete(token);
+          console.log(`�️ Cleared cache for removed token: ${token}`);
+        }
+        // Clear order cooldowns for removed tokens
+        if (lastOrderTime[token]) {
+          delete lastOrderTime[token];
+        }
+      });
+    }
+
+    // Subscribe to new tokens
+    if (tokensToAdd.length > 0) {
+      const numericTokensToAdd = tokensToAdd.map(Number);
+      ticker.subscribe(numericTokensToAdd);
+      ticker.setMode(ticker.modeFull, numericTokensToAdd);
+      console.log(`📡 Subscribed to ${tokensToAdd.length} new tokens in FULL mode`);
+    }
   } else {
-    console.log("⚠️ Ticker not connected, tokens saved for when connection is ready");
+    console.log("⚠️ Ticker not connected, token changes saved for when connection is ready");
     console.log(`🔌 Ticker state: exists=${!!ticker}, connected=${ticker ? ticker.connected() : 'N/A'}`);
   }
+  
+  // Update the global token list
+  subscribedTokens = [...newTokens];
+  console.log(`✅ Token update completed: ${subscribedTokens.length} total tokens now subscribed`);
 }
 
-// Handle CSV file updates - replace all tokens
+// Handle CSV file updates - incremental token update
 async function updateTokenSubscriptionsFromCSV(newTokenList, csvFilePath) {
-  console.log(`🎯 Token replacement triggered by CSV: ${csvFilePath}`);
-  console.log(`📊 Replacing with ${Array.isArray(newTokenList) ? newTokenList.length : 'non-array'} tokens`);
+  console.log(`🎯 Incremental token update triggered by CSV: ${csvFilePath}`);
+  console.log(`📊 Processing ${Array.isArray(newTokenList) ? newTokenList.length : 'non-array'} tokens`);
+  
+  // Store CSV filename for UI display
+  global.lastCSVFile = csvFilePath.split('\\').pop() || csvFilePath.split('/').pop();
   
   try {
     if (!Array.isArray(newTokenList)) {
       throw new Error('newTokenList must be an array');
     }
 
-    // Clear order cooldowns for fresh start
-    Object.keys(lastOrderTime).forEach(token => {
-      delete lastOrderTime[token];
-    });
-    console.log(`🔄 Cleared order cooldowns for fresh start`);
-
-    // Replace all subscriptions
+    // Perform incremental update (only add new and remove obsolete tokens)
     await subscribeToTokens(newTokenList);
     
-    console.log(`✅ Token replacement completed successfully`);
+    console.log(`✅ Incremental token update completed successfully`);
   } catch (error) {
     console.error(`❌ Error in updateTokenSubscriptionsFromCSV: ${error.message}`);
   }
@@ -614,6 +675,21 @@ function startTickListener() {
   setInterval(checkTickerStatus, 30000); // Check every 30 seconds
   console.log("✅ Conditional tick listener started - waiting for CSV tokens");
   console.log("🔍 Status checks will run every 30 seconds");
+  
+  // Broadcast initial state to UI
+  setTimeout(() => {
+    if (global.broadcastToClients) {
+      global.broadcastToClients({
+        type: "token_subscription_update",
+        message: "System Started",
+        totalTokens: subscribedTokens.length,
+        tokensAdded: [],
+        tokensRemoved: [],
+        tokensSame: subscribedTokens.length,
+        csvFile: "Waiting for CSV file..."
+      });
+    }
+  }, 2000); // Wait 2 seconds for WebSocket connections
 }
 
 // Stop everything
@@ -621,13 +697,6 @@ function stopTickListener() {
   console.log("🛑 Stopping tick listener...");
   unsubscribeAll();
   stopCSVWatching();
-  
-  // Clear VWAP update timer
-  if (vwapUpdateTimer) {
-    clearInterval(vwapUpdateTimer);
-    vwapUpdateTimer = null;
-    console.log("⏰ VWAP update timer stopped");
-  }
   
   if (ticker) {
     ticker.disconnect();
@@ -651,6 +720,11 @@ function cleanup() {
   stopTickListener();
 }
 
+// Get current subscribed tokens
+function getSubscribedTokens() {
+  return [...subscribedTokens]; // Return a copy to prevent external modification
+}
+
 module.exports = {
   startTickListener,
   stopTickListener,
@@ -660,5 +734,6 @@ module.exports = {
   initTickListener: startTickListener, // Alias for compatibility
   initializeCSVWatcher,
   broadcastAllSubscribedTokens,
-  cleanup
+  cleanup,
+  getSubscribedTokens
 };
