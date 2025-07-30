@@ -27,10 +27,16 @@ let ticker = null;
 let subscribedTokens = [];
 let csvWatcher = null;
 let hourlyUpdateTimer = null; // Timer for periodic hourly indicators updates
+let historicalDataTimer = null; // Timer for periodic historical data fallback
 
 // Simple order cooldown to prevent multiple orders for same token
 const lastOrderTime = {};
 const ORDER_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+
+// Track last tick time for each token to detect stale data
+const lastTickTime = {};
+const HISTORICAL_DATA_INTERVAL = 30 * 1000; // 30 seconds - send historical data if no live ticks
+const HISTORICAL_UPDATE_INTERVAL = 60 * 1000; // 1 minute - how often to check for stale tokens
 
 // Global order processing lock to ensure orders are placed one at a time
 let isProcessingOrder = false;
@@ -81,6 +87,381 @@ function getTradingSymbol(token) {
   return instrument ? instrument.tradingsymbol : `TOKEN_${token}`;
 }
 
+// Calculate Volume Weighted Moving Average (VWMA)
+// VWMA gives more weight to prices with higher volume, making it more responsive to significant price movements
+function calculateVWMA(candles, period = 20) {
+  if (!candles || candles.length < period) {
+    return null;
+  }
+  
+  const recentCandles = candles.slice(-period);
+  let weightedSum = 0;
+  let volumeSum = 0;
+  
+  for (const candle of recentCandles) {
+    const price = candle.close || 0;
+    const volume = candle.volume || 0;
+    weightedSum += price * volume;
+    volumeSum += volume;
+  }
+  
+  return volumeSum > 0 ? weightedSum / volumeSum : null;
+}
+
+// Calculate VWMA Array - returns array of VWMA values for historical tracking
+function calculateVWMAArray(candles, period = 20) {
+  if (!candles || candles.length < period) {
+    return [];
+  }
+  
+  const vwmaArray = [];
+  
+  // Calculate VWMA for each possible window
+  for (let i = period - 1; i < candles.length; i++) {
+    const windowCandles = candles.slice(i - period + 1, i + 1);
+    let weightedSum = 0;
+    let volumeSum = 0;
+    
+    for (const candle of windowCandles) {
+      const price = candle.close || 0;
+      const volume = candle.volume || 0;
+      weightedSum += price * volume;
+      volumeSum += volume;
+    }
+    
+    const vwma = volumeSum > 0 ? weightedSum / volumeSum : null;
+    if (vwma !== null) {
+      vwmaArray.push(vwma);
+    }
+  }
+  
+  return vwmaArray;
+}
+
+// Calculate VWAP (Volume Weighted Average Price) from today's start
+// VWAP = Sum(Typical Price × Volume) / Sum(Volume) from market open today
+function calculateVWAP(allCandles) {
+  if (!allCandles || allCandles.length === 0) {
+    return null;
+  }
+  
+  // Filter for today's candles only
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStart = today.getTime();
+  
+  const todaysCandles = allCandles.filter(candle => {
+    let candleTime;
+    if (candle.timestamp) {
+      candleTime = candle.timestamp;
+    } else if (candle.date) {
+      candleTime = new Date(candle.date).getTime();
+    } else {
+      return false;
+    }
+    return candleTime >= todayStart;
+  });
+  
+  if (todaysCandles.length === 0) {
+    return null;
+  }
+  
+  let totalPriceVolume = 0;
+  let totalVolume = 0;
+  
+  for (const candle of todaysCandles) {
+    const typicalPrice = (candle.high + candle.low + candle.close) / 3;
+    const volume = candle.volume || 0;
+    totalPriceVolume += typicalPrice * volume;
+    totalVolume += volume;
+  }
+  
+  return totalVolume > 0 ? totalPriceVolume / totalVolume : null;
+}
+
+// Calculate VWAP Array - returns array of VWAP values calculated progressively through the day
+function calculateVWAPArray(allCandles) {
+  if (!allCandles || allCandles.length === 0) {
+    return [];
+  }
+  
+  // Filter for today's candles only
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayStart = today.getTime();
+  
+  const todaysCandles = allCandles.filter(candle => {
+    let candleTime;
+    if (candle.timestamp) {
+      candleTime = candle.timestamp;
+    } else if (candle.date) {
+      candleTime = new Date(candle.date).getTime();
+    } else {
+      return false;
+    }
+    return candleTime >= todayStart;
+  });
+  
+  if (todaysCandles.length === 0) {
+    return [];
+  }
+  
+  const vwapArray = [];
+  let cumulativePriceVolume = 0;
+  let cumulativeVolume = 0;
+  
+  // Calculate VWAP progressively for each minute from market start (more efficient)
+  for (let i = 0; i < todaysCandles.length; i++) {
+    const candle = todaysCandles[i];
+    const typicalPrice = (candle.high + candle.low + candle.close) / 3;
+    const volume = candle.volume || 0;
+    
+    // Add to cumulative totals
+    cumulativePriceVolume += typicalPrice * volume;
+    cumulativeVolume += volume;
+    
+    // Calculate VWAP from market start to current minute
+    const vwap = cumulativeVolume > 0 ? cumulativePriceVolume / cumulativeVolume : null;
+    if (vwap !== null) {
+      vwapArray.push(vwap);
+    }
+  }
+  
+  return vwapArray;
+}
+
+// Calculate MACD (Moving Average Convergence Divergence) with arrays
+function calculateMACD(closes, fastPeriod = 12, slowPeriod = 26, signalPeriod = 9) {
+  if (!closes || closes.length < slowPeriod + signalPeriod) {
+    return { macd: null, signal: null, histogram: null, macdArray: [], signalArray: [], histogramArray: [] };
+  }
+
+  // Calculate EMA for fast and slow periods
+  const fastEMA = calculateEMAArray(closes, fastPeriod);
+  const slowEMA = calculateEMAArray(closes, slowPeriod);
+  
+  if (!fastEMA || !slowEMA || fastEMA.length === 0 || slowEMA.length === 0) {
+    return { macd: null, signal: null, histogram: null, macdArray: [], signalArray: [], histogramArray: [] };
+  }
+
+  // Calculate MACD line (fast EMA - slow EMA)
+  const macdLine = [];
+  const minLength = Math.min(fastEMA.length, slowEMA.length);
+  for (let i = 0; i < minLength; i++) {
+    macdLine.push(fastEMA[i] - slowEMA[i]);
+  }
+
+  // Calculate signal line (EMA of MACD line)
+  const signalLine = calculateEMAArray(macdLine, signalPeriod);
+  
+  if (!signalLine || signalLine.length === 0) {
+    return { macd: null, signal: null, histogram: null, macdArray: [], signalArray: [], histogramArray: [] };
+  }
+
+  // Calculate histogram (MACD - Signal)
+  const histogram = [];
+  const signalLength = signalLine.length;
+  for (let i = 0; i < signalLength; i++) {
+    const macdIndex = macdLine.length - signalLength + i;
+    histogram.push(macdLine[macdIndex] - signalLine[i]);
+  }
+
+  return {
+    macd: macdLine[macdLine.length - 1],
+    signal: signalLine[signalLine.length - 1],
+    histogram: histogram[histogram.length - 1],
+    macdArray: macdLine,
+    signalArray: signalLine,
+    histogramArray: histogram
+  };
+}
+
+// Helper function to calculate EMA array
+function calculateEMAArray(values, period) {
+  if (!values || values.length < period) return null;
+  
+  const ema = [];
+  const multiplier = 2 / (period + 1);
+  
+  // First EMA is simple average
+  let sum = 0;
+  for (let i = 0; i < period; i++) {
+    sum += values[i];
+  }
+  ema.push(sum / period);
+  
+  // Calculate subsequent EMAs
+  for (let i = period; i < values.length; i++) {
+    const currentEMA = (values[i] * multiplier) + (ema[ema.length - 1] * (1 - multiplier));
+    ema.push(currentEMA);
+  }
+  
+  return ema;
+}
+
+// Calculate ADX (Average Directional Index) with +DI and -DI arrays
+function calculateADX(candles, period = 14) {
+  if (!candles || candles.length < period * 2) {
+    return { adx: null, plusDI: null, minusDI: null, adxArray: [], plusDIArray: [], minusDIArray: [] };
+  }
+
+  const trueRanges = [];
+  const plusDMs = [];
+  const minusDMs = [];
+
+  // Calculate True Range, +DM, and -DM
+  for (let i = 1; i < candles.length; i++) {
+    const current = candles[i];
+    const previous = candles[i - 1];
+
+    // True Range
+    const tr1 = current.high - current.low;
+    const tr2 = Math.abs(current.high - previous.close);
+    const tr3 = Math.abs(current.low - previous.close);
+    const tr = Math.max(tr1, tr2, tr3);
+    trueRanges.push(tr);
+
+    // Directional Movements
+    const upMove = current.high - previous.high;
+    const downMove = previous.low - current.low;
+
+    const plusDM = (upMove > downMove && upMove > 0) ? upMove : 0;
+    const minusDM = (downMove > upMove && downMove > 0) ? downMove : 0;
+
+    plusDMs.push(plusDM);
+    minusDMs.push(minusDM);
+  }
+
+  if (trueRanges.length < period) {
+    return { adx: null, plusDI: null, minusDI: null, adxArray: [], plusDIArray: [], minusDIArray: [] };
+  }
+
+  // Calculate arrays for windowed calculations
+  const adxArray = [];
+  const plusDIArray = [];
+  const minusDIArray = [];
+
+  for (let i = period - 1; i < trueRanges.length; i++) {
+    const windowTR = trueRanges.slice(i - period + 1, i + 1);
+    const windowPlusDM = plusDMs.slice(i - period + 1, i + 1);
+    const windowMinusDM = minusDMs.slice(i - period + 1, i + 1);
+
+    const smoothTR = calculateSMA(windowTR);
+    const smoothPlusDM = calculateSMA(windowPlusDM);
+    const smoothMinusDM = calculateSMA(windowMinusDM);
+
+    // Calculate DI values
+    const plusDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
+    const minusDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
+
+    // Calculate DX
+    const diSum = plusDI + minusDI;
+    const dx = diSum > 0 ? Math.abs(plusDI - minusDI) / diSum * 100 : 0;
+
+    adxArray.push(dx);
+    plusDIArray.push(plusDI);
+    minusDIArray.push(minusDI);
+  }
+
+  // Calculate smoothed averages for current values
+  const smoothTR = calculateSMA(trueRanges.slice(-period));
+  const smoothPlusDM = calculateSMA(plusDMs.slice(-period));
+  const smoothMinusDM = calculateSMA(minusDMs.slice(-period));
+
+  // Calculate DI values
+  const plusDI = smoothTR > 0 ? (smoothPlusDM / smoothTR) * 100 : 0;
+  const minusDI = smoothTR > 0 ? (smoothMinusDM / smoothTR) * 100 : 0;
+
+  // Calculate DX
+  const diSum = plusDI + minusDI;
+  const dx = diSum > 0 ? Math.abs(plusDI - minusDI) / diSum * 100 : 0;
+
+  return {
+    adx: dx,
+    plusDI: plusDI,
+    minusDI: minusDI,
+    adxArray: adxArray,
+    plusDIArray: plusDIArray,
+    minusDIArray: minusDIArray
+  };
+}
+
+// Calculate Simple Moving Average
+function calculateSMA(values) {
+  if (!values || values.length === 0) return 0;
+  const sum = values.reduce((acc, val) => acc + val, 0);
+  return sum / values.length;
+}
+
+// Calculate ATR (Average True Range) as percentage
+function calculateATR(candles, period = 14) {
+  if (!candles || candles.length < period + 1) {
+    return { atr: null, atrPercent: null };
+  }
+
+  const trueRanges = [];
+
+  // Calculate True Range for each candle
+  for (let i = 1; i < candles.length; i++) {
+    const current = candles[i];
+    const previous = candles[i - 1];
+
+    const tr1 = current.high - current.low;
+    const tr2 = Math.abs(current.high - previous.close);
+    const tr3 = Math.abs(current.low - previous.close);
+    const tr = Math.max(tr1, tr2, tr3);
+    
+    trueRanges.push(tr);
+  }
+
+  if (trueRanges.length < period) {
+    return { atr: null, atrPercent: null };
+  }
+
+  // Calculate ATR (simple average of true ranges)
+  const atr = calculateSMA(trueRanges.slice(-period));
+  
+  // Convert to percentage of current price
+  const currentPrice = candles[candles.length - 1].close;
+  const atrPercent = currentPrice > 0 ? (atr / currentPrice) * 100 : 0;
+
+  return { atr: atr, atrPercent: atrPercent };
+}
+
+// Calculate ATR array for last 5 values
+function calculateATRArray(candles, period = 14) {
+  if (!candles || candles.length < period + 5) {
+    return [];
+  }
+
+  const atrArray = [];
+  
+  // Calculate ATR for sliding windows
+  for (let i = period; i < candles.length; i++) {
+    const windowCandles = candles.slice(i - period, i + 1);
+    
+    const trueRanges = [];
+    for (let j = 1; j < windowCandles.length; j++) {
+      const current = windowCandles[j];
+      const previous = windowCandles[j - 1];
+      
+      const tr1 = current.high - current.low;
+      const tr2 = Math.abs(current.high - previous.close);
+      const tr3 = Math.abs(current.low - previous.close);
+      const tr = Math.max(tr1, tr2, tr3);
+      trueRanges.push(tr);
+    }
+    
+    if (trueRanges.length > 0) {
+      const atr = calculateSMA(trueRanges);
+      atrArray.push(atr);
+    }
+  }
+
+  // Return last 5 values
+  return atrArray.slice(-5);
+}
+
 // Initialize cache for a token with historical data
 async function initializeCacheForToken(token, symbol) {
   try {
@@ -117,8 +498,152 @@ async function initializeCacheForToken(token, symbol) {
   }
 }
 
+// Check VWAP-based order conditions and place orders accordingly
+async function checkVWAPOrderConditions(token, cache, currentPrice) {
+  if (!cache || !cache.historical || cache.historical.length < 2) {
+    return; // Need at least 2 candles for VWAP analysis
+  }
+
+  try {
+    const symbol = cache.symbol;
+    console.log(`🔍 VWAP Order Check for ${symbol}:`);
+    
+    // Calculate current VWAP
+    const allCandles = [...cache.historical];
+    if (cache.current) {
+      allCandles.push(cache.current);
+    }
+    
+    const currentVWAP = calculateVWAP(allCandles);
+    const vwapArray = calculateVWAPArray(allCandles);
+    
+    if (!currentVWAP || !vwapArray || vwapArray.length < 2) {
+      console.log(`⚠️ ${symbol}: Insufficient VWAP data for analysis`);
+      return;
+    }
+    
+    const previousVWAP = vwapArray[vwapArray.length - 2];
+    const vwapTrend = currentVWAP > previousVWAP ? 'UP' : 'DOWN';
+    const priceVsVWAP = currentPrice > currentVWAP ? 'ABOVE' : 'BELOW';
+    
+    console.log(`🔍 ${symbol}: VWAP=${currentVWAP.toFixed(2)}, Price=${currentPrice.toFixed(2)}, Trend=${vwapTrend}, Position=${priceVsVWAP}`);
+    
+    // Check order cooldown
+    const now = Date.now();
+    if (lastOrderTime[token] && (now - lastOrderTime[token]) < ORDER_COOLDOWN_MS) {
+      const remainingTime = Math.ceil((ORDER_COOLDOWN_MS - (now - lastOrderTime[token])) / 1000);
+      console.log(`⏰ ${symbol}: Order cooldown active (${remainingTime}s remaining)`);
+      return;
+    }
+    
+    // Prevent concurrent order processing
+    if (isProcessingOrder) {
+      console.log(`🔒 ${symbol}: Order processing in progress, skipping`);
+      return;
+    }
+    
+    // Get current indicators for comprehensive sell conditions
+    const indicators = await calculateLiveIndicators(token);
+    if (!indicators) {
+      console.log(`⚠️ ${symbol}: No indicators available for order analysis`);
+      return;
+    }
+    
+    // Comprehensive SELL conditions (all on 1-minute timeframe)
+    const macdBelowSignal = indicators.macd_1m < indicators.macd_signal_1m;
+    const macdBelowZero = indicators.macd_1m < 0;
+    const atrLow = indicators.atr_percent_1m < 0.2;
+    const ema9BelowEma21 = indicators.ema9_1m < indicators.ema21_1m;
+    const ema21BelowVwap = indicators.ema21_1m < currentVWAP;
+    const negativeDirectionalMovement = (indicators.minus_di_1m > indicators.adx_1m && indicators.adx_1m > 25) || 
+                                       (indicators.minus_di_1m > indicators.adx_1m);
+    const emaSandwich = indicators.ema9_1m < indicators.vwma20_1m && indicators.vwma20_1m < indicators.ema21_1m;
+    
+    const comprehensiveSellCondition = (false &&
+      macdBelowSignal &&
+      macdBelowZero &&
+      atrLow &&
+      ema9BelowEma21 &&
+      ema21BelowVwap &&
+      negativeDirectionalMovement &&
+      emaSandwich
+    );
+    
+    // Simple VWAP-based buy condition (keeping existing logic)
+    const vwapBuyCondition = (
+      priceVsVWAP === 'ABOVE' && false &&
+      vwapTrend === 'UP' && 
+      (currentPrice - currentVWAP) / currentVWAP > 0.001 // Price at least 0.1% above VWAP
+    );
+    
+    console.log(`🔍 ${symbol} Sell Condition Analysis:`);
+    console.log(`   MACD < Signal: ${indicators.macd_1m?.toFixed(4)} < ${indicators.macd_signal_1m?.toFixed(4)} = ${macdBelowSignal}`);
+    console.log(`   MACD < 0: ${indicators.macd_1m?.toFixed(4)} < 0 = ${macdBelowZero}`);
+    console.log(`   ATR% < 0.2: ${indicators.atr_percent_1m?.toFixed(2)}% < 0.2% = ${atrLow}`);
+    console.log(`   EMA9 < EMA21: ${indicators.ema9_1m?.toFixed(2)} < ${indicators.ema21_1m?.toFixed(2)} = ${ema9BelowEma21}`);
+    console.log(`   EMA21 < VWAP: ${indicators.ema21_1m?.toFixed(2)} < ${currentVWAP.toFixed(2)} = ${ema21BelowVwap}`);
+    console.log(`   -DI Condition: -DI=${indicators.minus_di_1m?.toFixed(2)}, ADX=${indicators.adx_1m?.toFixed(2)} = ${negativeDirectionalMovement}`);
+    console.log(`   EMA Sandwich: ${indicators.ema9_1m?.toFixed(2)} < ${indicators.vwma20_1m?.toFixed(2)} < ${indicators.ema21_1m?.toFixed(2)} = ${emaSandwich}`);
+    
+    if (vwapBuyCondition) {
+      console.log(`🟢 ${symbol}: VWAP BUY signal detected - Price above rising VWAP`);
+      
+      isProcessingOrder = true;
+      try {
+        const buyResult = await placeBuyOrder({
+          symbol: symbol,
+          token: token,
+          price: currentPrice,
+          quantity: 1,
+          reason: `VWAP_BUY: Price ${currentPrice.toFixed(2)} above rising VWAP ${currentVWAP.toFixed(2)}`
+        });
+        
+        if (buyResult.success) {
+          lastOrderTime[token] = now;
+          console.log(`✅ ${symbol}: VWAP buy order placed successfully`);
+        } else {
+          console.log(`❌ ${symbol}: VWAP buy order failed: ${buyResult.error}`);
+        }
+      } catch (error) {
+        console.error(`❌ ${symbol}: Error placing VWAP buy order: ${error.message}`);
+      } finally {
+        isProcessingOrder = false;
+      }
+    } else if (comprehensiveSellCondition) {
+      console.log(`🔴 ${symbol}: COMPREHENSIVE SELL signal detected - All technical conditions met`);
+      
+      isProcessingOrder = true;
+      try {
+        const sellResult = await placeSellOrder({
+          symbol: symbol,
+          token: token,
+          price: currentPrice,
+          quantity: 1,
+          reason: `COMPREHENSIVE_SELL: MACD<Signal(${indicators.macd_1m?.toFixed(4)}<${indicators.macd_signal_1m?.toFixed(4)}), MACD<0(${macdBelowZero}), ATR%<0.2(${indicators.atr_percent_1m?.toFixed(2)}%), EMA9<EMA21(${ema9BelowEma21}), EMA21<VWAP(${ema21BelowVwap}), -DI>ADX(${negativeDirectionalMovement}), EMASandwich(${emaSandwich})`
+        });
+        
+        if (sellResult.success) {
+          lastOrderTime[token] = now;
+          console.log(`✅ ${symbol}: Comprehensive sell order placed successfully`);
+        } else {
+          console.log(`❌ ${symbol}: Comprehensive sell order failed: ${sellResult.error}`);
+        }
+      } catch (error) {
+        console.error(`❌ ${symbol}: Error placing comprehensive sell order: ${error.message}`);
+      } finally {
+        isProcessingOrder = false;
+      }
+    } else {
+      console.log(`⚪ ${symbol}: No trading signal - conditions not met`);
+    }
+    
+  } catch (error) {
+    console.error(`❌ Error in VWAP order conditions for token ${token}: ${error.message}`);
+  }
+}
+
 // Process tick and update candle cache
-function processTickForCache(tick) {
+async function processTickForCache(tick) {
   const token = tick.instrument_token;
   const currentMinute = getCurrentMinuteTimestamp();
 
@@ -140,6 +665,9 @@ function processTickForCache(tick) {
       }
 
       console.log(`📊 New candle completed for ${cache.symbol}: ${cache.current.close} (${cache.current.tickCount} ticks) - Cache: ${cache.historical.length} candles`);
+      
+      // Check VWAP-based order conditions after new minute candle is formed
+      await checkVWAPOrderConditions(token, cache, tick.last_price);
     }
 
     // Start new candle
@@ -153,6 +681,112 @@ function processTickForCache(tick) {
   cache.lastUpdate = Date.now();
   cache.ltp = tick.last_price;
   return cache;
+}
+
+// Send historical data for tokens that haven't received recent live ticks
+async function sendHistoricalDataForStaleTokens() {
+  if (!global.broadcastToClients || subscribedTokens.length === 0) {
+    return;
+  }
+
+  const now = Date.now();
+  const staleTokens = [];
+  
+  // Find tokens that haven't received live ticks recently
+  subscribedTokens.forEach(token => {
+    const lastTick = lastTickTime[token];
+    if (!lastTick || (now - lastTick) > HISTORICAL_DATA_INTERVAL) {
+      staleTokens.push(token);
+    }
+  });
+
+  if (staleTokens.length === 0) {
+    // Only log occasionally to avoid spam
+    if (Math.random() < 0.1) { // 10% chance
+      console.log(`📈 All ${subscribedTokens.length} tokens receiving live data - no historical fallback needed`);
+    }
+    return;
+  }
+
+  console.log(`📈 Sending historical data for ${staleTokens.length}/${subscribedTokens.length} stale tokens (no live ticks for >${HISTORICAL_DATA_INTERVAL/1000}s)`);
+
+  let successCount = 0;
+  let errorCount = 0;
+
+  // Process stale tokens and send historical data
+  for (const token of staleTokens) {
+    try {
+      const symbol = getTradingSymbol(token);
+      
+      // Initialize cache if not exists
+      if (!candleCache.has(token)) {
+        const initialized = await initializeCacheForToken(token, symbol);
+        if (!initialized) {
+          console.log(`⚠️ Skipping ${symbol} - cache initialization failed`);
+          continue;
+        }
+      }
+
+      // Calculate indicators using existing historical data
+      const historicalIndicators = await calculateLiveIndicators(token);
+      if (historicalIndicators) {
+        // Get latest historical candle for LTP if no live price available
+        const cache = candleCache.get(token);
+        const latestCandle = cache.historical[cache.historical.length - 1];
+        const historicalLTP = latestCandle ? latestCandle.close : null;
+
+        // Calculate conditions same as live data
+        const buyCondition = (() => {
+          if (!historicalIndicators.rsi1h || !historicalIndicators.rsi15m || !historicalIndicators.rsi1m || 
+              !historicalIndicators.ema9_1m || !historicalIndicators.ema21_1m) return false;
+          
+          const rsi1hBuy = historicalIndicators.rsi1h > 60;
+          const rsi15mBuy = historicalIndicators.rsi15m > 60;
+          const emaCrossoverBuy = historicalIndicators.ema9_1m > historicalIndicators.ema21_1m;
+          const rsi1mBuy = historicalIndicators.rsi1m > 65;
+          
+          return rsi1hBuy && rsi15mBuy && emaCrossoverBuy && rsi1mBuy;
+        })();
+        
+        const sellCondition = (() => {
+          if (!historicalIndicators.rsi1h || !historicalIndicators.rsi15m || !historicalIndicators.rsi1m || 
+              !historicalIndicators.ema9_1m || !historicalIndicators.ema21_1m) return false;
+          
+          const rsi1hSell = historicalIndicators.rsi1h < 40;
+          const rsi15mSell = historicalIndicators.rsi15m < 35;
+          const emaCrossoverSell = historicalIndicators.ema9_1m < historicalIndicators.ema21_1m;
+          const rsi1mSell = historicalIndicators.rsi1m < 40;
+          
+          return rsi1hSell && rsi15mSell && emaCrossoverSell && rsi1mSell;
+        })();
+
+        const historicalData = {
+          token,
+          symbol,
+          ...historicalIndicators,
+          ltp: historicalLTP, // Use historical price
+          buyCondition: buyCondition,
+          sellCondition: sellCondition,
+          timestamp: new Date().toISOString(),
+          isHistorical: true // Flag to indicate this is historical data
+        };
+
+        // Send historical data to UI
+        global.broadcastToClients({
+          type: "simplified_strategy_update",
+          data: historicalData
+        });
+
+        console.log(`📊 Sent historical data for ${symbol}: RSI=${historicalIndicators.rsi1m?.toFixed(2)}, MACD=${historicalIndicators.macd_1m?.toFixed(4)}, ADX=${historicalIndicators.adx_1m?.toFixed(2)}, ATR=${historicalIndicators.atr_1m?.toFixed(2)}, VWMA10=${historicalIndicators.vwma10_1m?.toFixed(2)}, LTP=${historicalLTP} [HISTORICAL - ${Math.round((now - (lastTickTime[token] || 0))/1000)}s since last tick]`);
+        successCount++;
+      }
+    } catch (error) {
+      console.error(`❌ Error sending historical data for token ${token}: ${error.message}`);
+      errorCount++;
+    }
+  }
+  
+  console.log(`✅ Historical data update completed: ${successCount} successful, ${errorCount} errors`);
 }
 
 // Calculate live indicators using cache + current candle + historical RSI
@@ -192,17 +826,61 @@ async function calculateLiveIndicators(token) {
     });
     todayCandleCount = todayCandles.length;
 
-    // Calculate RSI/EMA indicators - these need sufficient historical data
-    let rsi = null, ema9 = null, ema21 = null;
-    let rsiArr = [];
+    // Calculate RSI/EMA/VWMA/MACD/ADX/ATR indicators - these need sufficient historical data
+    let rsi = null, ema9 = null, ema21 = null, vwma10 = null, vwma20 = null;
+    let macd = null, macdSignal = null, macdHistogram = null;
+    let adx = null, plusDI = null, minusDI = null, atr = null, atrPercent = null;
+    let rsiArr = [], vwma20Arr = [], macdArr = [], signalArr = [], histogramArr = [];
+    let plusDIArr = [], minusDIArr = [], atrArr = [];
     
     if (allCandles.length >= MIN_CANDLES_REQUIRED) {
       rsiArr = calculateRSIArray(closes, 14);
       rsi = rsiArr?.length ? rsiArr[rsiArr.length - 1] : null;
       ema9 = calculateEMA(closes, 9);
       ema21 = calculateEMA(closes, 21);
+      
+      // Calculate multiple VWMA periods (1-minute timeframe)
+      vwma10 = calculateVWMA(allCandles, 10); // Short-term VWMA
+      vwma20 = calculateVWMA(allCandles, 20); // Medium-term VWMA
+      
+      // Calculate VWMA20 array for trend analysis
+      vwma20Arr = calculateVWMAArray(allCandles, 20);
+      
+      // Calculate MACD (12, 26, 9)
+      const macdResult = calculateMACD(closes, 12, 26, 9);
+      macd = macdResult.macd;
+      macdSignal = macdResult.signal;
+      macdHistogram = macdResult.histogram;
+      
+      // Get MACD arrays from the same result
+      macdArr = macdResult.macdArray || [];
+      signalArr = macdResult.signalArray || [];
+      histogramArr = macdResult.histogramArray || [];
+      
+      // Calculate ADX with +DI and -DI
+      const adxResult = calculateADX(allCandles, 14);
+      adx = adxResult.adx;
+      plusDI = adxResult.plusDI;
+      minusDI = adxResult.minusDI;
+      plusDIArr = adxResult.plusDIArray || [];
+      minusDIArr = adxResult.minusDIArray || [];
+      
+      // Calculate ATR (both value and percentage)
+      const atrResult = calculateATR(allCandles, 14);
+      atr = atrResult.atr;
+      atrPercent = atrResult.atrPercent;
+      
+      // Calculate ATR array
+      atrArr = calculateATRArray(allCandles, 14);
     } else {
-      console.log(`⚠️ ${cache.symbol}: Not enough candles for RSI/EMA (${allCandles.length}/${MIN_CANDLES_REQUIRED})`);
+      console.log(`⚠️ ${cache.symbol}: Not enough candles for indicators (${allCandles.length}/${MIN_CANDLES_REQUIRED})`);
+    }
+
+    // Calculate VWAP (Volume Weighted Average Price) - purely historical, no tick updates
+    let vwap = null, vwapArr = [];
+    if (allCandles.length >= 1) {
+      vwap = calculateVWAP(allCandles);
+      vwapArr = calculateVWAPArray(allCandles);
     }
 
     // Calculate RSI 1H and 15M using historical API calls
@@ -246,11 +924,38 @@ async function calculateLiveIndicators(token) {
 
     const result = {
       rsi1m: rsi,
-      rsiArray: rsiArr?.slice(-10) || [],
+      rsiArray: rsiArr?.slice(-5) || [],
       ema9_1m: ema9,
       ema21_1m: ema21,
+      vwma10_1m: vwma10, // 10-period Volume Weighted Moving Average
+      vwma20_1m: vwma20, // 20-period Volume Weighted Moving Average
+      vwma20Array: vwma20Arr?.slice(-5) || [], // Last 5 VWMA20 values for trend analysis
       
-      // RSI values from historical API calls
+      // MACD indicators
+      macd_1m: macd,
+      macd_signal_1m: macdSignal,
+      macd_histogram_1m: macdHistogram,
+      macdArray: macdArr?.slice(-5) || [],
+      signalArray: signalArr?.slice(-5) || [],
+      histogramArray: histogramArr?.slice(-5) || [],
+      
+      // ADX indicators
+      adx_1m: adx,
+      plus_di_1m: plusDI,
+      minus_di_1m: minusDI,
+      plusDIArray: plusDIArr?.slice(-5) || [],
+      minusDIArray: minusDIArr?.slice(-5) || [],
+      
+      // ATR (both value and percentage)
+      atr_1m: atr,
+      atr_percent_1m: atrPercent,
+      atrArray: atrArr?.slice(-5) || [],
+      
+      // VWAP (Volume Weighted Average Price) - historical only
+      vwap_1m: vwap,
+      vwapArray: vwapArr?.slice(-5) || [],
+      
+      // RSI values from historical API calls (keep for internal calculations)
       rsi1h: rsi1h,
       rsi15m: rsi15m,
       
@@ -259,7 +964,7 @@ async function calculateLiveIndicators(token) {
       todayCandleCount: todayCandleCount
     };
     
-    console.log(`🔍 ${cache.symbol}: Final result - RSI1H=${result.rsi1h}, RSI15M=${result.rsi15m}`);
+    console.log(`🔍 ${cache.symbol}: Final result - MACD=${result.macd_1m?.toFixed(4)}, ADX=${result.adx_1m?.toFixed(2)}, ATR=${result.atr_1m?.toFixed(2)}, ATR%=${result.atr_percent_1m?.toFixed(2)}, VWMA20=${result.vwma20_1m?.toFixed(2)}, VWAP=${result.vwap_1m?.toFixed(2)}`);
     
     return result;
   } catch (error) {
@@ -352,6 +1057,9 @@ async function handleTicks(ticks) {
     const token = tick.instrument_token;
     const symbol = getTradingSymbol(token);
     
+    // Track last tick time for this token
+    lastTickTime[token] = Date.now();
+    
     // Initialize cache if not exists
     if (!candleCache.has(token)) {
       const initialized = await initializeCacheForToken(token, symbol);
@@ -362,7 +1070,7 @@ async function handleTicks(ticks) {
     }
     
     // Process tick and update candle cache
-    const cache = processTickForCache(tick);
+    const cache = await processTickForCache(tick);
     if (!cache) {
       console.log(`⚠️ Skipping ${symbol} - cache processing failed`);
       continue;
@@ -412,8 +1120,8 @@ async function handleTicks(ticks) {
       liveDataToBroadcast.push(liveData);
       
       // Log indicator values with candle count info
-      console.log(`📈 ${symbol}: RSI=${liveIndicators.rsi1m?.toFixed(2)}, EMA9=${liveIndicators.ema9_1m?.toFixed(2)}, EMA21=${liveIndicators.ema21_1m?.toFixed(2)}, LTP=${liveIndicators.ltp} [${liveIndicators.candleCount} candles, ${liveIndicators.todayCandleCount} today]`);
-      console.log(`🕐 ${symbol} Multi-timeframe RSI: RSI1H=${liveIndicators.rsi1h?.toFixed(2)}, RSI15M=${liveIndicators.rsi15m?.toFixed(2)}`);
+      console.log(`📈 ${symbol}: RSI=${liveIndicators.rsi1m?.toFixed(2)}, EMA9=${liveIndicators.ema9_1m?.toFixed(2)}, EMA21=${liveIndicators.ema21_1m?.toFixed(2)}, VWMA10=${liveIndicators.vwma10_1m?.toFixed(2)}, VWMA20=${liveIndicators.vwma20_1m?.toFixed(2)}, LTP=${liveIndicators.ltp} [${liveIndicators.candleCount} candles, ${liveIndicators.todayCandleCount} today]`);
+      console.log(`� ${symbol} Advanced indicators: MACD=${liveIndicators.macd_1m?.toFixed(4)}, Signal=${liveIndicators.macd_signal_1m?.toFixed(4)}, Hist=${liveIndicators.macd_histogram_1m?.toFixed(4)}, ADX=${liveIndicators.adx_1m?.toFixed(2)}, +DI=${liveIndicators.plus_di_1m?.toFixed(2)}, -DI=${liveIndicators.minus_di_1m?.toFixed(2)}, ATR=${liveIndicators.atr_1m?.toFixed(2)}, ATR%=${liveIndicators.atr_percent_1m?.toFixed(2)}`);
       
       // Detailed debugging for accuracy verification (random sampling to avoid spam)
       if (Math.random() < 0.02) { // 2% sampling rate
@@ -424,8 +1132,12 @@ async function handleTicks(ticks) {
           hasMinData: liveIndicators.candleCount >= MIN_CANDLES_REQUIRED,
           rsiValid: liveIndicators.rsi1m !== null && !isNaN(liveIndicators.rsi1m),
           emaValid: liveIndicators.ema9_1m !== null && !isNaN(liveIndicators.ema9_1m),
-          rsi1hValid: liveIndicators.rsi1h !== null && !isNaN(liveIndicators.rsi1h),
-          rsi15mValid: liveIndicators.rsi15m !== null && !isNaN(liveIndicators.rsi15m)
+          vwma10Valid: liveIndicators.vwma10_1m !== null && !isNaN(liveIndicators.vwma10_1m),
+          vwma20Valid: liveIndicators.vwma20_1m !== null && !isNaN(liveIndicators.vwma20_1m),
+          macdValid: liveIndicators.macd_1m !== null && !isNaN(liveIndicators.macd_1m),
+          adxValid: liveIndicators.adx_1m !== null && !isNaN(liveIndicators.adx_1m),
+          atrValid: liveIndicators.atr_1m !== null && !isNaN(liveIndicators.atr_1m),
+          atrPercentValid: liveIndicators.atr_percent_1m !== null && !isNaN(liveIndicators.atr_percent_1m)
         });
       }
     }
@@ -494,7 +1206,7 @@ async function handleTicks(ticks) {
           
           try {
             // Use the existing sell order function
-            await placeSellOrder(token, symbol, ltp);
+          //  await placeSellOrder(token, symbol, ltp);
             lastOrderTime[token] = Date.now();
           } catch (error) {
             console.error(`❌ Error processing sell order for ${symbol}: ${error.message}`);
@@ -516,7 +1228,7 @@ async function handleTicks(ticks) {
               price: ltp,
               token: token
             };
-            await placeBuyOrder(orderData);
+         //   await placeBuyOrder(orderData);
             lastOrderTime[token] = Date.now();
           } catch (error) {
             console.error(`❌ Error processing buy order for ${symbol}: ${error.message}`);
@@ -589,6 +1301,10 @@ async function subscribeToTokens(tokens) {
         // Clear order cooldowns for removed tokens
         if (lastOrderTime[token]) {
           delete lastOrderTime[token];
+        }
+        // Clear last tick time for removed tokens
+        if (lastTickTime[token]) {
+          delete lastTickTime[token];
         }
       });
     }
@@ -673,8 +1389,13 @@ function startTickListener() {
   
   // Start periodic status checks
   setInterval(checkTickerStatus, 30000); // Check every 30 seconds
+  
+  // Start periodic historical data checks for stale tokens
+  historicalDataTimer = setInterval(sendHistoricalDataForStaleTokens, HISTORICAL_UPDATE_INTERVAL);
+  
   console.log("✅ Conditional tick listener started - waiting for CSV tokens");
   console.log("🔍 Status checks will run every 30 seconds");
+  console.log(`📈 Historical data fallback will check every ${HISTORICAL_UPDATE_INTERVAL/1000} seconds for tokens with no live ticks for >${HISTORICAL_DATA_INTERVAL/1000}s`);
   
   // Broadcast initial state to UI
   setTimeout(() => {
@@ -697,6 +1418,12 @@ function stopTickListener() {
   console.log("🛑 Stopping tick listener...");
   unsubscribeAll();
   stopCSVWatching();
+  
+  // Clear historical data timer
+  if (historicalDataTimer) {
+    clearInterval(historicalDataTimer);
+    historicalDataTimer = null;
+  }
   
   if (ticker) {
     ticker.disconnect();

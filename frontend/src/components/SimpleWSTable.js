@@ -22,14 +22,39 @@ function SimpleWSTable({ data }) {
       if (prev) {
         // Check for changes in key fields
         const fieldsToCheck = [
-          'ltp', 'rsi1m', 'ema9_1m', 'ema21_1m',
-          'buyCondition', 'sellCondition',
-          'rsi1h', 'rsi15m'
+          'ltp', 'rsi1m', 'rsiArray', 'ema9_1m', 'ema21_1m', 'vwma20_1m', 'vwma20Array',
+          'macd_1m', 'macd_signal_1m', 'macdArray', 'signalArray',
+          'adx_1m', 'plus_di_1m', 'minus_di_1m', 'plusDIArray', 'minusDIArray', 
+          'atr_1m', 'atr_percent_1m', 'atrArray', 'vwap_1m', 'vwapArray'
         ];
         let hasChanges = false;
         
         fieldsToCheck.forEach(field => {
-          if (prev[field] !== item[field]) {
+          let hasChanged = false;
+          
+          // Special handling for arrays
+          if (field === 'rsiArray' || field === 'vwma20Array' || field === 'macdArray' || 
+              field === 'signalArray' || field === 'plusDIArray' || 
+              field === 'minusDIArray' || field === 'atrArray' || field === 'vwapArray') {
+            const prevArray = prev[field];
+            const currentArray = item[field];
+            
+            // Compare arrays by checking if they have different lengths or different last value
+            if (!prevArray && currentArray) {
+              hasChanged = true;
+            } else if (prevArray && !currentArray) {
+              hasChanged = true;
+            } else if (prevArray && currentArray) {
+              hasChanged = prevArray.length !== currentArray.length || 
+                          (prevArray.length > 0 && currentArray.length > 0 && 
+                           prevArray[prevArray.length - 1] !== currentArray[currentArray.length - 1]);
+            }
+          } else {
+            // Regular comparison for non-array fields
+            hasChanged = prev[field] !== item[field];
+          }
+          
+          if (hasChanged) {
             if (!newChangedFields[token]) newChangedFields[token] = {};
             newChangedFields[token][field] = true;
             hasChanges = true;
@@ -95,18 +120,34 @@ function SimpleWSTable({ data }) {
     const firstItem = data[0];
     console.log("🔍 Debug first item values:", {
       symbol: firstItem.symbol,
+      ltp: firstItem.ltp,
       // 1-minute indicators
       ema9_1m: firstItem.ema9_1m,
       ema21_1m: firstItem.ema21_1m,
+      vwma20_1m: firstItem.vwma20_1m,
+      vwma20Array: firstItem.vwma20Array?.slice(-5), // Show last 5 values
+      vwma20ArrayLength: firstItem.vwma20Array?.length,
       rsi1m: firstItem.rsi1m,
-      rsi1h: firstItem.rsi1h,
-      rsi15m: firstItem.rsi15m,
-      rsiArrayExists: !!firstItem.rsiArray,
-      rsiArrayLength: firstItem.rsiArray?.length || 0,
-      last10RSI: firstItem.rsiArray?.slice(-10) || [],
-      // Condition flags
-      buyCondition: firstItem.buyCondition,
-      sellCondition: firstItem.sellCondition
+      rsiArray: firstItem.rsiArray?.slice(-5), // Show last 5 values
+      rsiArrayLength: firstItem.rsiArray?.length,
+      // MACD indicators
+      macd_1m: firstItem.macd_1m,
+      macd_signal_1m: firstItem.macd_signal_1m,
+      macdArray: firstItem.macdArray?.slice(-5),
+      signalArray: firstItem.signalArray?.slice(-5),
+      // ADX indicators
+      adx_1m: firstItem.adx_1m,
+      plus_di_1m: firstItem.plus_di_1m,
+      minus_di_1m: firstItem.minus_di_1m,
+      plusDIArray: firstItem.plusDIArray?.slice(-5),
+      minusDIArray: firstItem.minusDIArray?.slice(-5),
+      // ATR
+      atr_1m: firstItem.atr_1m,
+      atr_percent_1m: firstItem.atr_percent_1m,
+      atrArray: firstItem.atrArray?.slice(-5),
+      // VWAP
+      vwap_1m: firstItem.vwap_1m,
+      vwapArray: firstItem.vwapArray?.slice(-5)
     });
   }
   
@@ -172,12 +213,42 @@ function SimpleWSTable({ data }) {
           white-space: nowrap;
         }
         .modern-table td {
-          padding: 10px 7px;
+          padding: 8px 6px;
           text-align: center;
           border-bottom: 1px solid #f1f5f9;
           font-size: 12px;
-          vertical-align: middle;
+          vertical-align: top;
           white-space: nowrap;
+        }
+        .indicator-cell {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 4px;
+          min-height: 60px;
+        }
+        .current-value {
+          font-size: 13px;
+          font-weight: bold;
+          padding: 4px 6px;
+          border-radius: 4px;
+          background: rgba(59, 130, 246, 0.1);
+          border: 1px solid rgba(59, 130, 246, 0.2);
+          min-width: 60px;
+        }
+        .array-values {
+          display: flex;
+          flex-direction: column;
+          gap: 1px;
+          font-size: 9px;
+          color: #666;
+          line-height: 1.2;
+        }
+        .array-value {
+          padding: 1px 3px;
+          background: rgba(0, 0, 0, 0.05);
+          border-radius: 2px;
+          min-width: 40px;
         }
         .modern-table tbody tr:hover {
           background-color: #f1f5f9;
@@ -242,14 +313,19 @@ function SimpleWSTable({ data }) {
       <table className="modern-table">
         <thead>
           <tr>
-            <th style={{minWidth: '100px'}}>Symbol</th>
-            <th style={{minWidth: '80px'}}>RSI 1M</th>
-            <th style={{minWidth: '80px'}}>EMA9</th>
-            <th style={{minWidth: '80px'}}>EMA21</th>
-            <th style={{minWidth: '90px'}}>RSI 1H</th>
-            <th style={{minWidth: '90px'}}>RSI 15M</th>
-            <th style={{minWidth: '70px'}}>BUY</th>
-            <th style={{minWidth: '70px'}}>SELL</th>
+            <th style={{minWidth: '120px'}}>Symbol</th>
+            <th style={{minWidth: '100px'}}>LTP</th>
+            <th style={{minWidth: '140px'}}>RSI 1M</th>
+            <th style={{minWidth: '100px'}}>EMA9</th>
+            <th style={{minWidth: '100px'}}>EMA21</th>
+            <th style={{minWidth: '140px'}}>VWMA20</th>
+            <th style={{minWidth: '140px'}}>VWAP</th>
+            <th style={{minWidth: '140px'}}>MACD</th>
+            <th style={{minWidth: '140px'}}>Signal</th>
+            <th style={{minWidth: '100px'}}>ADX</th>
+            <th style={{minWidth: '140px'}}>+DI</th>
+            <th style={{minWidth: '140px'}}>-DI</th>
+            <th style={{minWidth: '140px'}}>ATR%</th>
           </tr>
         </thead>
         <tbody>
@@ -257,14 +333,41 @@ function SimpleWSTable({ data }) {
             <tr key={`${item.token}-${index}`}>
               <td style={{ fontWeight: '600', color: '#374151', fontSize: '13px' }}>{item.symbol || 'N/A'}</td>
               
-              {/* RSI 1M */}
+              {/* LTP */}
               <td style={{
-                color: item.rsi1m ? (item.rsi1m > 70 ? 'red' : item.rsi1m < 30 ? 'green' : '#666') : '#999',
+                color: '#1f2937',
                 fontWeight: 'bold', 
                 fontSize: '12px',
+                ...getHighlightStyle(item.token, 'ltp')
+              }}>
+                {item.ltp?.toFixed(2) || '-'}
+                {changedFields[item.token]?.ltp && <span className="update-indicator"></span>}
+              </td>
+              
+              {/* RSI 1M */}
+              <td style={{
                 ...getHighlightStyle(item.token, 'rsi1m')
               }}>
-                {item.rsi1m?.toFixed(1) || '-'}
+                <div className="indicator-cell">
+                  <div 
+                    className="current-value"
+                    style={{
+                      color: item.rsi1m ? (item.rsi1m > 70 ? 'red' : item.rsi1m < 30 ? 'green' : '#333') : '#999',
+                      backgroundColor: item.rsi1m > 70 ? 'rgba(239, 68, 68, 0.1)' : item.rsi1m < 30 ? 'rgba(34, 197, 94, 0.1)' : 'rgba(59, 130, 246, 0.1)'
+                    }}
+                  >
+                    {item.rsi1m?.toFixed(1) || '-'}
+                  </div>
+                  {item.rsiArray && item.rsiArray.length > 0 && (
+                    <div className="array-values">
+                      {item.rsiArray.slice(-5).map((val, idx) => (
+                        <div key={idx} className="array-value">
+                          {val?.toFixed(1)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 {changedFields[item.token]?.rsi1m && <span className="update-indicator"></span>}
               </td>
               
@@ -290,48 +393,218 @@ function SimpleWSTable({ data }) {
                 {changedFields[item.token]?.ema21_1m && <span className="update-indicator"></span>}
               </td>
               
-              {/* RSI 1H */}
+              {/* VWMA20 */}
               <td style={{
-                color: item.rsi1h ? (item.rsi1h > 70 ? 'red' : item.rsi1h < 30 ? 'green' : '#666') : '#999',
+                ...getHighlightStyle(item.token, 'vwma20_1m')
+              }}>
+                <div className="indicator-cell">
+                  <div 
+                    className="current-value"
+                    style={{
+                      color: '#9333ea',
+                      backgroundColor: 'rgba(147, 51, 234, 0.1)',
+                      borderColor: 'rgba(147, 51, 234, 0.2)'
+                    }}
+                  >
+                    {item.vwma20_1m?.toFixed(2) || '-'}
+                  </div>
+                  {item.vwma20Array && item.vwma20Array.length > 0 && (
+                    <div className="array-values">
+                      {item.vwma20Array.slice(-5).map((val, idx) => (
+                        <div key={idx} className="array-value">
+                          {val?.toFixed(2)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {changedFields[item.token]?.vwma20_1m && <span className="update-indicator"></span>}
+              </td>
+              
+              {/* VWAP */}
+              <td style={{
+                ...getHighlightStyle(item.token, 'vwap_1m')
+              }}>
+                <div className="indicator-cell">
+                  <div 
+                    className="current-value"
+                    style={{
+                      color: '#dc2626',
+                      backgroundColor: 'rgba(220, 38, 38, 0.1)',
+                      borderColor: 'rgba(220, 38, 38, 0.2)'
+                    }}
+                  >
+                    {item.vwap_1m?.toFixed(2) || '-'}
+                  </div>
+                  {item.vwapArray && item.vwapArray.length > 0 && (
+                    <div className="array-values">
+                      {item.vwapArray.slice(-5).map((val, idx) => (
+                        <div key={idx} className="array-value">
+                          {val?.toFixed(2)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {changedFields[item.token]?.vwap_1m && <span className="update-indicator"></span>}
+              </td>
+              
+              {/* MACD */}
+              <td style={{
+                ...getHighlightStyle(item.token, 'macd_1m')
+              }}>
+                <div className="indicator-cell">
+                  <div 
+                    className="current-value"
+                    style={{
+                      color: item.macd_1m ? (item.macd_1m > 0 ? '#16a34a' : '#dc2626') : '#999',
+                      backgroundColor: item.macd_1m > 0 ? 'rgba(22, 163, 74, 0.1)' : 'rgba(220, 38, 38, 0.1)',
+                      borderColor: item.macd_1m > 0 ? 'rgba(22, 163, 74, 0.2)' : 'rgba(220, 38, 38, 0.2)'
+                    }}
+                  >
+                    {item.macd_1m?.toFixed(4) || '-'}
+                  </div>
+                  {item.macdArray && item.macdArray.length > 0 && (
+                    <div className="array-values">
+                      {item.macdArray.slice(-5).map((val, idx) => (
+                        <div key={idx} className="array-value">
+                          {val?.toFixed(4)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {changedFields[item.token]?.macd_1m && <span className="update-indicator"></span>}
+              </td>
+              
+              {/* MACD Signal */}
+              <td style={{
+                ...getHighlightStyle(item.token, 'macd_signal_1m')
+              }}>
+                <div className="indicator-cell">
+                  <div 
+                    className="current-value"
+                    style={{
+                      color: '#6366f1',
+                      backgroundColor: 'rgba(99, 102, 241, 0.1)',
+                      borderColor: 'rgba(99, 102, 241, 0.2)'
+                    }}
+                  >
+                    {item.macd_signal_1m?.toFixed(4) || '-'}
+                  </div>
+                  {item.signalArray && item.signalArray.length > 0 && (
+                    <div className="array-values">
+                      {item.signalArray.slice(-5).map((val, idx) => (
+                        <div key={idx} className="array-value">
+                          {val?.toFixed(4)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {changedFields[item.token]?.macd_signal_1m && <span className="update-indicator"></span>}
+              </td>
+              
+              {/* ADX */}
+              <td style={{
+                color: item.adx_1m ? (item.adx_1m > 25 ? '#0ea5e9' : '#94a3b8') : '#999',
                 fontWeight: 'bold', 
                 fontSize: '12px',
-                ...getHighlightStyle(item.token, 'rsi1h')
+                ...getHighlightStyle(item.token, 'adx_1m')
               }}>
-                {item.rsi1h?.toFixed(1) || '-'}
-                {changedFields[item.token]?.rsi1h && <span className="update-indicator"></span>}
+                {item.adx_1m?.toFixed(2) || '-'}
+                {changedFields[item.token]?.adx_1m && <span className="update-indicator"></span>}
               </td>
               
-              {/* RSI 15M */}
+              {/* +DI */}
               <td style={{
-                color: item.rsi15m ? (item.rsi15m > 70 ? 'red' : item.rsi15m < 30 ? 'green' : '#666') : '#999',
-                fontWeight: 'bold', 
-                fontSize: '12px',
-                ...getHighlightStyle(item.token, 'rsi15m')
+                ...getHighlightStyle(item.token, 'plus_di_1m')
               }}>
-                {item.rsi15m?.toFixed(1) || '-'}
-                {changedFields[item.token]?.rsi15m && <span className="update-indicator"></span>}
+                <div className="indicator-cell">
+                  <div 
+                    className="current-value"
+                    style={{
+                      color: '#16a34a',
+                      backgroundColor: 'rgba(22, 163, 74, 0.1)',
+                      borderColor: 'rgba(22, 163, 74, 0.2)'
+                    }}
+                  >
+                    {item.plus_di_1m?.toFixed(2) || '-'}
+                  </div>
+                  {item.plusDIArray && item.plusDIArray.length > 0 && (
+                    <div className="array-values">
+                      {item.plusDIArray.slice(-5).map((val, idx) => (
+                        <div key={idx} className="array-value">
+                          {val?.toFixed(2)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {changedFields[item.token]?.plus_di_1m && <span className="update-indicator"></span>}
               </td>
               
-              {/* BUY Condition */}
+              {/* -DI */}
               <td style={{
-                color: item.buyCondition ? 'green' : 'gray', 
-                fontWeight: 'bold', 
-                fontSize: '14px',
-                ...getHighlightStyle(item.token, 'buyCondition')
+                ...getHighlightStyle(item.token, 'minus_di_1m')
               }}>
-                {item.buyCondition ? 'BUY' : 'WAIT'}
-                {changedFields[item.token]?.buyCondition && <span className="update-indicator"></span>}
+                <div className="indicator-cell">
+                  <div 
+                    className="current-value"
+                    style={{
+                      color: '#dc2626',
+                      backgroundColor: 'rgba(220, 38, 38, 0.1)',
+                      borderColor: 'rgba(220, 38, 38, 0.2)'
+                    }}
+                  >
+                    {item.minus_di_1m?.toFixed(2) || '-'}
+                  </div>
+                  {item.minusDIArray && item.minusDIArray.length > 0 && (
+                    <div className="array-values">
+                      {item.minusDIArray.slice(-5).map((val, idx) => (
+                        <div key={idx} className="array-value">
+                          {val?.toFixed(2)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {changedFields[item.token]?.minus_di_1m && <span className="update-indicator"></span>}
               </td>
               
-              {/* SELL Condition */}
+              {/* ATR% */}
               <td style={{
-                color: item.sellCondition ? 'red' : 'gray', 
-                fontWeight: 'bold', 
-                fontSize: '14px',
-                ...getHighlightStyle(item.token, 'sellCondition')
+                ...getHighlightStyle(item.token, 'atr_percent_1m')
               }}>
-                {item.sellCondition ? 'SELL' : 'HOLD'}
-                {changedFields[item.token]?.sellCondition && <span className="update-indicator"></span>}
+                <div className="indicator-cell">
+                  <div 
+                    className="current-value"
+                    style={{
+                      color: '#7c2d12',
+                      backgroundColor: 'rgba(124, 45, 18, 0.1)',
+                      borderColor: 'rgba(124, 45, 18, 0.2)'
+                    }}
+                  >
+                    {item.atr_percent_1m?.toFixed(2) || '-'}%
+                  </div>
+                  <div style={{ 
+                    fontSize: '9px', 
+                    color: '#666', 
+                    marginBottom: '2px'
+                  }}>
+                    ATR: {item.atr_1m?.toFixed(2) || '-'}
+                  </div>
+                  {item.atrArray && item.atrArray.length > 0 && (
+                    <div className="array-values">
+                      {item.atrArray.slice(-5).map((val, idx) => (
+                        <div key={idx} className="array-value">
+                          {val?.toFixed(2)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {changedFields[item.token]?.atr_percent_1m && <span className="update-indicator"></span>}
               </td>
             </tr>
           ))}
