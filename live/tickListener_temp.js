@@ -16,8 +16,6 @@ const api_key = 'r1a7qo9w30bxsfax';
 let access_token;
 try {
   access_token = fs.readFileSync(accessTokenPath, "utf8").trim();
-  console.log(`📋 Access token loaded: ${access_token.substring(0, 10)}...${access_token.substring(access_token.length - 5)}`);
-  console.log(`🔑 Access token length: ${access_token.length}`);
 } catch (error) {
   console.error(`❌ Error reading access token: ${error.message}`);
   process.exit(1);
@@ -77,11 +75,6 @@ async function getTradingConditionValues(token) {
     
     // Get fresh VWAP/VWMA/ADX/MACD data for comparison
     const freshVWAPVWMA = await calculateFreshVWAPVWMAADXMACD(token);
-    console.log(`🔍 [UI-DEBUG] ${getTradingSymbol(token)}: Fresh data for UI:`, {
-      vwap: freshVWAPVWMA?.vwap_1m,
-      adx: freshVWAPVWMA?.adx_1m,
-      macd: freshVWAPVWMA?.macd_1m
-    });
     
     return {
       // Match the expected format from TradingConditionsDisplay component
@@ -317,7 +310,6 @@ function calculateVWAPArray(allCandles) {
 // Calculate ADX (Average Directional Index) with +DI and -DI arrays - Improved version
 function calculateADX(candles, period = 14) {
   if (!candles || candles.length <= period) {
-    console.log(`⚠️ ADX: Insufficient candles: ${candles?.length || 0} <= ${period}`);
     return [];
   }
 
@@ -332,7 +324,6 @@ function calculateADX(candles, period = 14) {
 
       if (!curr || !prev || typeof curr.high !== 'number' || typeof curr.low !== 'number' || 
           typeof curr.close !== 'number' || typeof prev.close !== 'number') {
-        console.log(`⚠️ ADX: Invalid candle data at index ${i}`);
         continue;
       }
 
@@ -351,7 +342,6 @@ function calculateADX(candles, period = 14) {
     }
 
     if (TRs.length < period) {
-      console.log(`⚠️ ADX: Not enough valid TRs: ${TRs.length} < ${period}`);
       return [];
     }
 
@@ -409,10 +399,6 @@ function calculateADX(candles, period = 14) {
       adx: ADX[i] || null
     }));
 
-    const lastResult = result[result.length - 1];
-    console.log(`✅ ADX calculation completed: ${result.length} candles processed`);
-    console.log(`✅ Last result sample: ADX=${lastResult?.adx?.toFixed(2)}, +DI=${lastResult?.plusDI?.toFixed(2)}, -DI=${lastResult?.minusDI?.toFixed(2)}`);
-    
     return result;
   } catch (error) {
     console.error(`❌ Error in calculateADX: ${error.message}`);
@@ -610,7 +596,6 @@ function getTradingConditionValues(liveIndicators, freshVWAPVWMA) {
 async function calculateUnifiedIndicators(token) {
   try {
     const symbol = getTradingSymbol(token);
-    console.log(`🔄 ${symbol}: Calculating unified indicators from fresh historical data`);
     
     // Get today's historical candles fresh from API
     const today = new Date();
@@ -621,11 +606,9 @@ async function calculateUnifiedIndicators(token) {
     const historicalCandles = await getHistoricalData(token, "minute", todayStart, now);
     
     if (!historicalCandles || historicalCandles.length === 0) {
-      console.log(`⚠️ ${symbol}: No historical candles available for unified indicators`);
       return null;
     }
     
-    console.log(`📊 ${symbol}: Got ${historicalCandles.length} historical candles for unified indicators`);
     
     // Extract OHLCV data
     const closes = historicalCandles.map(c => c.close);
@@ -705,7 +688,6 @@ async function calculateUnifiedIndicators(token) {
     
     // Calculate ADX (need at least 200 candles for accuracy)
     if (historicalCandles.length >= 200) {
-      console.log(`🔍 ${symbol}: Calculating ADX with ${historicalCandles.length} historical candles`);
       const adxResults = calculateADX(historicalCandles, 14);
       
       if (adxResults && adxResults.length > 0) {
@@ -724,7 +706,6 @@ async function calculateUnifiedIndicators(token) {
     
     // Calculate MACD (need at least 50 candles)
     if (closes.length >= 50) {
-      console.log(`🔍 ${symbol}: Calculating MACD with ${closes.length} candles`);
       const macdResults = calculateMACD(closes, 12, 26, 9);
       
       if (macdResults && macdResults.length > 0) {
@@ -751,7 +732,6 @@ async function calculateUnifiedIndicators(token) {
       }
     }
     
-    console.log(`✅ ${symbol}: Unified indicators calculated - RSI=${indicators.rsi1m?.toFixed(2)}, MACD=${indicators.macd_1m?.toFixed(4)}, ADX=${indicators.adx_1m?.toFixed(2)}`);
     
     return indicators;
     
@@ -765,7 +745,6 @@ async function calculateUnifiedIndicators(token) {
 // Calculate fresh VWAP, VWMA, ADX, and MACD from historical data each minute
 async function calculateFreshVWAPVWMAADXMACD(token) {
   try {
-    console.log(`� ${getTradingSymbol(token)}: Calculating fresh VWAP/VWMA from historical data`);
     
     // Get today's historical candles fresh from API
     const today = new Date();
@@ -776,11 +755,9 @@ async function calculateFreshVWAPVWMAADXMACD(token) {
     const historicalCandles = await getHistoricalData(token, "minute", todayStart, now);
     
     if (!historicalCandles || historicalCandles.length === 0) {
-      console.log(`⚠️ ${getTradingSymbol(token)}: No historical candles available for VWAP/VWMA calculation`);
       return null;
     }
     
-    console.log(`📊 ${getTradingSymbol(token)}: Got ${historicalCandles.length} historical candles for VWAP/VWMA`);
     
     // Calculate fresh VWAP from today's candles
     const vwap_1m = calculateVWAP(historicalCandles);
@@ -796,7 +773,6 @@ async function calculateFreshVWAPVWMAADXMACD(token) {
     let plusDIArray = [], minusDIArray = [];
     
     if (historicalCandles.length >= 200) {
-      console.log(`🔍 ${getTradingSymbol(token)}: Calculating fresh ADX with ${historicalCandles.length} historical candles`);
       const adxResults = calculateADX(historicalCandles, 14);
       
       if (adxResults && adxResults.length > 0) {
@@ -813,13 +789,10 @@ async function calculateFreshVWAPVWMAADXMACD(token) {
           plusDIArray = validResults.slice(-5).map(r => r.plusDI);
           minusDIArray = validResults.slice(-5).map(r => r.minusDI);
           
-          console.log(`✅ ${getTradingSymbol(token)}: Fresh ADX=${adx_1m?.toFixed(2)}, +DI=${plus_di_1m?.toFixed(2)}, -DI=${minus_di_1m?.toFixed(2)}`);
         } else {
-          console.log(`⚠️ ${getTradingSymbol(token)}: No valid ADX results from historical calculation`);
         }
       }
     } else {
-      console.log(`⚠️ ${getTradingSymbol(token)}: Need at least 200 candles for ADX calculation (${historicalCandles.length} available)`);
     }
     
     // Calculate fresh MACD from historical candles (need at least 50 for accuracy)
@@ -827,7 +800,6 @@ async function calculateFreshVWAPVWMAADXMACD(token) {
     let macdArray = [], signalArray = [], histogramArray = [];
     
     if (historicalCandles.length >= 50) {
-      console.log(`🔍 ${getTradingSymbol(token)}: Calculating fresh MACD with ${historicalCandles.length} historical candles`);
       const closes = historicalCandles.map(candle => candle.close);
       const macdResults = calculateMACD(closes, 12, 26, 9);
       
@@ -846,13 +818,10 @@ async function calculateFreshVWAPVWMAADXMACD(token) {
           signalArray = validResults.slice(-5).map(r => r.signal);
           histogramArray = validResults.slice(-5).map(r => r.histogram);
           
-          console.log(`✅ ${getTradingSymbol(token)}: Fresh MACD=${macd_1m?.toFixed(4)}, Signal=${macd_signal_1m?.toFixed(4)}, Histogram=${macd_histogram_1m?.toFixed(4)}`);
         } else {
-          console.log(`⚠️ ${getTradingSymbol(token)}: No valid MACD results from historical calculation`);
         }
       }
     } else {
-      console.log(`⚠️ ${getTradingSymbol(token)}: Need at least 50 candles for MACD calculation (${historicalCandles.length} available)`);
     }
     
     const result = {
@@ -876,7 +845,6 @@ async function calculateFreshVWAPVWMAADXMACD(token) {
       candleCount: historicalCandles.length
     };
     
-    console.log(`✅ ${getTradingSymbol(token)}: Fresh VWAP=${vwap_1m?.toFixed(2)}, VWMA20=${vwma20_1m?.toFixed(2)} from ${historicalCandles.length} candles`);
     
     return result;
   } catch (error) {
@@ -888,7 +856,6 @@ async function calculateFreshVWAPVWMAADXMACD(token) {
 // Run fresh VWAP/VWMA calculations and order checks every minute
 async function runMinutelyVWAPADXMACDChecks() {
   try {
-    console.log(`📊 Starting minutely VWAP/VWMA/ADX/MACD order checks for ${candleCache.size} tokens`);
     
     for (const [token, cache] of candleCache) {
       try {
@@ -896,7 +863,6 @@ async function runMinutelyVWAPADXMACDChecks() {
         const currentPrice = cache.ltp || (cache.historical.length > 0 ? cache.historical[cache.historical.length - 1].close : null);
         
         if (!currentPrice) {
-          console.log(`⚠️ No current price for token ${token}, skipping VWAP check`);
           continue;
         }
         
@@ -911,7 +877,6 @@ async function runMinutelyVWAPADXMACDChecks() {
       }
     }
     
-    console.log(`✅ Minutely VWAP/VWMA/ADX/MACD order checks completed for ${candleCache.size} tokens`);
   } catch (error) {
     console.error(`❌ Error in runMinutelyVWAPADXMACDChecks: ${error.message}`);
   }
@@ -925,12 +890,10 @@ async function checkVWAPOrderConditions(token, cache, currentPrice) {
 
   try {
     const symbol = cache.symbol;
-    console.log(`🔍 VWAP Order Check for ${symbol}:`);
     
     // Calculate fresh VWAP, VWMA, ADX, and MACD data from historical API
     const freshData = await calculateFreshVWAPVWMAADXMACD(token);
     if (!freshData || !freshData.vwap_1m) {
-      console.log(`⚠️ ${symbol}: No fresh VWAP data available`);
       return;
     }
     
@@ -939,7 +902,6 @@ async function checkVWAPOrderConditions(token, cache, currentPrice) {
     const currentVWMA20 = freshData.vwma20_1m;
     
     if (!currentVWAP || !vwapArray || vwapArray.length < 2) {
-      console.log(`⚠️ ${symbol}: Insufficient VWAP data for analysis`);
       return;
     }
     
@@ -947,26 +909,22 @@ async function checkVWAPOrderConditions(token, cache, currentPrice) {
     const vwapTrend = currentVWAP > previousVWAP ? 'UP' : 'DOWN';
     const priceVsVWAP = currentPrice > currentVWAP ? 'ABOVE' : 'BELOW';
     
-    console.log(`🔍 ${symbol}: VWAP=${currentVWAP.toFixed(2)}, Price=${currentPrice.toFixed(2)}, Trend=${vwapTrend}, Position=${priceVsVWAP}`);
     
     // Check order cooldown
     const now = Date.now();
     if (lastOrderTime[token] && (now - lastOrderTime[token]) < ORDER_COOLDOWN_MS) {
       const remainingTime = Math.ceil((ORDER_COOLDOWN_MS - (now - lastOrderTime[token])) / 1000);
-      console.log(`⏰ ${symbol}: Order cooldown active (${remainingTime}s remaining)`);
       return;
     }
     
     // Prevent concurrent order processing
     if (isProcessingOrder) {
-      console.log(`🔒 ${symbol}: Order processing in progress, skipping`);
       return;
     }
     
     // Get current indicators for comprehensive sell conditions
     const indicators = await calculateLiveIndicators(token);
     if (!indicators) {
-      console.log(`⚠️ ${symbol}: No indicators available for order analysis`);
       return;
     }
     
@@ -1335,27 +1293,26 @@ async function calculateLiveIndicators(token) {
         
         if (adxResults && adxResults.length > 0) {
           const latest = adxResults[adxResults.length - 1];
-         // console.log(`🔍 ${cache.symbol}: Raw latest ADX object:`, JSON.stringify(latest, null, 2));
+          console.log(`🔍 ${cache.symbol}: Raw latest ADX object:`, JSON.stringify(latest, null, 2));
           
           adx = latest.adx;
           plusDI = latest.plusDI;
           minusDI = latest.minusDI;
           
-      //    console.log(`🔍 ${cache.symbol}: Extracted values - ADX: ${adx}, +DI: ${plusDI}, -DI: ${minusDI}`);
-       //   console.log(`🔍 ${cache.symbol}: Latest ADX values - ADX: ${adx?.toFixed(2)}, +DI: ${plusDI?.toFixed(2)}, -DI: ${minusDI?.toFixed(2)}`);
+          console.log(`🔍 ${cache.symbol}: Extracted values - ADX: ${adx}, +DI: ${plusDI}, -DI: ${minusDI}`);
+          console.log(`🔍 ${cache.symbol}: Latest ADX values - ADX: ${adx?.toFixed(2)}, +DI: ${plusDI?.toFixed(2)}, -DI: ${minusDI?.toFixed(2)}`);
           
           // Extract arrays for historical display (last 5 values)
           const validResults = adxResults.filter(r => r.adx !== null && r.plusDI !== null && r.minusDI !== null);
-        //  console.log(`🔍 ${cache.symbol}: Valid results count: ${validResults.length}`);
+          console.log(`🔍 ${cache.symbol}: Valid results count: ${validResults.length}`);
           plusDIArr = validResults.slice(-5).map(r => r.plusDI);
           minusDIArr = validResults.slice(-5).map(r => r.minusDI);
           
-        //  console.log(`🔍 ${cache.symbol}: ADX arrays - +DI: [${plusDIArr.map(v => v?.toFixed(2)).join(', ')}], -DI: [${minusDIArr.map(v => v?.toFixed(2)).join(', ')}]`);
+          console.log(`🔍 ${cache.symbol}: ADX arrays - +DI: [${plusDIArr.map(v => v?.toFixed(2)).join(', ')}], -DI: [${minusDIArr.map(v => v?.toFixed(2)).join(', ')}]`);
         } else {
-         // console.log(`⚠️ ${cache.symbol}: ADX calculation returned no valid results`);
+          console.log(`⚠️ ${cache.symbol}: ADX calculation returned no valid results`);
         }
       } else {
-        console.log(`⚠️ ${cache.symbol}: Need at least 200 candles for ADX calculation (${allCandles.length} available)`);
       }
       
       // Calculate ATR and ATR percentage using all candles
@@ -1373,19 +1330,19 @@ async function calculateLiveIndicators(token) {
     let rsi1h = null, rsi15m = null;
     
     try {
-    //  console.log(`🔍 ${cache.symbol}: Starting RSI 1H/15M calculations...`);
+      console.log(`🔍 ${cache.symbol}: Starting RSI 1H/15M calculations...`);
       
       // Fetch 1-hour candles for RSI 1H calculation
-    //  console.log(`🔍 ${cache.symbol}: Fetching 1H candles from ${from35} to ${to15}`);
+      console.log(`🔍 ${cache.symbol}: Fetching 1H candles from ${from35} to ${to15}`);
       const hourlyCandles = await getHistoricalData(token, "60minute", from35, to15);
-    //  console.log(`🔍 ${cache.symbol}: Got ${hourlyCandles?.length || 0} hourly candles`);
+      console.log(`🔍 ${cache.symbol}: Got ${hourlyCandles?.length || 0} hourly candles`);
       
       if (hourlyCandles && hourlyCandles.length >= 15) { // Need at least 15 hourly candles for RSI(14)
         const hourlyCloses = hourlyCandles.map(c => c.close);
-     //   console.log(`🔍 ${cache.symbol}: Hourly closes sample: ${hourlyCloses.slice(-3).join(', ')}`);
+        console.log(`🔍 ${cache.symbol}: Hourly closes sample: ${hourlyCloses.slice(-3).join(', ')}`);
         const rsiArray1h = calculateRSIArray(hourlyCloses, 14);
         rsi1h = rsiArray1h && rsiArray1h.length > 0 ? rsiArray1h[rsiArray1h.length - 1] : null;
-      //  console.log(`🔍 ${cache.symbol}: Calculated RSI 1H = ${rsi1h}`);
+        console.log(`🔍 ${cache.symbol}: Calculated RSI 1H = ${rsi1h}`);
       } else {
         console.log(`⚠️ ${cache.symbol}: Not enough hourly candles: ${hourlyCandles?.length || 0}/15`);
       }
@@ -1707,43 +1664,97 @@ async function handleTicks(ticks) {
         // Get fresh VWAP/VWMA/ADX/MACD data (same as broadcasted to UI)
         const freshVWAPVWMA = await calculateFreshVWAPVWMAADXMACD(token);
         
-        // *** CREATE THE EXACT SAME liveData OBJECT STRUCTURE AS BROADCASTED TO UI ***
-        const actualBroadcastData = {
-          token,
-          symbol,
-          ...liveIndicators,
-          
-          // Add fresh VWAP/VWMA/ADX data calculated from historical API (SAME PRIORITY AS UI)
-          vwap_1m: freshVWAPVWMA?.vwap_1m || null,
-          vwma10_1m: freshVWAPVWMA?.vwma10_1m || null,
-          vwma20_1m: freshVWAPVWMA?.vwma20_1m || null,
-          
-          // Add fresh ADX data from historical calculations (SAME PRIORITY AS UI)
-          adx_1m: freshVWAPVWMA?.adx_1m || liveIndicators.adx_1m || null,
-          plus_di_1m: freshVWAPVWMA?.plus_di_1m || liveIndicators.plus_di_1m || null,
-          minus_di_1m: freshVWAPVWMA?.minus_di_1m || liveIndicators.minus_di_1m || null,
-          
-          // Add fresh MACD data from historical calculations (SAME PRIORITY AS UI)
-          macd_1m: freshVWAPVWMA?.macd_1m || liveIndicators.macd_1m || null,
-          macd_signal_1m: freshVWAPVWMA?.macd_signal_1m || liveIndicators.macd_signal_1m || null,
-          macd_histogram_1m: freshVWAPVWMA?.macd_histogram_1m || liveIndicators.macd_histogram_1m || null
-        };
+        // *** ASSIGN BROADCASTED VALUES TO VARIABLES FIRST ***
+        // These are the EXACT same values that are sent to the UI
+        const broadcastedRSI1H = liveIndicators.rsi1h;
+        const broadcastedRSI15M = liveIndicators.rsi15m;
+        const broadcastedRSI1M = liveIndicators.rsi1m;
+        const broadcastedEMA9 = liveIndicators.ema9_1m;
+        const broadcastedEMA21 = liveIndicators.ema21_1m;
+        const broadcastedLTP = liveIndicators.ltp;
         
-        console.log(`🎯 [TRADING-CONDITIONS] ${symbol} - EXACT BROADCAST VALUES:`);
-        console.log(`   LTP: ${actualBroadcastData.ltp?.toFixed(2) || 'N/A'}`);
-        console.log(`   RSI 1M: ${actualBroadcastData.rsi1m?.toFixed(1) || 'N/A'}`);
-        console.log(`   EMA9: ${actualBroadcastData.ema9_1m?.toFixed(2) || 'N/A'}`);
-        console.log(`   EMA21: ${actualBroadcastData.ema21_1m?.toFixed(2) || 'N/A'}`);
-        console.log(`   VWMA20: ${actualBroadcastData.vwma20_1m?.toFixed(2) || 'N/A'}`);
-        console.log(`   VWAP: ${actualBroadcastData.vwap_1m?.toFixed(2) || 'N/A'}`);
-        console.log(`   MACD: ${actualBroadcastData.macd_1m?.toFixed(4) || 'N/A'}`);
-        console.log(`   Signal: ${actualBroadcastData.macd_signal_1m?.toFixed(4) || 'N/A'}`);
-        console.log(`   ADX: ${actualBroadcastData.adx_1m?.toFixed(2) || 'N/A'}`);
-        console.log(`   +DI: ${actualBroadcastData.plus_di_1m?.toFixed(2) || 'N/A'}`);
-        console.log(`   -DI: ${actualBroadcastData.minus_di_1m?.toFixed(2) || 'N/A'}`);
-        console.log(`   ATR%: ${actualBroadcastData.atr_percent_1m?.toFixed(2) || 'N/A'}`);
+        // Fresh historical values (same priority as UI)
+        const broadcastedVWAP = freshVWAPVWMA?.vwap_1m || null;
+        const broadcastedADX = freshVWAPVWMA?.adx_1m || liveIndicators.adx_1m || null;
+        const broadcastedMACD = freshVWAPVWMA?.macd_1m || liveIndicators.macd_1m || null;
         
-        // Removed condition evaluation - you can add trading conditions later as needed
+        console.log(`🎯 [TRADING-CONDITIONS] ${symbol} - Using BROADCASTED values for evaluation:`);
+        console.log(`   RSI 1H: ${broadcastedRSI1H?.toFixed(2)}`);
+        console.log(`   RSI 15M: ${broadcastedRSI15M?.toFixed(2)}`);
+        console.log(`   RSI 1M: ${broadcastedRSI1M?.toFixed(2)}`);
+        console.log(`   EMA9: ${broadcastedEMA9?.toFixed(2)}`);
+        console.log(`   EMA21: ${broadcastedEMA21?.toFixed(2)}`);
+        console.log(`   VWAP: ${broadcastedVWAP?.toFixed(2)} (Fresh Historical)`);
+        console.log(`   ADX: ${broadcastedADX?.toFixed(2)} (Fresh Historical)`);
+        console.log(`   MACD: ${broadcastedMACD?.toFixed(4)} (Fresh Historical)`);
+        console.log(`   LTP: ${broadcastedLTP?.toFixed(2)}`);
+        
+        // *** EVALUATE CONDITIONS USING BROADCASTED VALUES ***
+        // Buy conditions: 1H RSI > 60, 15M RSI > 60, EMA9 > EMA21 on 1M, RSI 1M > 65
+        const rsi1hBuy = broadcastedRSI1H > 60;
+        const rsi15mBuy = broadcastedRSI15M > 60;
+        const emaCrossoverBuy = broadcastedEMA9 > broadcastedEMA21;
+        const rsi1mBuy = broadcastedRSI1M > 65;
+        const buyCondition = rsi1hBuy && rsi15mBuy && emaCrossoverBuy && rsi1mBuy;
+        
+        // Sell conditions: 1H RSI < 40, 15M RSI < 35, EMA9 < EMA21 on 1M, RSI 1M < 40
+        const rsi1hSell = broadcastedRSI1H < 40;
+        const rsi15mSell = broadcastedRSI15M < 35;
+        const emaCrossoverSell = broadcastedEMA9 < broadcastedEMA21;
+        const rsi1mSell = broadcastedRSI1M < 40;
+        const sellCondition = rsi1hSell && rsi15mSell && emaCrossoverSell && rsi1mSell;
+        
+        console.log(`🎯 [CONDITION-EVALUATION] ${symbol}:`);
+        console.log(`   BUY: RSI1H>${broadcastedRSI1H?.toFixed(2)}>60=${rsi1hBuy}, RSI15M>${broadcastedRSI15M?.toFixed(2)}>60=${rsi15mBuy}, EMA9>${broadcastedEMA9?.toFixed(2)}>EMA21>${broadcastedEMA21?.toFixed(2)}=${emaCrossoverBuy}, RSI1M>${broadcastedRSI1M?.toFixed(2)}>65=${rsi1mBuy} = OVERALL: ${buyCondition}`);
+        console.log(`   SELL: RSI1H<${broadcastedRSI1H?.toFixed(2)}<40=${rsi1hSell}, RSI15M<${broadcastedRSI15M?.toFixed(2)}<35=${rsi15mSell}, EMA9<${broadcastedEMA9?.toFixed(2)}<EMA21<${broadcastedEMA21?.toFixed(2)}=${emaCrossoverSell}, RSI1M<${broadcastedRSI1M?.toFixed(2)}<40=${rsi1mSell} = OVERALL: ${sellCondition}`);
+        
+        if (sellCondition) {
+          isProcessingOrder = true;
+          console.log(`✅ SELL CONDITION MET for ${symbol} using BROADCASTED values:`);
+          console.log(`   RSI 1H: ${broadcastedRSI1H.toFixed(2)} < 40 = ${rsi1hSell}`);
+          console.log(`   RSI 15M: ${broadcastedRSI15M.toFixed(2)} < 35 = ${rsi15mSell}`);
+          console.log(`   EMA Crossover: ${broadcastedEMA9.toFixed(2)} < ${broadcastedEMA21.toFixed(2)} = ${emaCrossoverSell}`);
+          console.log(`   RSI 1M: ${broadcastedRSI1M.toFixed(2)} < 40 = ${rsi1mSell}`);
+          
+          try {
+            // Use the existing sell order function
+          //  await placeSellOrder(token, symbol, broadcastedLTP);
+            lastOrderTime[token] = Date.now();
+          } catch (error) {
+            console.error(`❌ Error processing sell order for ${symbol}: ${error.message}`);
+          } finally {
+            isProcessingOrder = false;
+          }
+        } else if (buyCondition) {
+          isProcessingOrder = true;
+          console.log(`📈 BUY CONDITION MET for ${symbol} using BROADCASTED values:`);
+          console.log(`   RSI 1H: ${broadcastedRSI1H.toFixed(2)} > 60 = ${rsi1hBuy}`);
+          console.log(`   RSI 15M: ${broadcastedRSI15M.toFixed(2)} > 60 = ${rsi15mBuy}`);
+          console.log(`   EMA Crossover: ${broadcastedEMA9.toFixed(2)} > ${broadcastedEMA21.toFixed(2)} = ${emaCrossoverBuy}`);
+          console.log(`   RSI 1M: ${broadcastedRSI1M.toFixed(2)} > 65 = ${rsi1mBuy}`);
+          
+          try {
+            // Use the existing buy order function
+            const orderData = {
+              symbol: symbol,
+              price: broadcastedLTP,
+              token: token
+            };
+         //   await placeBuyOrder(orderData);
+            lastOrderTime[token] = Date.now();
+          } catch (error) {
+            console.error(`❌ Error processing buy order for ${symbol}: ${error.message}`);
+          } finally {
+            isProcessingOrder = false;
+          }
+        } else {
+          // Only log occasionally to reduce spam
+          if (Math.random() < 0.05) { // 5% chance to reduce spam
+            console.log(`⏸️ No conditions met for ${symbol}:`);
+            console.log(`   BUY: RSI1H>${indicators.rsi1h?.toFixed(2)}>60=${rsi1hBuy}, RSI15M>${indicators.rsi15m?.toFixed(2)}>60=${rsi15mBuy}, EMA9>EMA21=${emaCrossoverBuy}, RSI1M>${indicators.rsi1m?.toFixed(2)}>65=${rsi1mBuy}`);
+            console.log(`   SELL: RSI1H<${indicators.rsi1h?.toFixed(2)}<40=${rsi1hSell}, RSI15M<${indicators.rsi15m?.toFixed(2)}<35=${rsi15mSell}, EMA9<EMA21=${emaCrossoverSell}, RSI1M<${indicators.rsi1m?.toFixed(2)}<40=${rsi1mSell}`);
+          }
+        }
       }
     }
   }

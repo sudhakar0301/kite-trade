@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import SimpleWSTable from "./components/SimpleWSTable";
 import TokenSubscriptionMonitor from "./components/TokenSubscriptionMonitor";
+import TradingConditionsDisplay from "./components/TradingConditionsNew";
 
 function App() {
   const [wsData, setWsData] = useState([]);
@@ -189,6 +190,9 @@ function App() {
       <TokenSubscriptionMonitor socket={socket} />
       
       <SimpleWSTable data={filteredData} />
+      
+      {/* Trading Conditions Display */}
+      <TradingConditionsDisplay data={filteredData} />
     </div>
   );
 }
