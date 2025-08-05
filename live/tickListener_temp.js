@@ -1740,7 +1740,7 @@ async function handleTicks(ticks) {
               price: broadcastedLTP,
               token: token
             };
-         //   await placeBuyOrder(orderData);
+           await placeBuyOrder(orderData);
             lastOrderTime[token] = Date.now();
           } catch (error) {
             console.error(`❌ Error processing buy order for ${symbol}: ${error.message}`);

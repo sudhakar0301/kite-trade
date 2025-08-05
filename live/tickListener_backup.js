@@ -745,7 +745,7 @@ async function handleTicks(ticks) {
            
           // 🎯 PLACE ACTUAL BUY ORDER
           console.log(`📞 Placing BUY order for ${symbol}...`);
-          const orderResult = false && await placeBuyOrder({ symbol, price: ltp, token }); // Pass object with symbol, price, and token
+          const orderResult = await placeBuyOrder({ symbol, price: ltp, token }); // Pass object with symbol, price, and token
           
           if (orderResult && orderResult.order_id) {
             console.log(`✅ ORDER PLACED SUCCESSFULLY! Order ID: ${orderResult.order_id} for ${symbol} at ${ltp}`);

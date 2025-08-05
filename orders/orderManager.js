@@ -2,18 +2,268 @@ const cooldownTracker = {};
 const ORDER_COOLDOWN_MS = 60000; // 1 minute cooldown between orders for same symbol
 const SAME_ORDER_COOLDOWN_MS = 300000; // 5 minute cooldown for same order type
 
-// Import ADX calculation functions
-const { getLatestADXData } = require("../strategy/indicators");
+// Import historical data functions for candle body analysis
 const { getHistoricalData } = require("../strategy/scanner");
-const { from15, to15, fromToday, to1 } = require("../utils/fromAndToDate");
-const { calculateRSIArray, calculateVWAP, calculateEMA, calculateRSI } = require("../strategy/indicators");
+const { fromToday, to1 } = require("../utils/fromAndToDate");
+
+// COMMENTED OUT - Other indicator functions
+// const { getLatestADXData } = require("../strategy/indicators");
+// const { from15, to15 } = require("../utils/fromAndToDate");
+// const { calculateRSIArray, calculateVWAP, calculateEMA, calculateRSI } = require("../strategy/indicators");
 
 // MIS trading window configuration
 const MIS_CUTOFF_TIME = { hours: 15, minutes: 15 }; // 3:15 PM - standard MIS cutoff
 
 // Track open orders and their exit orders
 const openOrdersTracker = {}; // { symbol: { orderId, quantity, price, exitOrderId, timestamp } }
-const PROFIT_TARGET = 10000; // Fixed profit target of 10,000
+const PROFIT_TARGET = 5000; // Fixed profit target of ₹5000
+const STOP_LOSS_AMOUNT = 5; // Fixed stop loss of ₹5 (manual handling)
+
+// PREDEFINED VALUES FOR IMMEDIATE SELL ORDERS
+const PREDEFINED_QUANTITY = 1; // Fixed quantity for sell orders
+const PREDEFINED_TARGET = 5000; // Fixed target profit
+
+// Enhanced position tracking to prevent multiple positions
+let currentPosition = null; // { symbol, type: 'LONG'|'SHORT', quantity, price, timestamp, targetOrderId, stopLossOrderId }
+
+/**
+ * Efficiently get historical data for multiple tokens in batch with rate limiting
+ * @param {Array} tokenList - Array of {token, symbol} objects
+ * @returns {Promise<Array>} - Array of historical data results
+ */
+async function getHistoricalDataBatch(tokenList) {
+  try {
+    console.log(`📊 Fetching historical data for ${tokenList.length} tokens in batch with rate limiting...`);
+    
+    // RATE LIMITED: Process tokens in smaller chunks to avoid "Too many requests"
+    const CHUNK_SIZE = 3; // Process only 3 tokens at a time
+    const DELAY_BETWEEN_CHUNKS = 1000; // 1 second delay between chunks
+    
+    const results = [];
+    
+    for (let i = 0; i < tokenList.length; i += CHUNK_SIZE) {
+      const chunk = tokenList.slice(i, i + CHUNK_SIZE);
+      console.log(`📊 Processing chunk ${Math.floor(i/CHUNK_SIZE) + 1}/${Math.ceil(tokenList.length/CHUNK_SIZE)} (${chunk.length} tokens)`);
+      
+      // Create promises for current chunk
+      const chunkPromises = chunk.map(({ token, symbol }) => 
+        getHistoricalData(token, "minute", fromToday, to1)
+          .then(candles => ({ token, symbol, candles }))
+          .catch(error => {
+            console.error(`❌ Error fetching historical data for ${symbol}: ${error.message}`);
+            return { token, symbol, candles: null };
+          })
+      );
+      
+      // Execute current chunk
+      const chunkResults = await Promise.all(chunkPromises);
+      results.push(...chunkResults);
+      
+      // Add delay between chunks (except for the last chunk)
+      if (i + CHUNK_SIZE < tokenList.length) {
+        console.log(`⏱️ Waiting ${DELAY_BETWEEN_CHUNKS}ms before next chunk...`);
+        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_CHUNKS));
+      }
+    }
+    
+    console.log(`✅ Rate-limited historical data batch fetch completed for ${results.length} tokens`);
+    return results;
+  } catch (error) {
+    console.error(`❌ Error in batch historical data fetch: ${error.message}`);
+    return [];
+  }
+}
+
+/**
+ * Analyze candle body from already fetched historical data using last 5 candles
+ * @param {string|number} token - instrument token
+ * @param {string} symbol - trading symbol
+ * @param {Array} candles - historical candle data
+ * @returns {Object|null} - { token, symbol, overallPercentage, firstOpen, lastClose, ltp } or null
+ */
+function analyzeCandleBodyFromData(token, symbol, candles) {
+  try {
+    if (!candles || candles.length < 5) {
+      console.log(`⚠️ Insufficient candles for ${symbol}: ${candles?.length || 0} (need at least 5)`);
+      return null;
+    }
+    
+    // Get the last 5 candles
+    const last5Candles = candles.slice(-5);
+    
+    // Get first candle's open and last candle's close from the 5-candle period
+    const firstOpen = last5Candles[0].open;
+    const lastClose = last5Candles[4].close;
+    
+    // Calculate overall percentage: (lastClose - firstOpen) / firstOpen * 100
+    // This can be positive or negative
+    const overallPercentage = ((lastClose - firstOpen) / firstOpen) * 100;
+    
+    console.log(`📊 ${symbol}: Last 5 candles analysis - First Open: ₹${firstOpen.toFixed(2)}, Last Close: ₹${lastClose.toFixed(2)}, Overall: ${overallPercentage.toFixed(3)}%`);
+    
+    return {
+      token,
+      symbol,
+      overallPercentage,
+      firstOpen,
+      lastClose,
+      high: last5Candles[4].high,
+      low: last5Candles[4].low,
+      ltp: lastClose // Use last close as LTP
+    };
+  } catch (error) {
+    console.error(`❌ Error analyzing 5-candle data for ${symbol}: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Analyze all tokens and find the best stock based on scan type
+ * @param {Array} tokenList - Array of {token, symbol} objects
+ * @param {string} scanType - 'BUY' or 'SELL' to determine selection logic
+ * @returns {Promise<Object|null>} - Selected token with movement analysis
+ */
+async function findSmallestBodyToken(tokenList, scanType = 'UNKNOWN') {
+  try {
+    console.log(`🔍 ===== STOCK SELECTION LOGIC =====`);
+    console.log(`📊 Total stocks in scan: ${tokenList.length}`);
+    console.log(`📋 Scan Type: ${scanType}`);
+    console.log(`📄 Stocks: ${tokenList.map(t => t.symbol).join(', ')}`);
+    
+    // SINGLE STOCK CASE: Place order immediately without analysis
+    if (tokenList.length === 1) {
+      const singleStock = tokenList[0];
+      console.log(`🎯 SINGLE STOCK DETECTED: ${singleStock.symbol}`);
+      console.log(`✅ Placing order immediately (no movement analysis needed)`);
+      
+      // Return basic structure for single stock
+      return {
+        token: singleStock.token,
+        symbol: singleStock.symbol,
+        movementPercentage: 0,
+        firstOpen: 0,
+        lastClose: 0,
+        ltp: 0, // Will be filled by actual order placement logic
+        reason: 'Single stock in scan - immediate order'
+      };
+    }
+    
+    // MULTIPLE STOCKS CASE: Analyze based on scan type
+    console.log(`🔍 MULTIPLE STOCKS: Analyzing last 5-minute movement...`);
+    
+    if (scanType === 'BUY') {
+      console.log(`� BUY SCAN STRATEGY: Select stock with minimum UPWARD movement`);
+      console.log(`💡 Logic: Among stocks that moved up, pick the one with smallest gain`);
+    } else if (scanType === 'SELL') {
+      console.log(`📉 SELL SCAN STRATEGY: Select stock with minimum DOWNWARD movement`);
+      console.log(`💡 Logic: Among stocks that moved down, pick the one with smallest loss`);
+    } else {
+      console.log(`❓ UNKNOWN SCAN TYPE: Using generic minimum movement strategy`);
+    }
+    
+    // Get historical data for all tokens in batch
+    const historicalResults = await getHistoricalDataBatch(tokenList);
+    
+    // Analyze 5-candle movement from the batch results
+    const analysisResults = historicalResults.map(({ token, symbol, candles }) => 
+      analyzeCandleBodyFromData(token, symbol, candles)
+    );
+    
+    // Filter out null results
+    const validResults = analysisResults.filter(result => result !== null);
+    
+    if (validResults.length === 0) {
+      console.log(`❌ No valid 5-minute movement data found for any stocks`);
+      return null;
+    }
+    
+    // Show all movement analysis results for transparency
+    console.log(`📊 ===== 5-MINUTE MOVEMENT ANALYSIS =====`);
+    validResults.forEach(result => {
+      const direction = result.overallPercentage >= 0 ? '📈 UP' : '📉 DOWN';
+      console.log(`   ${result.symbol}: ${direction} ${result.overallPercentage.toFixed(3)}% (₹${result.firstOpen.toFixed(2)} → ₹${result.lastClose.toFixed(2)})`);
+    });
+    
+    // Apply different selection logic based on scan type
+    let selectedStock;
+    let selectionReason;
+    
+    if (scanType === 'BUY') {
+      // BUY SCAN: Find stocks that moved UP, pick the one with minimum upward movement
+      const upwardStocks = validResults.filter(stock => stock.overallPercentage > 0);
+      
+      if (upwardStocks.length > 0) {
+        selectedStock = upwardStocks.reduce((best, current) => 
+          current.overallPercentage < best.overallPercentage ? current : best
+        );
+        selectionReason = `Minimum upward movement among ${upwardStocks.length} rising stocks`;
+      } else {
+        // If no stocks moved up, pick the one closest to zero (least negative)
+        selectedStock = validResults.reduce((best, current) => 
+          current.overallPercentage > best.overallPercentage ? current : best
+        );
+        selectionReason = `Closest to zero among declining stocks (best available for BUY)`;
+      }
+      
+    } else if (scanType === 'SELL') {
+      // SELL SCAN: Find stocks that moved DOWN, pick the one with minimum downward movement
+      const downwardStocks = validResults.filter(stock => stock.overallPercentage < 0);
+      
+      if (downwardStocks.length > 0) {
+        selectedStock = downwardStocks.reduce((best, current) => 
+          current.overallPercentage > best.overallPercentage ? current : best
+        );
+        selectionReason = `Minimum downward movement among ${downwardStocks.length} declining stocks`;
+      } else {
+        // If no stocks moved down, pick the one closest to zero (smallest positive)
+        selectedStock = validResults.reduce((best, current) => 
+          current.overallPercentage < best.overallPercentage ? current : best
+        );
+        selectionReason = `Closest to zero among rising stocks (best available for SELL)`;
+      }
+      
+    } else {
+      // UNKNOWN: Use generic logic - minimum absolute movement
+      selectedStock = validResults.reduce((best, current) => 
+        Math.abs(current.overallPercentage) < Math.abs(best.overallPercentage) ? current : best
+      );
+      selectionReason = `Minimum absolute movement (most stable)`;
+    }
+    
+    const direction = selectedStock.overallPercentage >= 0 ? 'upward' : 'downward';
+    console.log(`🎯 ===== WINNER SELECTION =====`);
+    console.log(`✅ SELECTED: ${selectedStock.symbol}`);
+    console.log(`📊 REASON: ${selectionReason}`);
+    console.log(`📈 MOVEMENT: ${direction} ${selectedStock.overallPercentage.toFixed(3)}%`);
+    console.log(`� PRICE RANGE: ₹${selectedStock.firstOpen.toFixed(2)} → ₹${selectedStock.lastClose.toFixed(2)}`);
+    console.log(`🎯 SCAN TYPE: ${scanType} scan optimized selection`);
+    
+    return {
+      token: selectedStock.token,
+      symbol: selectedStock.symbol,
+      movementPercentage: selectedStock.overallPercentage,
+      firstOpen: selectedStock.firstOpen,
+      lastClose: selectedStock.lastClose,
+      ltp: selectedStock.ltp,
+      reason: selectionReason
+    };
+  } catch (error) {
+    console.error(`❌ Error in stock selection analysis: ${error.message}`);
+    return null;
+  }
+}
+
+// Function to generate Zerodha Kite chart URL
+function generateKiteChartURL(symbol, token) {
+  try {
+    // Zerodha Kite chart URL format: https://kite.zerodha.com/chart/ext/tvc/NSE/SYMBOL/TOKEN
+    const chartURL = `https://kite.zerodha.com/chart/ext/tvc/NSE/${symbol}/${token}`;
+    return chartURL;
+  } catch (error) {
+    console.error(`❌ Error generating chart URL for ${symbol}: ${error.message}`);
+    return null;
+  }
+}
 
 // Cache for positions and margins to avoid frequent API calls
 let positionsCache = null;
@@ -27,101 +277,137 @@ let tradedSymbolsCache = new Set();
 let lastTradedSymbolsFetch = 0;
 const TRADED_SYMBOLS_CACHE_DURATION = 60000; // 1 minute cache for traded symbols
 
-// Import enhanced candle cache from shared cache module
-const { candleCache } = require("../cache/sharedCache");
-const { ema } = require("technicalindicators");
+// COMMENTED OUT - Import enhanced candle cache from shared cache module  
+// const { candleCache, isNewServerSession, isCacheReadyForTrading, markServerInitialized } = require("../cache/sharedCache");
+// const { ema } = require("technicalindicators");
 
-// Function to get live indicators from enhanced candle cache
+// COMMENTED OUT - Function to check if trading conditions should be evaluated
+// function shouldEvaluateTradingConditions() {
+//   // If server just restarted, wait for fresh historical data
+//   if (isNewServerSession()) {
+//     console.log(`🔄 Server restart detected - waiting for fresh historical data before trading`);
+//     return false;
+//   }
+//   
+//   // Check if cache is ready for trading decisions
+//   if (!isCacheReadyForTrading()) {
+//     console.log(`⏳ Cache not ready for trading - waiting for initialization`);
+//     return false;
+//   }
+//   
+//   return true;
+// }
+
+// Simplified function - always return true for immediate trading
+function shouldEvaluateTradingConditions() {
+  return true; // Always allow trading - no cache dependency
+}
+
+// COMMENTED OUT - Function to get live indicators from enhanced candle cache
+// function getLiveIndicatorsFromCache(token) {
+//   try {
+//     // Check if we should evaluate trading conditions
+//     if (!shouldEvaluateTradingConditions()) {
+//       console.log(`🚫 Trading conditions evaluation blocked for token ${token} - cache not ready`);
+//       return null;
+//     }
+//     
+//     const cache = candleCache.get(token);
+//     if (!cache || !cache.historical || cache.historical.length < 50) {
+//       console.log(`⚠️ Insufficient cache data for token ${token} (${cache?.historical?.length || 0} historical candles)`);
+//       return null;
+//     }
+//
+//     // Combine historical + current candle for indicator calculation
+//     const allCandles = [...cache.historical];
+//     if (cache.current) {
+//       allCandles.push(cache.current);
+//     }
+//
+//     if (allCandles.length < 100) {
+//       console.log(`⚠️ Insufficient total candles for indicators for token ${token} (${allCandles.length} total)`);
+//       return null;
+//     }
+//
+//     // Get today's candles for VWAP using dedicated today's historical data
+//     let vwapCandles = [];
+//     
+//     // Use today's historical data if available
+//     if (cache.todaysHistorical && cache.todaysHistorical.length > 0) {
+//       vwapCandles = [...cache.todaysHistorical];
+//       console.log(`📅 OrderManager: Using ${cache.todaysHistorical.length} today's historical candles for VWAP`);
+//     } else {
+//       // Fallback: Filter from all candles for today's data
+//       const today = new Date();
+//       today.setHours(0, 0, 0, 0);
+//       const todayStart = today.getTime();
+//       
+//       vwapCandles = allCandles.filter(c => {
+//         let candleTime;
+//         if (c.timestamp) {
+//           candleTime = c.timestamp;
+//         } else if (c.date) {
+//           candleTime = new Date(c.date).getTime();
+//         } else {
+//           return false;
+//         }
+//         return candleTime >= todayStart;
+//       });
+//       console.log(`⚠️ OrderManager Fallback: Filtered ${vwapCandles.length} today's candles from all data`);
+//     }
+//     
+//     // Add current forming candle if exists
+//     if (cache.current) {
+//       vwapCandles.push(cache.current);
+//     }
+//
+//     // Extract data arrays
+//     const closes = allCandles.map(c => c.close);
+//     const todayHighs = vwapCandles.map(c => c.high);
+//     const todayLows = vwapCandles.map(c => c.low);
+//     const todayCloses = vwapCandles.map(c => c.close);
+//     const todayVolumes = vwapCandles.map(c => c.volume || 0);
+//
+//     // Calculate indicators
+//     const rsiArr = calculateRSIArray(closes, 14);
+//     const rsi = rsiArr?.length ? rsiArr[rsiArr.length - 1] : null;
+//     const ema9 = calculateEMA(closes, 9);
+//     const ema21 = calculateEMA(closes, 21);
+//     
+//     // Calculate VWAP using today's data (or all data if no today data)
+//     const vwapArr = calculateVWAP(todayHighs, todayLows, todayCloses, todayVolumes);
+//     const vwap = vwapArr?.length ? vwapArr[vwapArr.length - 1] : null;
+//     const currentPrice = cache.ltp || cache.current?.close || closes[closes.length - 1];
+//
+//     return {
+//       rsi,
+//       rsiArray: rsiArr?.slice(-10) || [],
+//       ema9,
+//       ema21,
+//       vwap,
+//       
+//       // Add hourly indicators from cache
+//       hourlyEMA9: cache.hourlyEMA9,
+//       hourlyVWAP: cache.hourlyVWAP,
+//       currentHourOpen: cache.currentHourOpen,
+//       
+//       ltp: currentPrice,
+//       totalCandles: allCandles.length,
+//       todayCandles: vwapCandles.length,
+//       symbol: cache.symbol
+//     };
+//   } catch (error) {
+//     console.error(`❌ Error getting live indicators from cache for token ${token}:`, error.message);
+//     return null;
+//   }
+// }
+
+// Simplified function - return basic data without calculations
 function getLiveIndicatorsFromCache(token) {
-  try {
-    const cache = candleCache.get(token);
-    if (!cache || !cache.historical || cache.historical.length < 50) {
-      console.log(`⚠️ Insufficient cache data for token ${token} (${cache?.historical?.length || 0} historical candles)`);
-      return null;
-    }
-
-    // Combine historical + current candle for indicator calculation
-    const allCandles = [...cache.historical];
-    if (cache.current) {
-      allCandles.push(cache.current);
-    }
-
-    if (allCandles.length < 100) {
-      console.log(`⚠️ Insufficient total candles for indicators for token ${token} (${allCandles.length} total)`);
-      return null;
-    }
-
-    // Get today's candles for VWAP using dedicated today's historical data
-    let vwapCandles = [];
-    
-    // Use today's historical data if available
-    if (cache.todaysHistorical && cache.todaysHistorical.length > 0) {
-      vwapCandles = [...cache.todaysHistorical];
-      console.log(`📅 OrderManager: Using ${cache.todaysHistorical.length} today's historical candles for VWAP`);
-    } else {
-      // Fallback: Filter from all candles for today's data
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const todayStart = today.getTime();
-      
-      vwapCandles = allCandles.filter(c => {
-        let candleTime;
-        if (c.timestamp) {
-          candleTime = c.timestamp;
-        } else if (c.date) {
-          candleTime = new Date(c.date).getTime();
-        } else {
-          return false;
-        }
-        return candleTime >= todayStart;
-      });
-      console.log(`⚠️ OrderManager Fallback: Filtered ${vwapCandles.length} today's candles from all data`);
-    }
-    
-    // Add current forming candle if exists
-    if (cache.current) {
-      vwapCandles.push(cache.current);
-    }
-
-    // Extract data arrays
-    const closes = allCandles.map(c => c.close);
-    const todayHighs = vwapCandles.map(c => c.high);
-    const todayLows = vwapCandles.map(c => c.low);
-    const todayCloses = vwapCandles.map(c => c.close);
-    const todayVolumes = vwapCandles.map(c => c.volume || 0);
-
-    // Calculate indicators
-    const rsiArr = calculateRSIArray(closes, 14);
-    const rsi = rsiArr?.length ? rsiArr[rsiArr.length - 1] : null;
-    const ema9 = calculateEMA(closes, 9);
-    const ema21 = calculateEMA(closes, 21);
-    
-    // Calculate VWAP using today's data (or all data if no today data)
-    const vwapArr = calculateVWAP(todayHighs, todayLows, todayCloses, todayVolumes);
-    const vwap = vwapArr?.length ? vwapArr[vwapArr.length - 1] : null;
-    const currentPrice = cache.ltp || cache.current?.close || closes[closes.length - 1];
-
-    return {
-      rsi,
-      rsiArray: rsiArr?.slice(-10) || [],
-      ema9,
-      ema21,
-      vwap,
-      
-      // Add hourly indicators from cache
-      hourlyEMA9: cache.hourlyEMA9,
-      hourlyVWAP: cache.hourlyVWAP,
-      currentHourOpen: cache.currentHourOpen,
-      
-      ltp: currentPrice,
-      totalCandles: allCandles.length,
-      todayCandles: vwapCandles.length,
-      symbol: cache.symbol
-    };
-  } catch (error) {
-    console.error(`❌ Error getting live indicators from cache for token ${token}:`, error.message);
-    return null;
-  }
+  return {
+    ltp: null,
+    symbol: null
+  };
 }
 
 function isInCooldown(symbol) {
@@ -186,6 +472,44 @@ async function hasAnyPosition() {
     console.error(`❌ Error checking MIS positions: ${err.message}`);
 
     return false;
+  }
+}
+
+// Enhanced function to check if we can place a new position order
+async function canPlaceNewPosition() {
+  try {
+    // Check if we already have a tracked position
+    if (currentPosition) {
+      console.log(`🚫 Cannot place new position - already have position: ${currentPosition.symbol} (${currentPosition.type})`);
+      return false;
+    }
+
+    // Check for any existing positions via API
+    const hasPosition = await hasAnyPosition();
+    if (hasPosition) {
+      console.log(`🚫 Cannot place new position - existing position found via API`);
+      return false;
+    }
+
+    // Check for pending orders that might become positions
+    if (global.kite) {
+      const orders = await global.kite.getOrders();
+      const pendingOrders = orders.filter(order => 
+        order.status === 'OPEN' || 
+        order.status === 'TRIGGER PENDING' ||
+        order.status === 'PENDING'
+      );
+      
+      if (pendingOrders.length > 0) {
+        console.log(`🚫 Cannot place new position - ${pendingOrders.length} pending orders found`);
+        return false;
+      }
+    }
+
+    return true;
+  } catch (err) {
+    console.error(`❌ Error checking if new position can be placed: ${err.message}`);
+    return false; // Err on the side of caution
   }
 }
 
@@ -293,127 +617,140 @@ async function hasSymbolBeenTraded(symbol) {
 //   }
 // }
 
-async function placeBuyOrder(orderData) {
- // console.log(orderData);
+// COMMENTED OUT - All BUY order related functions
+// async function placeBuyOrder(orderData) {
+//  // console.log(orderData);
+//
+//  const { symbol, price, token } = orderData;
+//  
+//  console.log(`🔍 placeBuyOrder called with token: ${token}, symbol: ${symbol}, price: ${price}`);
+//
+//   try {
+//     // Check if we should evaluate trading conditions (server restart/cache readiness)
+//     if (!shouldEvaluateTradingConditions()) {
+//       console.log(`🚫 BUY order blocked for ${symbol} - waiting for fresh data after server restart`);
+//       return null;
+//     }
+//     
+//     // Check if we can place a new position order
+//     const canPlace = await canPlaceNewPosition();
+//     if (!canPlace) {
+//       console.log(`🚫 Cannot place BUY order for ${symbol} - position limit reached or pending orders exist`);
+//       return null;
+//     }
+//
+//     // Check if symbol has been traded today (prevent re-trading)
+//     const hasBeenTraded = await hasSymbolBeenTraded(symbol);
+//     if (hasBeenTraded) {
+//       console.log(`🚫 Symbol ${symbol} has already been traded today, skipping BUY order`);
+//       return null;
+//     }
+//
+//     // ADX conditions already validated in tickListener before calling this function
+//     // No need for double validation
+//
+//     // Get appropriate product type based on current time
+//     const productType = getProductType();
+//     console.log(`📊 Using product type: ${productType} for ${symbol}`);
+//
+//     // Get available funds and calculate quantity
+//     const margins = await getAvailableFunds();
+//     if (!margins || !margins.equity) {
+//       console.log(`❌ Could not fetch available funds for ${symbol}`);
+//       return null;
+//     }
+//
+//     const availableFunds = margins.equity.available.live_balance;
+//     const quantity = Math.floor(calculateQuantity(availableFunds, price));
+//
+//     if (quantity < 1) {
+//       console.log(`💰 Insufficient funds for BUY order on ${symbol} (Calculated Qty: ${quantity}, Available: ${availableFunds}, Price: ${price})`);
+//       return null;
+//     }
+//
+//     const orderParams = {
+//       exchange: 'NSE',
+//       tradingsymbol: symbol,
+//       transaction_type: 'BUY',
+//       quantity: quantity, // Use calculated quantity with 4.5x leverage
+//       product: productType, // Use calculated product type
+//       order_type: 'MARKET'
+//     };
+//
+//     if (global.kite) {
+//       const order = await global.kite.placeOrder('regular', orderParams);
+//       console.log(`✅ BUY Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Product: ${productType})`);
+//       
+//       // Track the order for exit order placement
+//       cooldownTracker[symbol] = { 
+//         orderType: 'BUY', 
+//         timestamp: Date.now(), 
+//         orderId: order.order_id,
+//         quantity: quantity, // Use calculated quantity
+//         price: price,
+//         productType: productType // Use calculated product type
+//       };
+//       
+//       // Clear position cache
+//       positionsCache = null;
+//       lastPositionsFetch = 0;
+//       
+//       // Automatically place target and stop loss orders
+//       console.log(`🎯 Auto-placing target order for ${symbol} (No stop loss - manual handling)`);
+//       setTimeout(async () => {
+//         try {
+//           const exitOrders = await placeTargetOrder(symbol, quantity, price, productType);
+//           if (exitOrders) {
+//             console.log(`✅ Target order placed for ${symbol}`);
+//           }
+//         } catch (error) {
+//           console.error(`❌ Error placing target order for ${symbol}: ${error.message}`);
+//         }
+//       }, 2000); // 2 second delay to ensure buy order is processed
+//       
+//       // Broadcast order notification
+//       if (global.broadcastToClients) {
+//         console.log(`📡 Broadcasting BUY order for ${symbol}`);
+//         
+//         // Generate chart URL for UI
+//         const chartURL = generateKiteChartURL(symbol, token);
+//         
+//         global.broadcastToClients({
+//           type: "order_placed",
+//           data: {
+//             token,
+//             symbol,
+//             orderType: 'BUY',
+//             price: price,
+//             quantity: quantity, // Use calculated quantity
+//             orderId: order.order_id,
+//             productType: productType,
+//             reason: `New Strategy Buy Order (${productType}) - Target: ₹${PROFIT_TARGET} (Stop Loss: Manual)`,
+//             time: new Date().toLocaleTimeString(),
+//             chartURL: chartURL, // Add chart URL for UI to open
+//             openChart: true // Flag to indicate UI should open chart
+//           }
+//         });
+//       } else {
+//         console.warn(`⚠️ global.broadcastToClients not available for ${symbol}`);
+//       }
+//       
+//       return order;
+//     }
+//   } catch (err) {
+//     console.error(`❌ Error placing BUY order for ${symbol}: ${err.message}`);
+//     return null;
+//   }
+// }
 
- const { symbol, price, token } = orderData;
- 
- console.log(`🔍 placeBuyOrder called with token: ${token}, symbol: ${symbol}, price: ${price}`);
-
-  try {
-    // Check if symbol has been traded today (prevent re-trading)
-    const hasBeenTraded = await hasSymbolBeenTraded(symbol);
-    if (hasBeenTraded) {
-      console.log(`🚫 Symbol ${symbol} has already been traded today, skipping BUY order`);
-      return null;
-    }
-
-    // ADX conditions already validated in tickListener before calling this function
-    // No need for double validation
-
-    // Get appropriate product type based on current time
-    const productType = getProductType();
-    console.log(`📊 Using product type: ${productType} for ${symbol}`);
-
-    // Check if ANY MIS positions exist (only relevant for MIS orders)
-    if (productType === 'MIS') {
-      const hasPosition = await hasAnyPosition();
-      if (hasPosition) {
-        console.log(`📊 Existing MIS positions found, skipping BUY order for ${symbol}`);
-        return null;
-      }
-    }
-
-    // Get available funds and calculate quantity
-    const margins = await getAvailableFunds();
-    if (!margins || !margins.equity) {
-      console.log(`❌ Could not fetch available funds for ${symbol}`);
-      return null;
-    }
-
-    const availableFunds = margins.equity.available.live_balance;
-    const quantity = Math.floor(calculateQuantity(availableFunds, price));
-
-    const orderParams = {
-      exchange: 'NSE',
-      tradingsymbol: symbol,
-      transaction_type: 'BUY',
-      quantity: quantity,
-      product: productType, // Use calculated product type
-      order_type: 'MARKET'
-    };
-
-    if (global.kite) {
-      const order = await global.kite.placeOrder('regular', orderParams);
-      console.log(`✅ BUY Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Product: ${productType})`);
-      
-      // Track the order for exit order placement
-      cooldownTracker[symbol] = { 
-        orderType: 'BUY', 
-        timestamp: Date.now(), 
-        orderId: order.order_id,
-        quantity: quantity,
-        price: price,
-        productType: productType // Use calculated product type
-      };
-      
-      // Clear position cache
-      positionsCache = null;
-      lastPositionsFetch = 0;
-      
-      // Broadcast order notification
-      if (global.broadcastToClients) {
-        console.log(`📡 Broadcasting BUY order for ${symbol}`);
-        global.broadcastToClients({
-          type: "order_placed",
-          data: {
-            token,
-            symbol,
-            orderType: 'BUY',
-            price: price,
-            quantity: quantity, // Use calculated quantity, not hardcoded 1
-            orderId: order.order_id,
-            productType: productType,
-            reason: `New Strategy Buy Order (${productType})`,
-            time: new Date().toLocaleTimeString()
-          }
-        });
-      } else {
-        console.warn(`⚠️ global.broadcastToClients not available for ${symbol}`);
-      }
-      
-      return order;
-    }
-  } catch (err) {
-    console.error(`❌ Error placing BUY order for ${symbol}: ${err.message}`);
-    return null;
-  }
-}
-
+// SIMPLIFIED SELL ORDER - Place immediately upon subscription (no conditions)
 async function placeSellOrder(token, symbol, ltp) {
   try {
-    // Check if symbol has been traded today (prevent re-trading)
-    const hasBeenTraded = await hasSymbolBeenTraded(symbol);
-    if (hasBeenTraded) {
-      console.log(`🚫 Symbol ${symbol} has already been traded today, skipping SELL order`);
-      return null;
-    }
-
-    // ADX conditions already validated in tickListener before calling this function
-    // No need for double validation
-
+    console.log(`� IMMEDIATE SELL ORDER for ${symbol} at LTP: ${ltp} (NO CONDITIONS CHECK)`);
+    
     // Get appropriate product type based on current time
     const productType = getProductType();
     console.log(`📊 Using product type: ${productType} for ${symbol}`);
-
-    // Check if ANY MIS positions exist (only relevant for MIS orders)
-    if (productType === 'MIS') {
-      const positionExists = await hasAnyPosition();
-      if (positionExists) {
-        console.log(`📊 Existing MIS positions found, skipping SELL order for ${symbol}`);
-        return null;
-      }
-    }
 
     // Check cooldowns
     if (isInCooldown(symbol)) {
@@ -426,8 +763,7 @@ async function placeSellOrder(token, symbol, ltp) {
       return null;
     }
 
-    // Check if we have existing positions
-    // Since we already checked for any positions above, this is for calculating quantity only
+    // Get available funds and calculate quantity for short selling (KEEP EXISTING CALCULATION)
     const margins = await getAvailableFunds();
      if (!margins || !margins.equity) {
       console.log(`❌ Could not fetch available funds for ${symbol}`);
@@ -436,29 +772,36 @@ async function placeSellOrder(token, symbol, ltp) {
 
     const availableFunds = margins.equity.available.live_balance;
     let quantity = Math.floor(calculateQuantity(availableFunds, ltp));
-    let orderReason = `Short Sell New Position (${productType})`;
+    
+    // Validate quantity
+    if (quantity < 1) {
+      console.log(`❌ Insufficient funds to buy even 1 share of ${symbol} at ₹${ltp}`);
+      return null;
+    }
+    
+    let orderReason = `IMMEDIATE Short Sell (${productType}) - Target: ₹${PROFIT_TARGET} (Stop Loss: Manual)`;
 
-    console.log(`💹 Placing short sell order for ${symbol}: ${quantity} shares (Available funds: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
+    console.log(`💹 Placing IMMEDIATE short sell order for ${symbol}: ${quantity} shares (Available funds: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
 
     const orderParams = {
       exchange: 'NSE',
       tradingsymbol: symbol,
       transaction_type: 'SELL',
-      quantity: quantity,
-      product: 'MIS', // Use calculated product type
+      quantity: quantity, // Use calculated quantity with 4.5x leverage
+      product: productType, // Use calculated product type
       order_type: 'MARKET'
     };
 
     if (global.kite) {
       const order = await global.kite.placeOrder('regular', orderParams);
-      console.log(`✅ SELL Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Product: ${productType}) - ${orderReason}`);
+      console.log(`✅ IMMEDIATE SELL Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Product: ${productType}) - ${orderReason}`);
       
       // Track the order
       cooldownTracker[symbol] = { 
         orderType: 'SELL', 
         timestamp: Date.now(), 
         orderId: order.order_id,
-        quantity: quantity, // Use calculated quantity, not hardcoded 1
+        quantity: quantity, // Use actual calculated quantity
         reason: orderReason,
         productType: productType
       };
@@ -467,8 +810,24 @@ async function placeSellOrder(token, symbol, ltp) {
       positionsCache = null;
       lastPositionsFetch = 0;
       
+      // Automatically place target order only (manual stop loss handling)
+      console.log(`🎯 Auto-placing target order for SHORT position ${symbol} (Stop Loss: Manual)`);
+      setTimeout(async () => {
+        try {
+          const exitOrders = await placeShortTargetOrder(symbol, quantity, ltp, productType);
+          if (exitOrders.targetOrder) {
+            console.log(`✅ Short target order placed for ${symbol} - Manual stop loss handling required`);
+          }
+        } catch (error) {
+          console.error(`❌ Error placing short target order for ${symbol}: ${error.message}`);
+        }
+      }, 2000); // 2 second delay to ensure sell order is processed
+      
       // Broadcast order notification
       if (global.broadcastToClients) {
+        // Generate chart URL for UI
+        const chartURL = generateKiteChartURL(symbol, token);
+        
         global.broadcastToClients({
           type: "order_placed",
           data: {
@@ -476,11 +835,13 @@ async function placeSellOrder(token, symbol, ltp) {
             symbol,
             orderType: 'SELL',
             price: ltp,
-            quantity: quantity,
+            quantity: quantity, // Use actual calculated quantity
             orderId: order.order_id,
             productType: productType,
             reason: orderReason,
-            time: new Date().toLocaleTimeString()
+            time: new Date().toLocaleTimeString(),
+            chartURL: chartURL, // Add chart URL for UI to open
+            openChart: true // Flag to indicate UI should open chart
           }
         });
       }
@@ -488,7 +849,7 @@ async function placeSellOrder(token, symbol, ltp) {
       return order;
     }
   } catch (err) {
-    console.error(`❌ Error placing SELL order for ${symbol}: ${err.message}`);
+    console.error(`❌ Error placing IMMEDIATE SELL order for ${symbol}: ${err.message}`);
     return null;
   }
 }
@@ -562,13 +923,14 @@ function calculateQuantity(availableFunds, price) {
 // Function to place exit order with profit target
 async function placeExitOrder(symbol, quantity, buyPrice, productType = 'MIS') {
   try {
-    const exitPrice = buyPrice + (PROFIT_TARGET / quantity); // Calculate exit price for 10,000 profit
+    const profitPerShare = PROFIT_TARGET / quantity; // Distribute ₹5000 across all shares
+    const exitPrice = buyPrice + profitPerShare; // Calculate exit price for distributed profit
     
     const orderParams = {
       exchange: 'NSE',
       tradingsymbol: symbol,
       transaction_type: 'SELL',
-      quantity: quantity,
+      quantity: quantity, // Use actual quantity
       product: productType, // Use the same product type as the original buy order
       order_type: 'LIMIT',
       price: exitPrice.toFixed(2)
@@ -576,12 +938,12 @@ async function placeExitOrder(symbol, quantity, buyPrice, productType = 'MIS') {
 
     if (global.kite) {
       const order = await global.kite.placeOrder('regular', orderParams);
-      console.log(`🎯 EXIT Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Exit Price: ${exitPrice.toFixed(2)}, Target Profit: ₹${PROFIT_TARGET}, Product: ${productType})`);
+      console.log(`🎯 EXIT Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Exit Price: ${exitPrice.toFixed(2)}, Total Target Profit: ₹${PROFIT_TARGET}, Product: ${productType})`);
       
       return {
         orderId: order.order_id,
         exitPrice: exitPrice,
-        quantity: quantity,
+        quantity: quantity, // Use actual quantity
         targetProfit: PROFIT_TARGET,
         productType: productType
       };
@@ -596,13 +958,15 @@ async function placeExitOrder(symbol, quantity, buyPrice, productType = 'MIS') {
 // Function to place target order with profit target
 async function placeTargetOrder(symbol, quantity, buyPrice, productType = 'MIS') {
   try {
-    const targetPrice = buyPrice + (PROFIT_TARGET / quantity); // Calculate target price for 10,000 profit
+    // Calculate target price: buyPrice + (profit per share)
+    const profitPerShare = PROFIT_TARGET / quantity; // Distribute ₹5000 across all shares
+    const targetPrice = buyPrice + profitPerShare;
     
     const orderParams = {
       exchange: 'NSE',
       tradingsymbol: symbol,
       transaction_type: 'SELL',
-      quantity: quantity,
+      quantity: quantity, // Use actual quantity
       product: productType, // Use the same product type as the original buy order
       order_type: 'LIMIT',
       price: targetPrice.toFixed(2)
@@ -610,12 +974,12 @@ async function placeTargetOrder(symbol, quantity, buyPrice, productType = 'MIS')
 
     if (global.kite) {
       const order = await global.kite.placeOrder('regular', orderParams);
-      console.log(`🎯 TARGET Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Target Profit: ₹${PROFIT_TARGET}, Product: ${productType})`);
+      console.log(`🎯 TARGET Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Total Target Profit: ₹${PROFIT_TARGET}, Product: ${productType})`);
       
       return {
         orderId: order.order_id,
         price: targetPrice,
-        quantity: quantity,
+        quantity: quantity, // Use actual quantity
         targetProfit: PROFIT_TARGET,
         productType: productType,
         orderType: 'TARGET'
@@ -628,14 +992,17 @@ async function placeTargetOrder(symbol, quantity, buyPrice, productType = 'MIS')
   }
 }
 
-// Function to place stop loss order
-async function placeStopLossOrder(symbol, quantity, stopPrice, productType = 'MIS') {
+// Function to place stop loss order with fixed stop loss amount
+async function placeStopLossOrder(symbol, quantity, buyPrice, productType = 'MIS') {
   try {
+    const lossPerShare = STOP_LOSS_AMOUNT / quantity; // Distribute stop loss across all shares
+    const stopPrice = buyPrice - lossPerShare; // Calculate stop price per share
+    
     const orderParams = {
       exchange: 'NSE',
       tradingsymbol: symbol,
       transaction_type: 'SELL',
-      quantity: quantity,
+      quantity: quantity, // Use actual quantity
       product: productType, // Use the same product type as the original buy order
       order_type: 'SL-M', // Stop Loss Market order
       trigger_price: stopPrice.toFixed(2)
@@ -643,12 +1010,13 @@ async function placeStopLossOrder(symbol, quantity, stopPrice, productType = 'MI
 
     if (global.kite) {
       const order = await global.kite.placeOrder('regular', orderParams);
-      console.log(`🛑 STOP LOSS Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Stop Price: ${stopPrice.toFixed(2)}, Product: ${productType})`);
+      console.log(`🛑 STOP LOSS Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Stop Price: ${stopPrice.toFixed(2)}, Total Stop Loss: ₹${STOP_LOSS_AMOUNT}, Product: ${productType})`);
       
       return {
         orderId: order.order_id,
         price: stopPrice,
-        quantity: quantity,
+        quantity: quantity, // Use actual quantity
+        stopLoss: STOP_LOSS_AMOUNT,
         productType: productType,
         orderType: 'STOP_LOSS'
       };
@@ -661,47 +1029,239 @@ async function placeStopLossOrder(symbol, quantity, stopPrice, productType = 'MI
 }
 
 // Function to place both target and stop loss orders after a successful buy
-async function placeTargetAndStopLoss(symbol, quantity, buyPrice, vwap1m, productType = 'MIS') {
+async function placeTargetAndStopLoss(symbol, quantity, buyPrice, productType = 'MIS') {
   try {
-    console.log(`📊 Placing TARGET and STOP LOSS orders for ${symbol} - Buy Price: ${buyPrice}, VWAP1m: ${vwap1m}, Quantity: ${quantity}`);
+    console.log(`📊 Placing TARGET and STOP LOSS orders for ${symbol} - Buy Price: ${buyPrice}, Quantity: ${quantity}, Target: ₹${PROFIT_TARGET}, Stop Loss: ₹${STOP_LOSS_AMOUNT}`);
     
     const results = {
       targetOrder: null,
       stopLossOrder: null
     };
     
-    // Place target order (profit of 10,000)
+    // Place target order (profit of 1,000)
     const targetOrder = await placeTargetOrder(symbol, quantity, buyPrice, productType);
     if (targetOrder) {
       results.targetOrder = targetOrder;
       console.log(`✅ Target order placed successfully for ${symbol}`);
     }
     
-    // Place stop loss order (if LTP goes below VWAP1m)
-    const stopLossOrder = await placeStopLossOrder(symbol, quantity, vwap1m, productType);
+    // Place stop loss order (loss of 500)
+    const stopLossOrder = await placeStopLossOrder(symbol, quantity, buyPrice, productType);
     if (stopLossOrder) {
       results.stopLossOrder = stopLossOrder;
       console.log(`✅ Stop loss order placed successfully for ${symbol}`);
     }
     
-    // Store the order tracking info
+    // Store the order tracking info and update current position
     if (targetOrder || stopLossOrder) {
       openOrdersTracker[symbol] = {
         buyOrderId: null, // Will be set from tickListener
         buyPrice: buyPrice,
-        quantity: quantity,
-        vwap1m: vwap1m,
+        quantity: quantity, // Use actual quantity
         targetOrderId: targetOrder?.orderId || null,
         stopLossOrderId: stopLossOrder?.orderId || null,
         productType: productType,
         timestamp: Date.now()
       };
+      
+      // Update current position tracker
+      currentPosition = {
+        symbol: symbol,
+        type: 'LONG',
+        quantity: quantity, // Use actual quantity
+        price: buyPrice,
+        timestamp: Date.now(),
+        targetOrderId: targetOrder?.orderId || null,
+        stopLossOrderId: stopLossOrder?.orderId || null,
+        productType: productType
+      };
+      
+      console.log(`📍 Position tracked: ${symbol} LONG ${quantity} @ ${buyPrice}`);
     }
     
     return results;
   } catch (err) {
     console.error(`❌ Error placing TARGET and STOP LOSS orders for ${symbol}: ${err.message}`);
     return { targetOrder: null, stopLossOrder: null };
+  }
+}
+
+// Function to place both target and stop loss orders for SHORT positions
+async function placeShortTargetAndStopLoss(symbol, quantity, sellPrice, productType = 'MIS') {
+  try {
+    console.log(`📊 Placing SHORT TARGET and STOP LOSS orders for ${symbol} - Sell Price: ${sellPrice}, Quantity: ${quantity}, Target: ₹${PROFIT_TARGET}, Stop Loss: ₹${STOP_LOSS_AMOUNT}`);
+    
+    const results = {
+      targetOrder: null,
+      stopLossOrder: null
+    };
+    
+    // For short positions: target = buy at lower price, stop loss = buy at higher price
+    // Calculate prices per share
+    const profitPerShare = PROFIT_TARGET / quantity; // Distribute ₹5000 across all shares
+    const lossPerShare = STOP_LOSS_AMOUNT / quantity; // Distribute stop loss across all shares
+    const targetPrice = sellPrice - profitPerShare; // Buy back at lower price for profit
+    const stopPrice = sellPrice + lossPerShare; // Buy back at higher price for loss
+    
+    // Place target order (buy back at lower price for profit)
+    const targetOrderParams = {
+      exchange: 'NSE',
+      tradingsymbol: symbol,
+      transaction_type: 'BUY',
+      quantity: quantity, // Use actual quantity
+      product: productType,
+      order_type: 'LIMIT',
+      price: targetPrice.toFixed(2)
+    };
+
+    if (global.kite) {
+      const targetOrder = await global.kite.placeOrder('regular', targetOrderParams);
+      console.log(`🎯 SHORT TARGET Order placed for ${symbol}: ${targetOrder.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Total Target Profit: ₹${PROFIT_TARGET})`);
+      
+      results.targetOrder = {
+        orderId: targetOrder.order_id,
+        price: targetPrice,
+        quantity: quantity, // Use actual quantity
+        targetProfit: PROFIT_TARGET,
+        productType: productType,
+        orderType: 'SHORT_TARGET'
+      };
+    }
+    
+    // Place stop loss order (buy back at higher price for loss)
+    const stopOrderParams = {
+      exchange: 'NSE',
+      tradingsymbol: symbol,
+      transaction_type: 'BUY',
+      quantity: quantity, // Use actual quantity
+      product: productType,
+      order_type: 'SL-M',
+      trigger_price: stopPrice.toFixed(2)
+    };
+
+    if (global.kite) {
+      const stopOrder = await global.kite.placeOrder('regular', stopOrderParams);
+      console.log(`🛑 SHORT STOP LOSS Order placed for ${symbol}: ${stopOrder.order_id} (Qty: ${quantity}, Stop Price: ${stopPrice.toFixed(2)}, Total Stop Loss: ₹${STOP_LOSS_AMOUNT})`);
+      
+      results.stopLossOrder = {
+        orderId: stopOrder.order_id,
+        price: stopPrice,
+        quantity: quantity, // Use actual quantity
+        stopLoss: STOP_LOSS_AMOUNT,
+        productType: productType,
+        orderType: 'SHORT_STOP_LOSS'
+      };
+    }
+    
+    // Store the order tracking info and update current position
+    if (results.targetOrder || results.stopLossOrder) {
+      openOrdersTracker[symbol] = {
+        sellOrderId: null, // Will be set from tickListener
+        sellPrice: sellPrice,
+        quantity: quantity, // Use actual quantity
+        targetOrderId: results.targetOrder?.orderId || null,
+        stopLossOrderId: results.stopLossOrder?.orderId || null,
+        productType: productType,
+        timestamp: Date.now()
+      };
+      
+      // Update current position tracker
+      currentPosition = {
+        symbol: symbol,
+        type: 'SHORT',
+        quantity: quantity,
+        price: sellPrice,
+        timestamp: Date.now(),
+        targetOrderId: results.targetOrder?.orderId || null,
+        stopLossOrderId: results.stopLossOrder?.orderId || null,
+        productType: productType
+      };
+      
+      console.log(`📍 Short position tracked: ${symbol} SHORT ${quantity} @ ${sellPrice}`);
+    }
+    
+    return results;
+  } catch (err) {
+    console.error(`❌ Error placing short target and stop loss orders for ${symbol}: ${err.message}`);
+    return {
+      targetOrder: null,
+      stopLossOrder: null
+    };
+  }
+}
+
+// Function to place only target order for short positions (manual stop loss handling)
+async function placeShortTargetOrder(symbol, quantity, sellPrice, productType = 'MIS') {
+  try {
+    console.log(`📊 Placing SHORT TARGET order for ${symbol} - Sell Price: ${sellPrice}, Quantity: ${quantity}, Target: ₹${PROFIT_TARGET} (Stop Loss: Manual)`);
+    
+    const results = {
+      targetOrder: null
+    };
+    
+    // For short positions: target = buy at lower price
+    // Calculate target price: sellPrice - (profit per share)
+    const profitPerShare = PROFIT_TARGET / quantity; // Distribute ₹5000 across all shares
+    const targetPrice = sellPrice - profitPerShare; // Buy back at lower price for profit
+    
+    // Place target order (buy back at lower price for profit)
+    const targetOrderParams = {
+      exchange: 'NSE',
+      tradingsymbol: symbol,
+      transaction_type: 'BUY',
+      quantity: quantity, // Use actual quantity
+      product: productType,
+      order_type: 'LIMIT',
+      price: targetPrice.toFixed(2)
+    };
+
+    if (global.kite) {
+      const targetOrder = await global.kite.placeOrder('regular', targetOrderParams);
+      console.log(`🎯 SHORT TARGET Order placed for ${symbol}: ${targetOrder.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Total Target Profit: ₹${PROFIT_TARGET})`);
+      
+      results.targetOrder = {
+        orderId: targetOrder.order_id,
+        price: targetPrice,
+        quantity: quantity, // Use actual quantity
+        targetProfit: PROFIT_TARGET,
+        productType: productType,
+        orderType: 'SHORT_TARGET'
+      };
+    }
+    
+    // Store the order tracking info and update current position
+    if (results.targetOrder) {
+      openOrdersTracker[symbol] = {
+        sellOrderId: null, // Will be set from tickListener
+        sellPrice: sellPrice,
+        quantity: quantity, // Use actual quantity
+        targetOrderId: results.targetOrder?.orderId || null,
+        stopLossOrderId: null, // Manual handling
+        productType: productType,
+        timestamp: Date.now()
+      };
+      
+      // Update current position tracker
+      currentPosition = {
+        symbol: symbol,
+        type: 'SHORT',
+        quantity: quantity,
+        price: sellPrice,
+        timestamp: Date.now(),
+        targetOrderId: results.targetOrder?.orderId || null,
+        stopLossOrderId: null, // Manual handling
+        productType: productType
+      };
+      
+      console.log(`📍 Short position tracked: ${symbol} SHORT ${quantity} @ ${sellPrice} (Manual stop loss)`);
+    }
+    
+    return results;
+  } catch (err) {
+    console.error(`❌ Error placing short target order for ${symbol}: ${err.message}`);
+    return {
+      targetOrder: null
+    };
   }
 }
 
@@ -718,50 +1278,110 @@ function placeOrder(symbol) {
   // await global.kite.placeOrder(...)  // real API call here
 }
 
+// Function to reset position tracker when position is closed
+function resetPosition(symbol) {
+  try {
+    if (currentPosition && currentPosition.symbol === symbol) {
+      console.log(`🔄 Resetting position for ${symbol}: ${currentPosition.type} ${currentPosition.quantity} @ ${currentPosition.price}`);
+      currentPosition = null;
+    }
+    
+    // Also clean up order tracker
+    if (openOrdersTracker[symbol]) {
+      delete openOrdersTracker[symbol];
+    }
+    
+    console.log(`✅ Position reset completed for ${symbol}`);
+  } catch (err) {
+    console.error(`❌ Error resetting position for ${symbol}: ${err.message}`);
+  }
+}
+
+// Function to get current position status
+function getCurrentPosition() {
+  return currentPosition;
+}
+
+// Function to check if any position exists
+function hasCurrentPosition() {
+  return currentPosition !== null;
+}
+
 /**
- * Calculate indicators and place sell order if conditions met using enhanced candle cache
+ * Analyze all subscribed tokens and place sell order for the one with smallest body percentage
+ * @param {Array} tokenList - Array of {token, symbol} objects
+ * @returns {Promise<void>}
+ */
+async function analyzeAndPlaceSellOrder(tokenList) {
+  try {
+    // Find token with smallest body percentage (using SELL scan logic)
+    const selectedToken = await findSmallestBodyToken(tokenList, 'SELL');
+    
+    if (!selectedToken) {
+      console.log(`❌ No token selected for trading - analysis failed`);
+      return;
+    }
+    
+    console.log(`✅ STOCK: ${selectedToken.symbol}, REASON: ${selectedToken.reason}`);
+    
+    // Place sell order for the selected token
+    await placeSellOrder(selectedToken.token, selectedToken.symbol, selectedToken.ltp);
+    
+  } catch (error) {
+    console.error(`❌ Error in token analysis and order placement: ${error.message}`);
+  }
+}
+
+/**
+ * SIMPLIFIED: Place sell order immediately upon subscription (no indicator calculations)
  * @param {string|number} token - instrument token
  * @param {string} symbol - trading symbol
  * @returns {Promise<void>}
  */
 async function checkAndSellOnSubscription(token, symbol) {
   try {
-    console.log(`� Checking ${symbol} using enhanced candle cache...`);
+    console.log(`� IMMEDIATE SELL for ${symbol} - NO CONDITIONS CHECK`);
     
-    // Get live indicators from enhanced candle cache
-    const indicators = getLiveIndicatorsFromCache(token);
-    if (!indicators) {
-      console.log(`⚠️ No indicators available for ${symbol} from cache`);
-      return;
-    }
+    // Get current LTP from WebSocket or use a default value
+    const ltp = global.currentLTP || 100; // Use current LTP from WebSocket data
     
-    const { rsi, ema9, ema21, vwap, ltp, totalCandles, todayCandles, rsiArray, hourlyEMA9, hourlyVWAP, currentHourOpen } = indicators;
+    // COMMENTED OUT - All indicator calculations and conditions
+    // const indicators = getLiveIndicatorsFromCache(token);
+    // if (!indicators) {
+    //   console.log(`⚠️ No indicators available for ${symbol} from cache`);
+    //   return;
+    // }
+    // 
+    // const { rsi, ema9, ema21, vwap, ltp, totalCandles, todayCandles, rsiArray, hourlyEMA9, hourlyVWAP, currentHourOpen } = indicators;
+    // 
+    // console.log(`📊 ${symbol} Enhanced Cache Indicators (${totalCandles} total, ${todayCandles} today):`);
+    // console.log(`   1M: RSI=${rsi?.toFixed(2)}, EMA9=${ema9?.toFixed(2)}, EMA21=${ema21?.toFixed(2)}, VWAP=${vwap?.toFixed(2)}, LTP=${ltp}`);
+    // console.log(`   1H: EMA9=${hourlyEMA9?.toFixed(2)}, VWAP=${hourlyVWAP?.toFixed(2)}, HourOpen=${currentHourOpen?.toFixed(2)}`);
+    // 
+    // // NEW MULTI-TIMEFRAME SELL CONDITIONS - Calculate first
+    // 
+    // // 1-hour timeframe condition: Only check 1H Open > 1H VWAP
+    // const hourly1hOpenAboveVWAP = currentHourOpen && hourlyVWAP ? 
+    //   currentHourOpen > hourlyVWAP : false;
+    // const hourlyCondition = hourly1hOpenAboveVWAP;
+    // 
+    // // 1-minute timeframe conditions
+    // const minuteEMA9BelowVWAP = ema9 && vwap ? ema9 < vwap : false;
+    // 
+    // // RSI safety check - none of last 10 RSI values should be < 40
+    // const rsiSafetyCheck = (() => {
+    //   if (!rsiArray || rsiArray.length < 10) return false;
+    //   const last10RSI = rsiArray.slice(-10);
+    //   return !last10RSI.some(rsi => rsi < 40); // Return true if NO RSI < 40
+    // })();
+    // 
+    // // Final sell condition: All must be true
+    // const sellCondition = hourlyCondition && minuteEMA9BelowVWAP && rsiSafetyCheck;
     
-    console.log(`📊 ${symbol} Enhanced Cache Indicators (${totalCandles} total, ${todayCandles} today):`);
-    console.log(`   1M: RSI=${rsi?.toFixed(2)}, EMA9=${ema9?.toFixed(2)}, EMA21=${ema21?.toFixed(2)}, VWAP=${vwap?.toFixed(2)}, LTP=${ltp}`);
-    console.log(`   1H: EMA9=${hourlyEMA9?.toFixed(2)}, VWAP=${hourlyVWAP?.toFixed(2)}, HourOpen=${currentHourOpen?.toFixed(2)}`);
+    // SIMPLIFIED - Always place sell order (no conditions)
+    const sellCondition = true;
     
-    // NEW MULTI-TIMEFRAME SELL CONDITIONS - Calculate first
-    
-    // 1-hour timeframe condition: Only check 1H Open > 1H VWAP
-    const hourly1hOpenAboveVWAP = currentHourOpen && hourlyVWAP ? 
-      currentHourOpen > hourlyVWAP : false;
-    const hourlyCondition = hourly1hOpenAboveVWAP;
-    
-    // 1-minute timeframe conditions
-    const minuteEMA9BelowVWAP = ema9 && vwap ? ema9 < vwap : false;
-    
-    // RSI safety check - none of last 10 RSI values should be < 40
-    const rsiSafetyCheck = (() => {
-      if (!rsiArray || rsiArray.length < 10) return false;
-      const last10RSI = rsiArray.slice(-10);
-      return !last10RSI.some(rsi => rsi < 40); // Return true if NO RSI < 40
-    })();
-    
-    // Final sell condition: All must be true
-    const sellCondition = hourlyCondition && minuteEMA9BelowVWAP && rsiSafetyCheck;
-    
-    // Broadcast comprehensive indicator values for UI
+    // Broadcast simple update for UI (no indicators)
     if (global.broadcastToClients) {
       global.broadcastToClients({
         type: "simplified_strategy_update",
@@ -769,177 +1389,332 @@ async function checkAndSellOnSubscription(token, symbol) {
           token,
           symbol,
           ltp: ltp,
-          rsi1m: rsi,
-          rsiArray: rsiArray || [],
-          ema9_1m: ema9,
-          ema21_1m: ema21,
-          vwap1m: vwap,
-          
-          // Add hourly indicators to broadcast
-          hourlyEMA9: hourlyEMA9,
-          hourlyVWAP: hourlyVWAP,
-          currentHourOpen: currentHourOpen,
-          
-          // Add individual condition flags for UI table
-          hourly1hOpenAboveVWAP: hourly1hOpenAboveVWAP,
-          hourlyCondition: hourlyCondition,
-          minuteEMA9BelowVWAP: minuteEMA9BelowVWAP,
-          rsiSafetyCheck: rsiSafetyCheck,
           sellCondition: sellCondition,
-          
           timestamp: new Date().toISOString(),
-          totalCandles: totalCandles,
-          todayCandles: todayCandles,
-          source: "orderManager_enhanced_cache"
+          source: "orderManager_immediate_sell"
         }
       });
     }
-    // Place sell order if conditions met
+    
+    // IMMEDIATE SELL ORDER - No conditions check
     if (sellCondition) {
-      console.log(`✅ NEW MULTI-TIMEFRAME SELL CONDITION MET for ${symbol}:`);
-      console.log(`   📈 1H: Open(${currentHourOpen?.toFixed(2)}) > VWAP(${hourlyVWAP?.toFixed(2)}) → ${hourly1hOpenAboveVWAP}`);
-      console.log(`   📉 1M: EMA9(${ema9?.toFixed(2)}) < VWAP(${vwap?.toFixed(2)}) → ${minuteEMA9BelowVWAP}`);
-      console.log(`   🛡️ RSI Safety: No RSI<40 in last 10 → ${rsiSafetyCheck} (Current RSI: ${rsi?.toFixed(2)})`);
+      console.log(`✅ IMMEDIATE SELL ORDER for ${symbol} - NO CONDITIONS REQUIRED`);
       
-      // Uncomment the line below when ready to place actual orders
-      // await placeSellOrder(token, symbol, ltp);
-    } else {
-      console.log(`❌ NEW MULTI-TIMEFRAME Sell condition NOT met for ${symbol}:`);
-      console.log(`   Hourly=${hourlyCondition} (OpenVsVWAP=${hourly1hOpenAboveVWAP})`);
-      console.log(`   Minute=${minuteEMA9BelowVWAP}, RSI_Safety=${rsiSafetyCheck}`);
+      // Place sell order immediately
+      await placeSellOrder(token, symbol, ltp);
     }
   } catch (err) {
-    console.error(`❌ Error in checkAndSellOnSubscription for ${symbol}: ${err.message}`);
+    console.error(`❌ Error in immediate sell for ${symbol}: ${err.message}`);
+  }
+}
+
+// COMMENTED OUT - Check buy conditions and place buy order if conditions are met
+// /**
+//  * Check buy conditions and place buy order if conditions are met
+//  * @param {string|number} token - instrument token
+//  * @param {string} symbol - trading symbol
+//  * @param {number} ltp - last traded price
+//  * @returns {Promise<void>}
+//  */
+// async function checkAndBuyOnSubscription(token, symbol, ltp) {
+//   try {
+//     console.log(`🔍 Checking BUY conditions for ${symbol} at LTP: ${ltp}`);
+//     
+//     // Check if symbol has been traded today (prevent re-trading)
+//     const hasBeenTraded = await hasSymbolBeenTraded(symbol);
+//     if (hasBeenTraded) {
+//       console.log(`🚫 Symbol ${symbol} has already been traded today, skipping BUY order`);
+//       return null;
+//     }
+//
+//     // Get appropriate product type based on current time
+//     const productType = getProductType();
+//     console.log(`📊 Using product type: ${productType} for BUY order on ${symbol}`);
+//
+//     // Check if ANY MIS positions exist (only relevant for MIS orders)
+//     if (productType === 'MIS') {
+//       const hasPosition = await hasAnyPosition();
+//       if (hasPosition) {
+//         console.log(`📊 Existing MIS positions found, skipping BUY order for ${symbol}`);
+//         return null;
+//       }
+//     }
+//
+//     // Check cooldown
+//     if (isCooldownActive(symbol)) {
+//       console.log(`⏳ Cooldown active for ${symbol}, skipping BUY order`);
+//       return null;
+//     }
+//
+//     // Check if a recent order exists for this symbol
+//     if (hasRecentOrder(symbol, 'BUY')) {
+//       console.log(`📝 Recent BUY order exists for ${symbol}, skipping`);
+//       return null;
+//     }
+//
+//     // Calculate quantity based on available funds
+//     const { quantity, availableFunds } = await calculateQuantity(ltp, productType);
+//     if (quantity <= 0) {
+//       console.log(`💰 Insufficient funds for BUY order on ${symbol} (Available: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
+//       return null;
+//     }
+//
+//     console.log(`💹 Placing BUY order for ${symbol}: ${quantity} shares (Available funds: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
+//
+//     // Place the buy order
+//     const orderReason = "New Strategy Buy Order - Multi-timeframe Conditions Met";
+//     const order = await placeOrder(token, "BUY", quantity, ltp, productType, orderReason, symbol);
+//     
+//     if (order && order.order_id) {
+//       console.log(`✅ BUY Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Product: ${productType}) - ${orderReason}`);
+//       
+//       // Update cooldown tracker
+//       const now = Date.now();
+//       if (!cooldownTracker[symbol]) cooldownTracker[symbol] = {};
+//       cooldownTracker[symbol].lastOrderTime = now;
+//       cooldownTracker[symbol].lastBuyOrder = now;
+//       
+//       // Add to traded symbols cache
+//       tradedSymbolsCache.add(symbol);
+//       
+//       // Track open order for potential exit strategies
+//       openOrdersTracker[symbol] = {
+//         orderId: order.order_id,
+//         quantity: quantity,
+//         price: ltp,
+//         productType: productType,
+//         side: 'BUY',
+//         timestamp: now,
+//         exitOrderId: null
+//       };
+//       
+//       // Broadcast order to UI if available
+//       if (global.broadcastToClients) {
+//         console.log(`📡 Broadcasting BUY order for ${symbol}`);
+//         
+//         // Generate chart URL for UI
+//         const chartURL = generateKiteChartURL(symbol, token);
+//         
+//         global.broadcastToClients({
+//           type: "new_buy_order",
+//           data: {
+//             symbol: symbol,
+//             token: token,
+//             side: "BUY",
+//             quantity: quantity,
+//             price: ltp,
+//             orderId: order.order_id,
+//             productType: productType,
+//             timestamp: new Date().toISOString(),
+//             reason: `New Strategy Buy Order (${productType})`,
+//             availableFunds: availableFunds,
+//             chartURL: chartURL, // Add chart URL for UI to open
+//             openChart: true // Flag to indicate UI should open chart
+//           }
+//         });
+//       }
+//       
+//       return order;
+//     } else {
+//       console.log(`❌ Failed to place BUY order for ${symbol}`);
+//       return null;
+//     }
+//   } catch (err) {
+//     console.error(`❌ Error placing BUY order for ${symbol}: ${err.message}`);
+//     return null;
+//   }
+// }
+
+/**
+ * Determine order type based on filename
+ * @param {string} filename - CSV filename
+ * @returns {string} - "BUY" or "SELL" or "UNKNOWN"
+ */
+function determineOrderTypeFromFilename(filename) {
+  const lowerFilename = filename.toLowerCase();
+  
+  if (lowerFilename.includes('buy')) {
+    return 'BUY';
+  } else if (lowerFilename.includes('sell')) {
+    return 'SELL';
+  } else {
+    return 'UNKNOWN';
   }
 }
 
 /**
- * Check buy conditions and place buy order if conditions are met
- * @param {string|number} token - instrument token
- * @param {string} symbol - trading symbol
- * @param {number} ltp - last traded price
+ * Place order based on scan file type and candle body analysis
+ * @param {Array} tokenList - Array of {token, symbol} objects
+ * @param {string} filename - CSV filename to determine order type
  * @returns {Promise<void>}
  */
-async function checkAndBuyOnSubscription(token, symbol, ltp) {
+async function placeOrderBasedOnScanType(tokenList, filename) {
   try {
-    console.log(`🔍 Checking BUY conditions for ${symbol} at LTP: ${ltp}`);
+    const orderType = determineOrderTypeFromFilename(filename);
+    console.log(`\n� ===== SCAN FILE ANALYSIS =====`);
+    console.log(`📄 Scan file: ${filename}`);
+    console.log(`🎯 Detected order type: ${orderType}`);
+    console.log(`📊 Number of tokens in scan: ${tokenList.length}`);
     
-    // Check if symbol has been traded today (prevent re-trading)
-    const hasBeenTraded = await hasSymbolBeenTraded(symbol);
-    if (hasBeenTraded) {
-      console.log(`🚫 Symbol ${symbol} has already been traded today, skipping BUY order`);
-      return null;
+    if (orderType === 'UNKNOWN') {
+      console.log(`❌ Cannot determine order type from filename: ${filename}`);
+      console.log(`💡 Filename should contain 'buy' or 'sell' to determine order type`);
+      return;
     }
-
-    // Get appropriate product type based on current time
-    const productType = getProductType();
-    console.log(`📊 Using product type: ${productType} for BUY order on ${symbol}`);
-
-    // Check if ANY MIS positions exist (only relevant for MIS orders)
-    if (productType === 'MIS') {
-      const hasPosition = await hasAnyPosition();
-      if (hasPosition) {
-        console.log(`📊 Existing MIS positions found, skipping BUY order for ${symbol}`);
-        return null;
-      }
+    
+    console.log(`\n🔍 ===== MOVEMENT ANALYSIS =====`);
+    if (orderType === 'BUY') {
+      console.log(`📈 BUY SCAN: Select stock with minimum upward movement`);
+      console.log(`💡 Logic: Among rising stocks, pick the one with smallest gain for safer entry`);
+    } else if (orderType === 'SELL') {
+      console.log(`📉 SELL SCAN: Select stock with minimum downward movement`);
+      console.log(`💡 Logic: Among declining stocks, pick the one with smallest loss for better short entry`);
     }
-
-    // Check cooldown
-    if (isCooldownActive(symbol)) {
-      console.log(`⏳ Cooldown active for ${symbol}, skipping BUY order`);
-      return null;
+    
+    // Find token based on scan type-specific logic
+    const selectedToken = await findSmallestBodyToken(tokenList, orderType);
+    
+    if (!selectedToken) {
+      console.log(`❌ No token selected for trading - analysis failed for ${filename}`);
+      return;
     }
-
-    // Check if a recent order exists for this symbol
-    if (hasRecentOrder(symbol, 'BUY')) {
-      console.log(`📝 Recent BUY order exists for ${symbol}, skipping`);
-      return null;
+    
+    console.log(`\n🎯 ===== FINAL DECISION =====`);
+    console.log(`✅ SELECTED STOCK: ${selectedToken.symbol}`);
+    console.log(`📊 SELECTION REASON: selectedToken.reason`);
+    console.log(`📋 ORDER TYPE: ${orderType} (based on filename: ${filename})`);
+    console.log(`💰 ENTRY PRICE: ₹${selectedToken.ltp.toFixed(2)}`);
+    console.log(`📈 CANDLE DATA: Open=₹${selectedToken.open.toFixed(2)}, Close=₹${selectedToken.close.toFixed(2)}`);
+    
+    // Place order based on scan type
+    if (orderType === 'BUY') {
+      console.log(`\n🟢 ===== PLACING BUY ORDER =====`);
+      await placeBuyOrder(selectedToken.token, selectedToken.symbol, selectedToken.ltp);
+    } else if (orderType === 'SELL') {
+      console.log(`\n🔴 ===== PLACING SELL ORDER =====`);
+      await placeSellOrder(selectedToken.token, selectedToken.symbol, selectedToken.ltp);
     }
+    
+  } catch (error) {
+    console.error(`❌ Error in scan-based order placement: ${error.message}`);
+  }
+}
 
-    // Calculate quantity based on available funds
-    const { quantity, availableFunds } = await calculateQuantity(ltp, productType);
+/**
+ * SIMPLIFIED BUY ORDER - Place buy order immediately upon subscription
+ * @param {string|number} token - instrument token
+ * @param {string} symbol - trading symbol
+ * @param {number} ltp - current LTP
+ * @returns {Promise<void>}
+ */
+async function placeBuyOrder(token, symbol, ltp) {
+  try {
+    console.log(`\n� ===== BUY ORDER CALCULATION =====`);
+    console.log(`🏢 Stock: ${symbol} (Token: ${token})`);
+    console.log(`💲 Current LTP: ₹${ltp.toFixed(2)}`);
+    
+    // Use 4.5x leverage for quantity calculation
+    const funds = 11111; // Available funds
+    const leverageMultiplier = 4.5;
+    const leveragedFunds = funds * leverageMultiplier;
+    const quantity = Math.floor(leveragedFunds / ltp);
+    
+    console.log(`📊 ===== LEVERAGE CALCULATION =====`);
+    console.log(`💼 Base Funds: ₹${funds.toLocaleString()}`);
+    console.log(`🚀 Leverage Multiplier: ${leverageMultiplier}x`);
+    console.log(`💰 Leveraged Capital: ₹${leveragedFunds.toLocaleString()}`);
+    console.log(`📈 Calculated Quantity: ${quantity} shares`);
+    console.log(`💵 Total Investment: ₹${(quantity * ltp).toLocaleString()}`);
+    console.log(`🎯 Capital Utilization: ${((quantity * ltp / leveragedFunds) * 100).toFixed(1)}%`);
+    
     if (quantity <= 0) {
-      console.log(`💰 Insufficient funds for BUY order on ${symbol} (Available: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
-      return null;
+      console.log(`❌ BUY ORDER FAILED: Cannot calculate valid quantity`);
+      console.log(`💡 LTP: ₹${ltp}, Leveraged funds: ₹${leveragedFunds}`);
+      console.log(`🔧 Required: At least ₹${ltp.toFixed(2)} per share`);
+      return;
     }
-
-    console.log(`💹 Placing BUY order for ${symbol}: ${quantity} shares (Available funds: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
-
-    // Place the buy order
-    const orderReason = "New Strategy Buy Order - Multi-timeframe Conditions Met";
-    const order = await placeOrder(token, "BUY", quantity, ltp, productType, orderReason, symbol);
     
-    if (order && order.order_id) {
-      console.log(`✅ BUY Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Product: ${productType}) - ${orderReason}`);
+    console.log(`\n� ===== ORDER EXECUTION =====`);
+    console.log(`🔄 Transaction: BUY`);
+    console.log(`🏛️ Exchange: NSE`);
+    console.log(`📊 Product: MIS (Intraday)`);
+    console.log(`📈 Order Type: MARKET`);
+    console.log(`🚀 Executing BUY order for ${symbol}...`);
+    
+    // Place the BUY order
+    const orderResult = await placeOrder(
+      symbol,
+      "BUY",
+      quantity,
+      "MARKET",
+      "MIS",
+      null, // no price for market order
+      null  // no trigger price
+    );
+    
+    if (orderResult && orderResult.order_id) {
+      console.log(`✅ ===== BUY ORDER SUCCESS =====`);
+      console.log(`🎯 Order ID: ${orderResult.order_id}`);
+      console.log(`📈 Stock: ${symbol}`);
+      console.log(`💰 Quantity: ${quantity} shares`);
+      console.log(`💲 Price: ₹${ltp.toFixed(2)} per share`);
+      console.log(`💵 Total Value: ₹${(quantity * ltp).toLocaleString()}`);
+      console.log(`🚀 Strategy: Leveraged intraday buy based on smallest candle body analysis`);
       
-      // Update cooldown tracker
-      const now = Date.now();
-      if (!cooldownTracker[symbol]) cooldownTracker[symbol] = {};
-      cooldownTracker[symbol].lastOrderTime = now;
-      cooldownTracker[symbol].lastBuyOrder = now;
+      // Set up automatic target order for ₹5000 profit
+      const targetPrice = ltp + (PROFIT_TARGET / quantity);
+      console.log(`\n🎯 ===== TARGET SETUP =====`);
+      console.log(`💰 Profit Target: ₹${PROFIT_TARGET.toLocaleString()}`);
+      console.log(`📊 Target Price: ₹${targetPrice.toFixed(2)}`);
+      console.log(`⏰ Target order will be placed in 2 seconds...`);
       
-      // Add to traded symbols cache
-      tradedSymbolsCache.add(symbol);
-      
-      // Track open order for potential exit strategies
-      openOrdersTracker[symbol] = {
-        orderId: order.order_id,
-        quantity: quantity,
-        price: ltp,
-        productType: productType,
-        side: 'BUY',
-        timestamp: now,
-        exitOrderId: null
-      };
-      
-      // Broadcast order to UI if available
-      if (global.broadcastToClients) {
-        console.log(`📡 Broadcasting BUY order for ${symbol}`);
-        global.broadcastToClients({
-          type: "new_buy_order",
-          data: {
-            symbol: symbol,
-            token: token,
-            side: "BUY",
-            quantity: quantity,
-            price: ltp,
-            orderId: order.order_id,
-            productType: productType,
-            timestamp: new Date().toISOString(),
-            reason: `New Strategy Buy Order (${productType})`,
-            availableFunds: availableFunds
-          }
-        });
-      }
-      
-      return order;
-    } else {
-      console.log(`❌ Failed to place BUY order for ${symbol}`);
-      return null;
+      setTimeout(() => {
+        placeTargetOrder(symbol, quantity, targetPrice, orderResult.order_id);
+      }, 2000);
     }
-  } catch (err) {
-    console.error(`❌ Error placing BUY order for ${symbol}: ${err.message}`);
-    return null;
+    
+  } catch (error) {
+    console.log(`❌ ===== BUY ORDER FAILED =====`);
+    console.log(`🏢 Stock: ${symbol}`);
+    console.log(`💲 LTP: ₹${ltp.toFixed(2)}`);
+    console.log(`⚠️ Error: ${error.message}`);
+    console.log(`🔧 Possible reasons: Insufficient margin, market closed, invalid symbol`);
   }
 }
 
 module.exports = {
   placeOrder,
-  placeBuyOrder,
-  placeSellOrder,
+  placeBuyOrder, // NEW - BUY order function for buy scan files
+  placeSellOrder, // IMMEDIATE Short selling function (sell first, buy back later)
   placeExitOrder,
   placeTargetOrder,
   placeStopLossOrder,
   placeTargetAndStopLoss,
+  placeShortTargetAndStopLoss,
+  placeShortTargetOrder, // Target-only function for short positions
   hasSymbolBeenTraded,
+  canPlaceNewPosition,
+  resetPosition,
+  getCurrentPosition,
+  hasCurrentPosition,
+  generateKiteChartURL,
   cooldownTracker,
   openOrdersTracker,
   getPositions,
   getAvailableFunds,
-  calculateQuantity,
+  calculateQuantity, // KEEP - Uses 4.5x leverage calculation
   isMISTimeOver,
   getProductType,
-  checkAndSellOnSubscription,
-  checkAndBuyOnSubscription, // Export new buy function
-  getLiveIndicatorsFromCache // Export new function
+  checkAndSellOnSubscription, // IMMEDIATE sell orders (no conditions)
+  // checkAndBuyOnSubscription, // COMMENTED OUT - Buy order conditions
+  getLiveIndicatorsFromCache, // Simplified - no calculations
+  shouldEvaluateTradingConditions, // Simplified - always returns true
+  getHistoricalDataBatch, // NEW - Efficient batch historical data fetching
+  analyzeCandleBodyFromData, // NEW - Analyze candle body from already fetched data
+  findSmallestBodyToken, // NEW - Find token with smallest body percentage (uses batch approach)
+  analyzeAndPlaceSellOrder, // NEW - Analyze all tokens and place order for smallest body
+  placeOrderBasedOnScanType, // NEW - Place order based on scan file type (buy/sell)
+  determineOrderTypeFromFilename, // NEW - Determine order type from filename
+  // isNewServerSession: require("../cache/sharedCache").isNewServerSession, // COMMENTED OUT
+  // markServerInitialized: require("../cache/sharedCache").markServerInitialized // COMMENTED OUT
 };

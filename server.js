@@ -614,8 +614,12 @@ function processCSVImport(filePath) {
         }
         console.log(`✅ Analysis data calculated for ${tokens.length} tokens`);
         
-        subscribeToTokens(tokens); // Subscribe to CSV tokens
-        console.log(`✅ Subscribed to ${tokens.length} tokens from filtered CSV`);
+        // Extract filename from filepath for order type detection
+        const filename = path.basename(filePath);
+        console.log(`📄 Processing CSV file: ${filename}`);
+        
+        subscribeToTokens(tokens, filename); // Subscribe to CSV tokens with filename
+        console.log(`✅ Subscribed to ${tokens.length} tokens from filtered CSV: ${filename}`);
         
         setTimeout(() => {
           broadcastAllSubscribedTokens(); // Broadcast token data

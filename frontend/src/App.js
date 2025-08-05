@@ -68,6 +68,23 @@ function App() {
           addDebugMessage(`Loaded ${msg.tokens.length} subscribed tokens`);
         }
         
+        // Handle order placement notifications
+        if (msg.type === "order_placed" || msg.type === "new_buy_order") {
+          console.log("📈 ORDER PLACED:", msg.data);
+          addDebugMessage(`Order: ${msg.data.orderType || msg.data.side} ${msg.data.symbol}`);
+          
+          // Show order notification
+          const orderInfo = `${msg.data.orderType || msg.data.side} Order: ${msg.data.symbol} | Qty: ${msg.data.quantity} | Price: ₹${msg.data.price} | ID: ${msg.data.orderId}`;
+          alert(`🎯 ORDER PLACED!\n${orderInfo}\n\nReason: ${msg.data.reason}`);
+          
+          // Auto-open Kite chart if chartURL is provided
+          if (msg.data.chartURL && msg.data.openChart) {
+            console.log("📊 Opening Kite chart:", msg.data.chartURL);
+            addDebugMessage(`Opening chart for ${msg.data.symbol}`);
+            window.open(msg.data.chartURL, '_blank');
+          }
+        }
+        
         if ((msg.type === "filtered_token_update" || msg.type === "simplified_strategy_update" || msg.type === "tick_update") && msg.data) {
           console.log("🔥 PROCESSING TOKEN:", msg.data.symbol, msg.data.token);
           addDebugMessage(`Processing: ${msg.data.symbol}`);
