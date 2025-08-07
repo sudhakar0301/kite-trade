@@ -2,6 +2,132 @@ const cooldownTracker = {};
 const ORDER_COOLDOWN_MS = 60000; // 1 minute cooldown between orders for same symbol
 const SAME_ORDER_COOLDOWN_MS = 300000; // 5 minute cooldown for same order type
 
+// Audio notification for order placement
+function playOrderPlacedAudio() {
+  try {
+    // Windows-specific audio using PowerShell with text-to-speech
+    const { exec } = require('child_process');
+    
+    // Method 1: Text-to-Speech announcement
+    exec('powershell -c "Add-Type -AssemblyName System.Speech; $speak = New-Object System.Speech.Synthesis.SpeechSynthesizer; $speak.Rate = 2; $speak.Speak(\'Order placed\')"', (ttsError) => {
+      if (ttsError) {
+        // Method 2: System sound with beep
+        exec('powershell -c "(New-Object Media.SoundPlayer \'C:\\Windows\\Media\\Windows Ding.wav\').PlaySync();"', (soundError) => {
+          if (soundError) {
+            // Method 3: PowerShell beep with specific frequency
+            exec('powershell -c "[console]::beep(800,500)"', (beepError) => {
+              if (beepError) {
+                console.log('\u0007'); // Final fallback to ASCII bell
+              }
+            });
+          }
+        });
+      }
+    });
+    
+    // Additional console notification with sound effect text
+    console.log(`🔊 AUDIO ALERT: ORDER PLACED! 🔊`);
+    
+    // Reset the waiting timer since an order was placed
+    resetWaitingTimer();
+    
+  } catch (error) {
+    console.log(`⚠️ Audio notification failed: ${error.message}`);
+    console.log('\u0007'); // Fallback to ASCII bell
+  }
+}
+
+// Audio notification for waiting for orders
+function playWaitingForOrderAudio() {
+  try {
+    // Windows-specific audio using PowerShell with text-to-speech
+    const { exec } = require('child_process');
+    
+    // Method 1: Text-to-Speech announcement
+    exec('powershell -c "Add-Type -AssemblyName System.Speech; $speak = New-Object System.Speech.Synthesis.SpeechSynthesizer; $speak.Rate = 2; $speak.Speak(\'Waiting for order\')"', (ttsError) => {
+      if (ttsError) {
+        // Method 2: System sound
+        exec('powershell -c "(New-Object Media.SoundPlayer \'C:\\Windows\\Media\\Windows Background.wav\').PlaySync();"', (soundError) => {
+          if (soundError) {
+            // Method 3: PowerShell double beep
+            exec('powershell -c "[console]::beep(400,300); Start-Sleep -m 200; [console]::beep(500,300)"', (beepError) => {
+              if (beepError) {
+                console.log('\u0007\u0007'); // Final fallback to double ASCII bell
+              }
+            });
+          }
+        });
+      }
+    });
+    
+    // Additional console notification with waiting message
+    console.log(`⏳ AUDIO ALERT: WAITING FOR ORDER... ⏳`);
+    
+  } catch (error) {
+    console.log(`⚠️ Waiting audio notification failed: ${error.message}`);
+    console.log('\u0007\u0007'); // Fallback to double ASCII bell
+  }
+}
+
+// Timer management for waiting audio
+let waitingTimer = null;
+let lastOrderTimestamp = Date.now();
+const WAITING_INTERVAL_MS = 60000; // 1 minute = 60,000 milliseconds
+
+// Function to start the waiting timer
+function startWaitingTimer() {
+  try {
+    // Clear any existing timer
+    if (waitingTimer) {
+      clearInterval(waitingTimer);
+    }
+    
+    console.log(`⏰ Starting waiting timer - will play "waiting for order" audio every minute`);
+    
+    // Set up interval to check every minute
+    waitingTimer = setInterval(() => {
+      const now = Date.now();
+      const timeSinceLastOrder = now - lastOrderTimestamp;
+      
+      // If more than 1 minute has passed since last order, play waiting audio
+      if (timeSinceLastOrder >= WAITING_INTERVAL_MS) {
+        playWaitingForOrderAudio();
+        console.log(`⏳ No orders placed in the last ${Math.floor(timeSinceLastOrder / 1000)} seconds - waiting for order...`);
+      }
+    }, WAITING_INTERVAL_MS); // Check every minute
+    
+  } catch (error) {
+    console.error(`❌ Error starting waiting timer: ${error.message}`);
+  }
+}
+
+// Function to reset the waiting timer (called when an order is placed)
+function resetWaitingTimer() {
+  try {
+    lastOrderTimestamp = Date.now();
+    console.log(`🔄 Order placed - waiting timer reset`);
+  } catch (error) {
+    console.error(`❌ Error resetting waiting timer: ${error.message}`);
+  }
+}
+
+// Function to stop the waiting timer
+function stopWaitingTimer() {
+  try {
+    if (waitingTimer) {
+      clearInterval(waitingTimer);
+      waitingTimer = null;
+      console.log(`⏹️ Waiting timer stopped`);
+    }
+  } catch (error) {
+    console.error(`❌ Error stopping waiting timer: ${error.message}`);
+  }
+}
+
+// Initialize the waiting timer when the module loads
+console.log(`🎵 Audio system initialized - starting waiting timer`);
+startWaitingTimer();
+
 // Import historical data functions for candle body analysis
 const { getHistoricalData } = require("../strategy/scanner");
 const { fromToday, to1 } = require("../utils/fromAndToDate");
@@ -16,7 +142,7 @@ const MIS_CUTOFF_TIME = { hours: 15, minutes: 15 }; // 3:15 PM - standard MIS cu
 
 // Track open orders and their exit orders
 const openOrdersTracker = {}; // { symbol: { orderId, quantity, price, exitOrderId, timestamp } }
-const PROFIT_TARGET = 5000; // Fixed profit target of ₹5000
+const PROFIT_TARGET = 1300; // Fixed profit target of ₹5000
 const STOP_LOSS_AMOUNT = 5; // Fixed stop loss of ₹5 (manual handling)
 
 // PREDEFINED VALUES FOR IMMEDIATE SELL ORDERS
@@ -136,14 +262,39 @@ async function findSmallestBodyToken(tokenList, scanType = 'UNKNOWN') {
       console.log(`🎯 SINGLE STOCK DETECTED: ${singleStock.symbol}`);
       console.log(`✅ Placing order immediately (no movement analysis needed)`);
       
-      // Return basic structure for single stock
+      // For single stock, we still need to get current LTP for order placement
+      let currentLTP = 0;
+      
+      // Try to get LTP from WebSocket data first
+      if (global.currentLTP && global.currentLTP > 0) {
+        currentLTP = global.currentLTP;
+        console.log(`💰 Using WebSocket LTP: ₹${currentLTP}`);
+      } else {
+        // Fallback: Get latest candle data to get close price as LTP
+        try {
+          const historicalData = await getHistoricalDataBatch([singleStock]);
+          if (historicalData.length > 0 && historicalData[0].candles && historicalData[0].candles.length > 0) {
+            const latestCandle = historicalData[0].candles[historicalData[0].candles.length - 1];
+            currentLTP = latestCandle.close;
+            console.log(`💰 Using latest candle close as LTP: ₹${currentLTP}`);
+          } else {
+            console.log(`❌ Could not get LTP for single stock ${singleStock.symbol} - using default`);
+            currentLTP = 100; // Fallback value
+          }
+        } catch (error) {
+          console.log(`❌ Error getting LTP for single stock: ${error.message} - using default`);
+          currentLTP = 100; // Fallback value
+        }
+      }
+      
+      // Return basic structure for single stock with valid LTP
       return {
         token: singleStock.token,
         symbol: singleStock.symbol,
         movementPercentage: 0,
-        firstOpen: 0,
-        lastClose: 0,
-        ltp: 0, // Will be filled by actual order placement logic
+        firstOpen: currentLTP,
+        lastClose: currentLTP,
+        ltp: currentLTP, // Use actual LTP
         reason: 'Single stock in scan - immediate order'
       };
     }
@@ -779,6 +930,13 @@ async function placeSellOrder(token, symbol, ltp) {
       return null;
     }
     
+    // Additional validation for order placement
+    if (!quantity || quantity === 0 || isNaN(quantity)) {
+      console.log(`❌ Invalid quantity calculated for ${symbol}: ${quantity}`);
+      console.log(`Debug: availableFunds=${availableFunds}, ltp=${ltp}, productType=${productType}`);
+      return null;
+    }
+    
     let orderReason = `IMMEDIATE Short Sell (${productType}) - Target: ₹${PROFIT_TARGET} (Stop Loss: Manual)`;
 
     console.log(`💹 Placing IMMEDIATE short sell order for ${symbol}: ${quantity} shares (Available funds: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
@@ -791,10 +949,21 @@ async function placeSellOrder(token, symbol, ltp) {
       product: productType, // Use calculated product type
       order_type: 'MARKET'
     };
+    
+    // Final validation before API call
+    console.log(`🔍 Order validation: Symbol=${orderParams.tradingsymbol}, Quantity=${orderParams.quantity}, Type=${orderParams.transaction_type}, Product=${orderParams.product}`);
+    
+    if (!orderParams.quantity || orderParams.quantity <= 0) {
+      console.log(`❌ CRITICAL: Order quantity is invalid: ${orderParams.quantity}`);
+      return null;
+    }
 
     if (global.kite) {
       const order = await global.kite.placeOrder('regular', orderParams);
       console.log(`✅ IMMEDIATE SELL Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Product: ${productType}) - ${orderReason}`);
+      
+      // 🔊 PLAY AUDIO NOTIFICATION FOR ORDER PLACEMENT
+      playOrderPlacedAudio();
       
       // Track the order
       cooldownTracker[symbol] = { 
@@ -902,6 +1071,17 @@ async function getAvailableFunds() {
 // Function to calculate quantity based on available funds and price
 function calculateQuantity(availableFunds, price) {
   try {
+    // Validate inputs
+    if (!availableFunds || availableFunds <= 0) {
+      console.log(`❌ Invalid available funds: ${availableFunds}`);
+      return 1;
+    }
+    
+    if (!price || price <= 0) {
+      console.log(`❌ Invalid price: ${price}`);
+      return 1;
+    }
+    
     // For intraday trading, use 4.5x leverage
     // Use 80% of leveraged funds to leave buffer for brokerage and margin
     const leveragedFunds = availableFunds * 4.5;
@@ -911,12 +1091,12 @@ function calculateQuantity(availableFunds, price) {
     // Ensure minimum quantity of 1
     if (quantity < 1) quantity = 1;
     
-    console.log(`💰 Quantity calculation: Available: ₹${availableFunds}, Leveraged (4.5x): ₹${leveragedFunds.toFixed(2)}, Usable (80%): ₹${leveragedFunds.toFixed(2)}, Price: ₹${price}, Calculated Qty: ${quantity}`);
+    console.log(`💰 Quantity calculation: Available: ₹${availableFunds}, Leveraged (4.5x): ₹${leveragedFunds.toFixed(2)}, Price: ₹${price}, Calculated Qty: ${quantity}`);
     
     return quantity;
   } catch (err) {
     console.error(`❌ Error calculating quantity: ${err.message}`);
-    return quantity; // Default to 1 share
+    return 1; // Default to 1 share instead of undefined variable
   }
 }
 
@@ -975,6 +1155,9 @@ async function placeTargetOrder(symbol, quantity, buyPrice, productType = 'MIS')
     if (global.kite) {
       const order = await global.kite.placeOrder('regular', orderParams);
       console.log(`🎯 TARGET Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Total Target Profit: ₹${PROFIT_TARGET}, Product: ${productType})`);
+      
+      // 🔊 PLAY AUDIO NOTIFICATION FOR TARGET ORDER PLACEMENT
+      playOrderPlacedAudio();
       
       return {
         orderId: order.order_id,
@@ -1118,6 +1301,9 @@ async function placeShortTargetAndStopLoss(symbol, quantity, sellPrice, productT
       const targetOrder = await global.kite.placeOrder('regular', targetOrderParams);
       console.log(`🎯 SHORT TARGET Order placed for ${symbol}: ${targetOrder.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Total Target Profit: ₹${PROFIT_TARGET})`);
       
+      // 🔊 PLAY AUDIO NOTIFICATION FOR SHORT TARGET ORDER PLACEMENT
+      playOrderPlacedAudio();
+      
       results.targetOrder = {
         orderId: targetOrder.order_id,
         price: targetPrice,
@@ -1142,6 +1328,9 @@ async function placeShortTargetAndStopLoss(symbol, quantity, sellPrice, productT
     if (global.kite) {
       const stopOrder = await global.kite.placeOrder('regular', stopOrderParams);
       console.log(`🛑 SHORT STOP LOSS Order placed for ${symbol}: ${stopOrder.order_id} (Qty: ${quantity}, Stop Price: ${stopPrice.toFixed(2)}, Total Stop Loss: ₹${STOP_LOSS_AMOUNT})`);
+      
+      // 🔊 PLAY AUDIO NOTIFICATION FOR SHORT STOP LOSS ORDER PLACEMENT
+      playOrderPlacedAudio();
       
       results.stopLossOrder = {
         orderId: stopOrder.order_id,
@@ -1218,6 +1407,9 @@ async function placeShortTargetOrder(symbol, quantity, sellPrice, productType = 
     if (global.kite) {
       const targetOrder = await global.kite.placeOrder('regular', targetOrderParams);
       console.log(`🎯 SHORT TARGET Order placed for ${symbol}: ${targetOrder.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Total Target Profit: ₹${PROFIT_TARGET})`);
+      
+      // 🔊 PLAY AUDIO NOTIFICATION FOR SHORT TARGET ORDER PLACEMENT
+      playOrderPlacedAudio();
       
       results.targetOrder = {
         orderId: targetOrder.order_id,
@@ -1550,6 +1742,14 @@ function determineOrderTypeFromFilename(filename) {
  */
 async function placeOrderBasedOnScanType(tokenList, filename) {
   try {
+    // Validate filename parameter
+    if (!filename || typeof filename !== 'string') {
+      console.log(`❌ Invalid or missing filename parameter: ${filename}`);
+      console.log(`🔄 Falling back to generic SELL order placement`);
+      await analyzeAndPlaceSellOrder(tokenList);
+      return;
+    }
+    
     const orderType = determineOrderTypeFromFilename(filename);
     console.log(`\n� ===== SCAN FILE ANALYSIS =====`);
     console.log(`📄 Scan file: ${filename}`);
@@ -1715,6 +1915,12 @@ module.exports = {
   analyzeAndPlaceSellOrder, // NEW - Analyze all tokens and place order for smallest body
   placeOrderBasedOnScanType, // NEW - Place order based on scan file type (buy/sell)
   determineOrderTypeFromFilename, // NEW - Determine order type from filename
+  // Audio and timer functions
+  playOrderPlacedAudio, // Audio notification when order is placed
+  playWaitingForOrderAudio, // Audio notification when waiting for order
+  startWaitingTimer, // Start the waiting timer
+  resetWaitingTimer, // Reset the waiting timer (called when order placed)
+  stopWaitingTimer, // Stop the waiting timer
   // isNewServerSession: require("../cache/sharedCache").isNewServerSession, // COMMENTED OUT
   // markServerInitialized: require("../cache/sharedCache").markServerInitialized // COMMENTED OUT
 };
