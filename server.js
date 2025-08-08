@@ -32,6 +32,7 @@ const {
   cleanup
 } = require('./live/tickListener');
 const { initKiteConnect } = require('./kite/connection');
+const { initializeInstrumentsCache } = require('./utils/instrumentsCache');
 const instruments = require('./data/nse500.json');
 const { calculateRSI, calculateVWAP, calculateEMA } = require('./strategy/indicators');
 const { from35, from15, fromToday, to15 } = require('./utils/fromAndToDate');
@@ -125,6 +126,20 @@ if (fs.existsSync(accessTokenPath)) {
   global.kite = kc;
   global.fetchHistoricalForToken = fetchHistoricalForToken; // Make function globally available
   initKiteConnect(accessToken);
+  
+  // Initialize instruments cache with tick sizes
+  console.log('📊 Initializing instruments cache...');
+  initializeInstrumentsCache(kc).then(instrumentsData => {
+    if (instrumentsData) {
+      console.log(`✅ Instruments cache initialized with ${Object.keys(instrumentsData.symbolTickSizes).length} symbols`);
+    } else {
+      console.log('⚠️ Instruments cache initialization failed, using fallback tick sizes');
+    }
+  }).catch(error => {
+    console.error(`❌ Error initializing instruments cache: ${error.message}`);
+    console.log('🛡️ Server continues with fallback tick sizes');
+  });
+  
   //initTickListener();
   initTickListener(); // Initialize original tick listener with simplified strategy
   
@@ -647,6 +662,20 @@ app.get('/login/callback', async (req, res) => {
     console.log('✅ Logged in! Access token saved');
     global.kite = kc;
     initKiteConnect(session.access_token);
+    
+    // Initialize instruments cache with tick sizes after login
+    console.log('📊 Initializing instruments cache after login...');
+    initializeInstrumentsCache(kc).then(instrumentsData => {
+      if (instrumentsData) {
+        console.log(`✅ Instruments cache initialized with ${Object.keys(instrumentsData.symbolTickSizes).length} symbols`);
+      } else {
+        console.log('⚠️ Instruments cache initialization failed, using fallback tick sizes');
+      }
+    }).catch(error => {
+      console.error(`❌ Error initializing instruments cache: ${error.message}`);
+      console.log('🛡️ Server continues with fallback tick sizes');
+    });
+    
     initTickListener(); // Initialize original tick listener with simplified strategy after login
 
     res.send('Login successful. You can close this window.');

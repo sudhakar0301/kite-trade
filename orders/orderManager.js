@@ -1084,7 +1084,7 @@ function calculateQuantity(availableFunds, price) {
     
     // For intraday trading, use 4.5x leverage
     // Use 80% of leveraged funds to leave buffer for brokerage and margin
-    const leveragedFunds = availableFunds * 4.5;
+    const leveragedFunds = availableFunds * 0.2;
    // const usableFunds = leveragedFunds * 0.8;
     let quantity = Math.floor(leveragedFunds / price);
 
@@ -1140,7 +1140,13 @@ async function placeTargetOrder(symbol, quantity, buyPrice, productType = 'MIS')
   try {
     // Calculate target price: buyPrice + (profit per share)
     const profitPerShare = PROFIT_TARGET / quantity; // Distribute ₹5000 across all shares
-    const targetPrice = buyPrice + profitPerShare;
+    const rawTargetPrice = buyPrice + profitPerShare;
+    
+    // Round to appropriate tick size for this symbol
+    const tickSize = getTickSize(rawTargetPrice, symbol);
+    const targetPrice = roundToTickSize(rawTargetPrice, tickSize);
+    
+    console.log(`💰 Price calculation for ${symbol}: Raw target: ₹${rawTargetPrice.toFixed(2)}, Tick size: ${tickSize}, Rounded target: ₹${targetPrice.toFixed(2)}`);
     
     const orderParams = {
       exchange: 'NSE',
@@ -1179,7 +1185,13 @@ async function placeTargetOrder(symbol, quantity, buyPrice, productType = 'MIS')
 async function placeStopLossOrder(symbol, quantity, buyPrice, productType = 'MIS') {
   try {
     const lossPerShare = STOP_LOSS_AMOUNT / quantity; // Distribute stop loss across all shares
-    const stopPrice = buyPrice - lossPerShare; // Calculate stop price per share
+    const rawStopPrice = buyPrice - lossPerShare; // Calculate stop price per share
+    
+    // Round to appropriate tick size for this symbol
+    const tickSize = getTickSize(rawStopPrice, symbol);
+    const stopPrice = roundToTickSize(rawStopPrice, tickSize);
+    
+    console.log(`💰 Stop loss calculation for ${symbol}: Raw stop: ₹${rawStopPrice.toFixed(2)}, Tick size: ${tickSize}, Rounded stop: ₹${stopPrice.toFixed(2)}`);
     
     const orderParams = {
       exchange: 'NSE',
@@ -1283,8 +1295,18 @@ async function placeShortTargetAndStopLoss(symbol, quantity, sellPrice, productT
     // Calculate prices per share
     const profitPerShare = PROFIT_TARGET / quantity; // Distribute ₹5000 across all shares
     const lossPerShare = STOP_LOSS_AMOUNT / quantity; // Distribute stop loss across all shares
-    const targetPrice = sellPrice - profitPerShare; // Buy back at lower price for profit
-    const stopPrice = sellPrice + lossPerShare; // Buy back at higher price for loss
+    const rawTargetPrice = sellPrice - profitPerShare; // Buy back at lower price for profit
+    const rawStopPrice = sellPrice + lossPerShare; // Buy back at higher price for loss
+    
+    // Round to appropriate tick sizes
+    const targetTickSize = getTickSize(rawTargetPrice, symbol);
+    const stopTickSize = getTickSize(rawStopPrice, symbol);
+    const targetPrice = roundToTickSize(rawTargetPrice, targetTickSize);
+    const stopPrice = roundToTickSize(rawStopPrice, stopTickSize);
+    
+    console.log(`💰 Short position price calculation for ${symbol}:`);
+    console.log(`   Target: ₹${rawTargetPrice.toFixed(2)} → ₹${targetPrice.toFixed(2)} (tick: ${targetTickSize})`);
+    console.log(`   Stop: ₹${rawStopPrice.toFixed(2)} → ₹${stopPrice.toFixed(2)} (tick: ${stopTickSize})`);
     
     // Place target order (buy back at lower price for profit)
     const targetOrderParams = {
@@ -1379,6 +1401,79 @@ async function placeShortTargetAndStopLoss(symbol, quantity, sellPrice, productT
   }
 }
 
+// Import instruments cache utility
+const { getTickSizeFromCache, getTickSizeByToken } = require('../utils/instrumentsCache');
+
+// Function to round price to appropriate tick size
+function roundToTickSize(price, tickSize = 0.05) {
+  // Common tick sizes: 0.05 for most stocks, 0.10 for some stocks
+  const rounded = Math.round(price / tickSize) * tickSize;
+  return parseFloat(rounded.toFixed(2));
+}
+
+// Function to get tick size from cached instruments data
+function getTickSize(price, symbol = '', token = null) {
+  try {
+    // First try to get from cached instruments data
+    if (global.instrumentsCache) {
+      // Try by symbol first
+      if (symbol) {
+        const tickSize = getTickSizeFromCache(symbol, global.instrumentsCache);
+        if (tickSize && tickSize > 0 && tickSize !== 0.05) { // Only use if not default
+          console.log(`📊 Using cached tick size for ${symbol}: ${tickSize}`);
+          return tickSize;
+        }
+      }
+      
+      // Try by token
+      if (token) {
+        const tickSize = getTickSizeByToken(token, global.instrumentsCache);
+        if (tickSize && tickSize > 0 && tickSize !== 0.05) { // Only use if not default
+          console.log(`📊 Using cached tick size for token ${token}: ${tickSize}`);
+          return tickSize;
+        }
+      }
+    }
+    
+    // Fallback to static mapping for known problematic stocks
+    const knownTickSizes = {
+      'LTIM': 0.50,
+      'GODREJIND': 0.10,
+      'BHARTIARTL': 0.10,
+      'NESTLEIND': 0.50,
+      'ULTRACEMCO': 0.50,
+      'ASIANPAINT': 0.50,
+      'LICI': 0.50,
+      'DIVISLAB': 0.50,
+      'DRREDDY': 0.50,
+      'APOLLOHOSP': 0.50,
+      'BRITANNIA': 0.50,
+      'PIDILITIND': 0.50
+    };
+    
+    if (knownTickSizes[symbol]) {
+      console.log(`📊 Using known tick size for ${symbol}: ${knownTickSizes[symbol]}`);
+      return knownTickSizes[symbol];
+    }
+    
+    // General NSE tick size rules based on price
+    if (price <= 0) return 0.05;
+    
+    if (price >= 10000) {
+      return 0.25; // Stocks above ₹10,000
+    } else if (price >= 5000) {
+      return 0.25; // Stocks between ₹5,000-₹10,000
+    } else if (price >= 1000) {
+      return 0.05; // Stocks between ₹1,000-₹5,000
+    } else {
+      return 0.05; // Default for other price ranges
+    }
+  } catch (error) {
+    console.error(`❌ Error in getTickSize for ${symbol}: ${error.message}`);
+    return 0.05; // Safe default
+  }
+}
+
 // Function to place only target order for short positions (manual stop loss handling)
 async function placeShortTargetOrder(symbol, quantity, sellPrice, productType = 'MIS') {
   try {
@@ -1391,7 +1486,13 @@ async function placeShortTargetOrder(symbol, quantity, sellPrice, productType = 
     // For short positions: target = buy at lower price
     // Calculate target price: sellPrice - (profit per share)
     const profitPerShare = PROFIT_TARGET / quantity; // Distribute ₹5000 across all shares
-    const targetPrice = sellPrice - profitPerShare; // Buy back at lower price for profit
+    const rawTargetPrice = sellPrice - profitPerShare; // Buy back at lower price for profit
+    
+    // Round to appropriate tick size for this symbol
+    const tickSize = getTickSize(rawTargetPrice, symbol);
+    const targetPrice = roundToTickSize(rawTargetPrice, tickSize);
+    
+    console.log(`💰 Price calculation for ${symbol}: Raw target: ₹${rawTargetPrice.toFixed(2)}, Tick size: ${tickSize}, Rounded target: ₹${targetPrice.toFixed(2)}`);
     
     // Place target order (buy back at lower price for profit)
     const targetOrderParams = {
