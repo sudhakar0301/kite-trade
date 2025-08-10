@@ -1,8 +1,8 @@
 {
-  "lastUpdated": "2025-08-08T08:57:53.624Z",
-  "totalInstruments": 8104,
+  "lastUpdated": "2025-08-10T15:36:43.674Z",
+  "totalInstruments": 8132,
   "symbolTickSizes": {
-    "GOLDSTAR-ST": 0.05,
+    "GOLDSTAR-SM": 0.05,
     "21STCENMGM": 0.01,
     "AARTIIND": 0.05,
     "ABAN": 0.01,
@@ -71,6 +71,7 @@
     "MASFIN": 0.05,
     "UNIDT": 0.01,
     "ASHAPURMIN": 0.05,
+    "ASHIMASYN": 0.01,
     "ASHOKLEY": 0.01,
     "IEX": 0.01,
     "ASIANPAINT": 0.1,
@@ -287,6 +288,7 @@
     "648AS30-SG": 0.01,
     "648MZ30-SG": 0.01,
     "65NL30-SG": 0.01,
+    "EVERESTIND": 0.05,
     "652PY30-SG": 0.01,
     "659UP30-SG": 0.01,
     "EUROTEXIND": 0.01,
@@ -406,6 +408,7 @@
     "880IREDA29-N5": 0.01,
     "880IREDA34-N6": 0.01,
     "HINDUNILVR": 0.1,
+    "SUPREMEENG-BE": 0.01,
     "HINDOILEXP": 0.01,
     "HINDPETRO": 0.05,
     "AGI": 0.05,
@@ -1433,7 +1436,6 @@
     "705WB36-SG": 0.01,
     "COASTCORP": 0.01,
     "JAINAM-SM": 0.05,
-    "EVERESTIND-BE": 0.05,
     "ABSLAMC": 0.05,
     "EIFFL-BE": 0.01,
     "PASUPTAC": 0.01,
@@ -1476,6 +1478,7 @@
     "PREMIER-BE": 0.01,
     "DKEGL-SM": 0.05,
     "ROLTA-BZ": 0.01,
+    "RAJVIR-BZ": 0.01,
     "SELMC-BE": 0.01,
     "MEDICAMEQ": 0.05,
     "GULPOLY": 0.01,
@@ -1707,13 +1710,13 @@
     "TREJHARA": 0.01,
     "703HP31-SG": 0.01,
     "702KA31-SG": 0.01,
+    "LCCINFOTEC": 0.01,
     "70MN31B-SG": 0.01,
     "703RJ31-SG": 0.01,
     "702TN31-SG": 0.01,
     "704UP31-SG": 0.01,
     "705UK31-SG": 0.01,
     "714HP33-SG": 0.01,
-    "LCCINFOTEC-BE": 0.01,
     "714TS33-SG": 0.01,
     "712KA34-SG": 0.01,
     "714AP35-SG": 0.01,
@@ -1794,7 +1797,6 @@
     "618GJ26A-SG": 0.01,
     "69PY28-SG": 0.01,
     "645RJ27A-SG": 0.01,
-    "ASHIMASYN-BE": 0.01,
     "727AR32-SG": 0.01,
     "729MZ33-SG": 0.01,
     "724RJ32-SG": 0.01,
@@ -1968,6 +1970,7 @@
     "957ICCL25-YW": 0.01,
     "LOWVOL1": 0.01,
     "97SFL29-YZ": 0.01,
+    "BLUECHIP-BE": 0.01,
     "VETO": 0.01,
     "BSL-BE": 0.01,
     "MOLOWVOL": 0.01,
@@ -2034,7 +2037,6 @@
     "ANUP": 0.1,
     "VCL-BE": 0.01,
     "AUSOMENT-BE": 0.01,
-    "JSLL-SM": 0.05,
     "UFO": 0.01,
     "710GS2029-GS": 0.01,
     "ROTO": 0.01,
@@ -2071,6 +2073,7 @@
     "CAMPUS": 0.05,
     "LEMERITE-SM": 0.05,
     "LIBERTSHOE-BE": 0.05,
+    "QUINTEGRA-BE": 0.01,
     "IL&FSENGG-BZ": 0.01,
     "IL&FSTRANS-BZ": 0.01,
     "EMBASSY-RR": 0.01,
@@ -2263,6 +2266,7 @@
     "803AP36-SG": 0.01,
     "783AS32-SG": 0.01,
     "DGCONTENT-BE": 0.01,
+    "UNIVAFOODS-BE": 0.01,
     "78GJ32A-SG": 0.01,
     "783MN32-SG": 0.01,
     "802MZ36-SG": 0.01,
@@ -2299,7 +2303,7 @@
     "797HR42-SG": 0.01,
     "797RJ42-SG": 0.01,
     "RAMRAT": 0.05,
-    "AGNI-ST": 0.05,
+    "AGNI-SM": 0.05,
     "MOHEALTH": 0.01,
     "UTINIFTETF": 0.01,
     "CONS": 0.01,
@@ -2456,6 +2460,7 @@
     "KSOLVES": 0.05,
     "NATHBIOGEN-BE": 0.01,
     "AGRITECH": 0.01,
+    "GFSTEELS-BE": 0.01,
     "LIBAS": 0.01,
     "755BR32-SG": 0.01,
     "755AS32-SG": 0.01,
@@ -2532,6 +2537,7 @@
     "865SCL24B-Z8": 0.01,
     "905SC24B-Z9": 0.01,
     "TTKHLTCARE": 0.1,
+    "BGLOBAL-BZ": 0.01,
     "BIOCON": 0.05,
     "TIPSFILMS": 0.05,
     "MAHABANK": 0.01,
@@ -2813,6 +2819,7 @@
     "NPBET": 0.01,
     "BAHETI-SM": 0.05,
     "DHARMAJ-BE": 0.05,
+    "SECL-ST": 0.05,
     "SAFARI": 0.1,
     "755BR32A-SG": 0.01,
     "759KA38-SG": 0.01,
@@ -2990,6 +2997,7 @@
     "NRL-BE": 0.01,
     "ACLGATI": 0.01,
     "SAH-BE": 0.01,
+    "INFOMEDIA-BE": 0.01,
     "GOLDKART-ST": 0.05,
     "VISHWARAJ": 0.01,
     "FIEMIND": 0.1,
@@ -3224,7 +3232,7 @@
     "769PN39-SG": 0.01,
     "POCL": 0.1,
     "AMDIND": 0.01,
-    "RAJTV-BE": 0.01,
+    "RAJTV": 0.01,
     "SRIVASAVI-SM": 0.05,
     "PAGEIND": 5,
     "ASTRAL": 0.1,
@@ -3297,6 +3305,8 @@
     "QFIL-SM": 0.05,
     "SIMBHALS-BE": 0.01,
     "CHEMBOND-BE": 0.01,
+    "FSC-BZ": 0.01,
+    "SANCO-BZ": 0.01,
     "HILTON-BE": 0.01,
     "735GJ26-SG": 0.01,
     "766HR29-SG": 0.01,
@@ -3360,9 +3370,9 @@
     "775SK33-SG": 0.01,
     "778RJ33-SG": 0.01,
     "777HR33-SG": 0.01,
+    "WSI": 0.01,
     "779UP33-SG": 0.01,
     "781UP34A-SG": 0.01,
-    "WSI-BE": 0.01,
     "78JK35-SG": 0.01,
     "797PN38-SG": 0.01,
     "DECCANCE": 0.1,
@@ -3380,6 +3390,7 @@
     "GOLD1": 0.01,
     "776TN53-SG": 0.01,
     "776KL58-SG": 0.01,
+    "FLFL-BZ": 0.01,
     "USK": 0.01,
     "ASIANTILES-BE": 0.01,
     "CENTRALBK": 0.01,
@@ -3704,6 +3715,7 @@
     "739KL52-SG": 0.01,
     "TPHQ-BE": 0.01,
     "739TN53-SG": 0.01,
+    "GENSOL-BE": 0.01,
     "MAWANASUG": 0.01,
     "85IFL26-NX": 0.01,
     "PATANJALI": 0.1,
@@ -4023,8 +4035,8 @@
     "970CAGL28-ND": 0.01,
     "CAGL28-NE": 0.01,
     "SABEVENTS-BE": 0.01,
+    "TVVISION": 0.01,
     "SAROJA-SM": 0.05,
-    "TVVISION-BE": 0.01,
     "PRAMARA-ST": 0.05,
     "748AP38A-SG": 0.01,
     "743JK53A-SG": 0.01,
@@ -4042,10 +4054,10 @@
     "746AP41-SG": 0.01,
     "DIACABS": 0.01,
     "JLHL": 0.1,
+    "JIWANRAM-SM": 0.05,
     "716GS2050-GS": 0.01,
     "MITTAL": 0.01,
     "LTTS": 0.1,
-    "JIWANRAM-ST": 0.05,
     "RRKABEL": 0.1,
     "GNA": 0.05,
     "KIRLOSBROS": 0.1,
@@ -4101,8 +4113,8 @@
     "GICL-SM": 0.05,
     "ENDURANCE": 0.1,
     "SCL25A-BH": 0.01,
+    "TARAPUR": 0.01,
     "SCL25B-BI": 0.01,
-    "TARAPUR-BE": 0.01,
     "NIRAJISPAT-BE": 0.05,
     "965SCL28C-BR": 0.01,
     "579GS2030-GS": 0.01,
@@ -4283,7 +4295,9 @@
     "ALPHAETF": 0.01,
     "MAXESTATES": 0.05,
     "KALYANI-BE": 0.01,
+    "COMPINFO-BZ": 0.01,
     "GAYAPROJ-BZ": 0.01,
+    "CMICABLES-BZ": 0.01,
     "ANSALAPI-BZ": 0.01,
     "GOLDIETF": 0.01,
     "RCDL-SM": 0.05,
@@ -4373,7 +4387,6 @@
     "925SCL25Z-NE": 0.01,
     "965SCL25A-NF": 0.01,
     "888SCL25-NG": 0.01,
-    "WAAREEINDO-BE": 0.05,
     "851HUDCO28-NB": 0.01,
     "858HUDCO29-NC": 0.01,
     "876HUDCO28-ND": 0.01,
@@ -4481,7 +4494,7 @@
     "657GJ29-SG": 0.01,
     "658AP30-SG": 0.01,
     "658KA30-SG": 0.01,
-    "ROCKINGDCE-ST": 0.05,
+    "ROCKINGDCE-SM": 0.05,
     "TATATECH": 0.05,
     "SHAH-BE": 0.01,
     "PRESTIGE": 0.1,
@@ -4681,6 +4694,7 @@
     "RBZJEWEL": 0.01,
     "PSPPROJECT": 0.05,
     "MUFTI": 0.01,
+    "GANGOTRI-BZ": 0.01,
     "EFORCE-SM": 0.05,
     "813PNBH33-N0": 0.01,
     "AZAD": 0.1,
@@ -4764,7 +4778,7 @@
     "SURANASOL": 0.01,
     "STARCEMENT": 0.01,
     "TECHLABS-ST": 0.05,
-    "SHEKHAWATI-BE": 0.01,
+    "SHEKHAWATI": 0.01,
     "SAIFL-ST": 0.05,
     "BFINVEST": 0.05,
     "KICL": 0.1,
@@ -4918,6 +4932,7 @@
     "RHFL-BE": 0.01,
     "CHOLAHLDNG": 0.1,
     "775SIDBI27-N1": 0.01,
+    "EDUCOMP-BZ": 0.01,
     "CAPACITE": 0.05,
     "LIQUIDCASE": 0.01,
     "832TFSIL29-N0": 0.01,
@@ -5217,7 +5232,7 @@
     "646WB30-SG": 0.01,
     "62RJ27-SG": 0.01,
     "WORTH": 0.01,
-    "TIRUPATIFL-BE": 0.01,
+    "TIRUPATIFL": 0.01,
     "577GS2030-GS": 0.01,
     "65RJ50-SG": 0.01,
     "655AP35-SG": 0.01,
@@ -5707,7 +5722,6 @@
     "744MH42A-SG": 0.01,
     "744TS51-SG": 0.01,
     "744TS53-SG": 0.01,
-    "UEL-BE": 0.05,
     "TARACHAND": 0.01,
     "723GS2039-GS": 0.01,
     "DCG-SM": 0.05,
@@ -5912,7 +5926,7 @@
     "743AP44-SG": 0.01,
     "743JK46-SG": 0.01,
     "BOROSCI": 0.01,
-    "TBI-ST": 0.05,
+    "TBI-SM": 0.05,
     "75IREDA34-ND": 0.01,
     "KRONOX": 0.01,
     "825TPL27-N6": 0.01,
@@ -5941,6 +5955,7 @@
     "735TS36-SG": 0.01,
     "735TS38-SG": 0.01,
     "733JK51-SG": 0.01,
+    "SKIL-BZ": 0.01,
     "GPECO-ST": 0.05,
     "759NH27-NE": 0.01,
     "BBNPNBETF": 0.01,
@@ -6070,7 +6085,7 @@
     "733AP43A-SG": 0.01,
     "756RECL27-N0": 0.01,
     "745RECL35-N0": 0.01,
-    "SATIPOLY-ST": 0.05,
+    "SATIPOLY-SM": 0.05,
     "PRIZOR-ST": 0.05,
     "897MFL27-N0": 0.01,
     "74CB34-N0": 0.01,
@@ -6429,7 +6444,7 @@
     "INDOUS": 0.01,
     "824PHFL28-N0": 0.01,
     "MOTHERSON-D1": 0.05,
-    "FLEXITUFF-BE": 0.01,
+    "FLEXITUFF": 0.01,
     "PHOGLOBAL-ST": 0.05,
     "AVIANSH-SM": 0.05,
     "BIKEWO-ST": 0.05,
@@ -6761,7 +6776,7 @@
     "785ABHFL28-N0": 0.01,
     "DHANLAXMI-SM": 0.05,
     "769LICH26-N0": 0.01,
-    "INNOVANA": 0.05,
+    "INNOVANA-BE": 0.05,
     "775LTFL27-N0": 0.01,
     "714EXIM29-N0": 0.01,
     "698GR2054-GS": 0.01,
@@ -6807,6 +6822,9 @@
     "990IIFL27-N0": 0.01,
     "IDENTICAL-SM": 0.05,
     "712PGCIL34-N0": 0.01,
+    "SRPL-BZ": 0.01,
+    "SUULD-BZ": 0.01,
+    "CLOUD-SZ": 0.05,
     "DAMCAPITAL": 0.01,
     "MAMATA": 0.05,
     "TRANSRAILL": 0.05,
@@ -6816,7 +6834,7 @@
     "748SIDBI29-N0": 0.01,
     "770TPREL34-N0": 0.01,
     "805NIT32-N0": 0.01,
-    "NMSTEEL-ST": 0.05,
+    "NMSTEEL-SM": 0.05,
     "SANATHAN": 0.05,
     "364D261225-TB": 0.01,
     "719AS34-SG": 0.01,
@@ -6903,6 +6921,7 @@
     "TVSHLTD": 1,
     "715WB40-SG": 0.01,
     "716WB42-SG": 0.01,
+    "ARSHIYA-BZ": 0.01,
     "CEREBRAINT-BZ": 0.01,
     "950ISF26A-N0": 0.01,
     "ECAPINSURE": 0.01,
@@ -6957,6 +6976,7 @@
     "SATKARTAR-ST": 0.05,
     "720RECL35-N0": 0.01,
     "CAPINVIT-IV": 0.01,
+    "SWANDEF-BE": 0.05,
     "723BOB35-N0": 0.01,
     "770SUNF28-N0": 0.01,
     "LAXMIDENTL": 0.05,
@@ -7232,6 +7252,7 @@
     "734UCL30-N0": 0.01,
     "760CIT38-N0": 0.01,
     "734UCL28-N0": 0.01,
+    "FCONSUMER-BE": 0.01,
     "809CANF27-N0": 0.01,
     "905CIFL32-N0": 0.01,
     "ROADSTAR-IV": 0.01,
@@ -7346,7 +7367,7 @@
     "14RARL30-N0": 0.01,
     "SILVERCASE": 0.01,
     "758LICH35A-N0": 0.01,
-    "GCHOTELS-ST": 0.05,
+    "GCHOTELS-SM": 0.05,
     "SBIBPB": 0.01,
     "ESSENTIA": 0.01,
     "NIF100IETF": 0.01,
@@ -7450,6 +7471,7 @@
     "930PEL29-N0": 0.01,
     "875CIFL32-N0": 0.01,
     "EVIETF": 0.01,
+    "MARSHALL-BZ": 0.01,
     "684TS56-SG": 0.01,
     "671TN35-SG": 0.01,
     "182D161025-TB": 0.01,
@@ -7533,6 +7555,7 @@
     "935IIFL28-NZ": 0.01,
     "975IIFL28-Y0": 0.01,
     "IIFL21425A-Y1": 0.01,
+    "KTL-SZ": 0.05,
     "182D021025-TB": 0.01,
     "364D020426-TB": 0.01,
     "SILVER360": 0.01,
@@ -7884,7 +7907,7 @@
     "PUSHPA-SM": 0.05,
     "CEDAAR-SM": 0.05,
     "74342PHF30-N0": 0.01,
-    "SAVY-ST": 0.05,
+    "SAVY-SM": 0.05,
     "950ISF27C-N0": 0.01,
     "701BR37-SG": 0.01,
     "71MN40-SG": 0.01,
@@ -8022,6 +8045,7 @@
     "768GSGL28A-N0": 0.01,
     "768GSGL28B-N0": 0.01,
     "768GSGL28C-N0": 0.01,
+    "JSLL": 0.05,
     "PERFECT-SZ": 0.05,
     "724MP45-SG": 0.01,
     "721TS47-SG": 0.01,
@@ -8067,6 +8091,10 @@
     "364D060826-TB": 0.01,
     "FLYSBS-ST": 0.05,
     "799HFL27-N0": 0.01,
+    "AARADHYA-ST": 0.05,
+    "PARTH-ST": 0.05,
+    "JYOTIGLOBL-ST": 0.05,
+    "BHADORA-ST": 0.05,
     "995ISF35-N0": 0.01,
     "725SIHF28-N0": 0.01,
     "637RECL27-N0": 0.01,
@@ -8108,8 +8136,8 @@
     "770AIFL26-N0": 0.01
   },
   "tokenTickSizes": {
-    "769": {
-      "symbol": "GOLDSTAR-ST",
+    "257": {
+      "symbol": "GOLDSTAR-SM",
       "tickSize": 0.05,
       "lotSize": 11250,
       "name": "GOLDSTAR POWER"
@@ -8521,6 +8549,12 @@
       "tickSize": 0.05,
       "lotSize": 1,
       "name": "ASHAPURA MINECHEM"
+    },
+    "52737": {
+      "symbol": "ASHIMASYN",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "ASHIMA"
     },
     "54273": {
       "symbol": "ASHOKLEY",
@@ -9818,6 +9852,12 @@
       "lotSize": 100,
       "name": "SDL NL 6.5% 2030"
     },
+    "254209": {
+      "symbol": "EVERESTIND",
+      "tickSize": 0.05,
+      "lotSize": 1,
+      "name": "EVEREST INDUSTRIES"
+    },
     "254465": {
       "symbol": "652PY30-SG",
       "tickSize": 0.01,
@@ -10531,6 +10571,12 @@
       "tickSize": 0.1,
       "lotSize": 1,
       "name": "HINDUSTAN UNILEVER"
+    },
+    "358657": {
+      "symbol": "SUPREMEENG-BE",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "SUPREME ENGINEERING"
     },
     "359169": {
       "symbol": "HINDOILEXP",
@@ -16694,12 +16740,6 @@
       "lotSize": 500,
       "name": "JAINAM FER ALLOYS (I)"
     },
-    "1540353": {
-      "symbol": "EVERESTIND-BE",
-      "tickSize": 0.05,
-      "lotSize": 1,
-      "name": "EVEREST INDUSTRIES"
-    },
     "1540609": {
       "symbol": "ABSLAMC",
       "tickSize": 0.05,
@@ -16951,6 +16991,12 @@
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "ROLTA INDIA"
+    },
+    "1602305": {
+      "symbol": "RAJVIR-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "RAJVIR INDUSTRIES"
     },
     "1606145": {
       "symbol": "SELMC-BE",
@@ -18338,6 +18384,12 @@
       "lotSize": 100,
       "name": "SDL KA 7.02% 2031"
     },
+    "1927425": {
+      "symbol": "LCCINFOTEC",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "LCC INFOTECH"
+    },
     "1927681": {
       "symbol": "70MN31B-SG",
       "tickSize": 0.01,
@@ -18373,12 +18425,6 @@
       "tickSize": 0.01,
       "lotSize": 100,
       "name": "SDL HP 7.14% 2033"
-    },
-    "1929473": {
-      "symbol": "LCCINFOTEC-BE",
-      "tickSize": 0.01,
-      "lotSize": 1,
-      "name": "LCC INFOTECH"
     },
     "1929729": {
       "symbol": "714TS33-SG",
@@ -18859,12 +18905,6 @@
       "tickSize": 0.01,
       "lotSize": 100,
       "name": "SDL RJ 6.45% 2027"
-    },
-    "2021121": {
-      "symbol": "ASHIMASYN-BE",
-      "tickSize": 0.01,
-      "lotSize": 1,
-      "name": "ASHIMA"
     },
     "2021633": {
       "symbol": "727AR32-SG",
@@ -19904,6 +19944,12 @@
       "lotSize": 1,
       "name": "97SFL29-YZ"
     },
+    "2214401": {
+      "symbol": "BLUECHIP-BE",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "BLUE CHIP INDIA"
+    },
     "2214913": {
       "symbol": "VETO",
       "tickSize": 0.01,
@@ -20300,12 +20346,6 @@
       "lotSize": 1,
       "name": "AUSOM ENTERPRISE"
     },
-    "2313729": {
-      "symbol": "JSLL-SM",
-      "tickSize": 0.05,
-      "lotSize": 450,
-      "name": "JEENA SIKHO LIFECARE"
-    },
     "2313985": {
       "symbol": "UFO",
       "tickSize": 0.01,
@@ -20521,6 +20561,12 @@
       "tickSize": 0.05,
       "lotSize": 1,
       "name": "LIBERTYSHOESLTD"
+    },
+    "2400257": {
+      "symbol": "QUINTEGRA-BE",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "QUINTEGRA SOLUTIONS"
     },
     "2401281": {
       "symbol": "IL&FSENGG-BZ",
@@ -21674,6 +21720,12 @@
       "lotSize": 1,
       "name": "DIGICONTENT"
     },
+    "2653697": {
+      "symbol": "UNIVAFOODS-BE",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "UNIVA FOODS"
+    },
     "2653953": {
       "symbol": "78GJ32A-SG",
       "tickSize": 0.01,
@@ -21890,8 +21942,8 @@
       "lotSize": 1,
       "name": "RAM RATNA WIRES"
     },
-    "2687489": {
-      "symbol": "AGNI-ST",
+    "2685697": {
+      "symbol": "AGNI-SM",
       "tickSize": 0.05,
       "lotSize": 2500,
       "name": "AGNI GREEN POWER"
@@ -22832,6 +22884,12 @@
       "lotSize": 1,
       "name": "AGRI-TECH (INDIA)"
     },
+    "2836225": {
+      "symbol": "GFSTEELS-BE",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "GRAND FOUNDRY"
+    },
     "2836993": {
       "symbol": "LIBAS",
       "tickSize": 0.01,
@@ -23287,6 +23345,12 @@
       "tickSize": 0.1,
       "lotSize": 1,
       "name": "TTK HEALTHCARE"
+    },
+    "2910977": {
+      "symbol": "BGLOBAL-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "BHARATIYA GLOBAL INFO"
     },
     "2911489": {
       "symbol": "BIOCON",
@@ -24974,6 +25038,12 @@
       "lotSize": 1,
       "name": "DHARMAJ CROP GUARD"
     },
+    "3336193": {
+      "symbol": "SECL-ST",
+      "tickSize": 0.05,
+      "lotSize": 6250,
+      "name": "SALASAR EXTERIOR CONT"
+    },
     "3336961": {
       "symbol": "SAFARI",
       "tickSize": 0.1,
@@ -26035,6 +26105,12 @@
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "SAH POLYMERS"
+    },
+    "3505665": {
+      "symbol": "INFOMEDIA-BE",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "INFOMEDIA PRESS"
     },
     "3507457": {
       "symbol": "GOLDKART-ST",
@@ -27440,8 +27516,8 @@
       "lotSize": 1,
       "name": "AMD INDUSTRIES"
     },
-    "3688193": {
-      "symbol": "RAJTV-BE",
+    "3687169": {
+      "symbol": "RAJTV",
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "RAJ TV NETWORK"
@@ -27878,6 +27954,18 @@
       "lotSize": 1,
       "name": "CHEMBOND MATERIALTECH"
     },
+    "3744769": {
+      "symbol": "FSC-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "FUTURE SUPP CHAIN SOL"
+    },
+    "3745281": {
+      "symbol": "SANCO-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "SANCO INDUSTRIES"
+    },
     "3745537": {
       "symbol": "HILTON-BE",
       "tickSize": 0.01,
@@ -28256,6 +28344,12 @@
       "lotSize": 100,
       "name": "SDL HR 7.77% 2033"
     },
+    "3795969": {
+      "symbol": "WSI",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "W.S.INDUSTRIES (I)"
+    },
     "3796225": {
       "symbol": "779UP33-SG",
       "tickSize": 0.01,
@@ -28267,12 +28361,6 @@
       "tickSize": 0.01,
       "lotSize": 100,
       "name": "SDL UP 7.81% 2034"
-    },
-    "3796993": {
-      "symbol": "WSI-BE",
-      "tickSize": 0.01,
-      "lotSize": 1,
-      "name": "W.S.INDUSTRIES (I)"
     },
     "3797505": {
       "symbol": "78JK35-SG",
@@ -28375,6 +28463,12 @@
       "tickSize": 0.01,
       "lotSize": 100,
       "name": "SDL KL 7.76% 2058"
+    },
+    "3806209": {
+      "symbol": "FLFL-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "FUT LIFESTYLE FASH"
     },
     "3806977": {
       "symbol": "USK",
@@ -30320,6 +30414,12 @@
       "lotSize": 100,
       "name": "SDL TN 7.39% 2053"
     },
+    "4355073": {
+      "symbol": "GENSOL-BE",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "GENSOL ENGINEERING"
+    },
     "4357633": {
       "symbol": "MAWANASUG",
       "tickSize": 0.01,
@@ -32234,17 +32334,17 @@
       "lotSize": 1,
       "name": "SAB EVENTS & GOVERNANCE"
     },
+    "4737025": {
+      "symbol": "TVVISION",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "TV VISION"
+    },
     "4737537": {
       "symbol": "SAROJA-SM",
       "tickSize": 0.05,
       "lotSize": 1600,
       "name": "SAROJA PHARMA INDUS IND L"
-    },
-    "4738049": {
-      "symbol": "TVVISION-BE",
-      "tickSize": 0.01,
-      "lotSize": 1,
-      "name": "TV VISION"
     },
     "4740353": {
       "symbol": "PRAMARA-ST",
@@ -32348,6 +32448,12 @@
       "lotSize": 1,
       "name": "JUPITER LIFE LINE HOSP L"
     },
+    "4750849": {
+      "symbol": "JIWANRAM-SM",
+      "tickSize": 0.05,
+      "lotSize": 6000,
+      "name": "JIWANRAM SHEODUTTRA IND L"
+    },
     "4751617": {
       "symbol": "716GS2050-GS",
       "tickSize": 0.01,
@@ -32365,12 +32471,6 @@
       "tickSize": 0.1,
       "lotSize": 1,
       "name": "L&T TECHNOLOGY SER."
-    },
-    "4752641": {
-      "symbol": "JIWANRAM-ST",
-      "tickSize": 0.05,
-      "lotSize": 6000,
-      "name": "JIWANRAM SHEODUTTRA IND L"
     },
     "4752897": {
       "symbol": "RRKABEL",
@@ -32702,17 +32802,17 @@
       "lotSize": 1,
       "name": "SCL25A-BH"
     },
+    "4819713": {
+      "symbol": "TARAPUR",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "TARAPUR TRANSFORMERS"
+    },
     "4820225": {
       "symbol": "SCL25B-BI",
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "SCL25B-BI"
-    },
-    "4820737": {
-      "symbol": "TARAPUR-BE",
-      "tickSize": 0.01,
-      "lotSize": 1,
-      "name": "TARAPUR TRANSFORMERS"
     },
     "4824065": {
       "symbol": "NIRAJISPAT-BE",
@@ -33794,11 +33894,23 @@
       "lotSize": 1,
       "name": "KALYANI COMMERCIALS"
     },
+    "5035521": {
+      "symbol": "COMPINFO-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "COMPUAGE INFOCOM"
+    },
     "5036801": {
       "symbol": "GAYAPROJ-BZ",
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "GAYATRI PROJECTS"
+    },
+    "5037057": {
+      "symbol": "CMICABLES-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "CMI"
     },
     "5037313": {
       "symbol": "ANSALAPI-BZ",
@@ -34333,12 +34445,6 @@
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "888SCL25-NG"
-    },
-    "5109505": {
-      "symbol": "WAAREEINDO-BE",
-      "tickSize": 0.05,
-      "lotSize": 1,
-      "name": "INDOSOLAR"
     },
     "5110785": {
       "symbol": "851HUDCO28-NB",
@@ -34982,8 +35088,8 @@
       "lotSize": 100,
       "name": "SDL KA 6.58% 2030"
     },
-    "5194753": {
-      "symbol": "ROCKINGDCE-ST",
+    "5193985": {
+      "symbol": "ROCKINGDCE-SM",
       "tickSize": 0.05,
       "lotSize": 250,
       "name": "ROCKINGDEALS CIRCU ECO L"
@@ -36182,6 +36288,12 @@
       "lotSize": 1,
       "name": "CREDO BRANDS MARKETING L"
     },
+    "5346817": {
+      "symbol": "GANGOTRI-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "GANGOTRI TEXTILES"
+    },
     "5350145": {
       "symbol": "EFORCE-SM",
       "tickSize": 0.05,
@@ -36680,8 +36792,8 @@
       "lotSize": 125,
       "name": "TRIDENT TECHLABS"
     },
-    "5401345": {
-      "symbol": "SHEKHAWATI-BE",
+    "5400321": {
+      "symbol": "SHEKHAWATI",
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "SHEKHAWATI INDUSTRIES"
@@ -37603,6 +37715,12 @@
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "775SIDBI27-N1"
+    },
+    "5567233": {
+      "symbol": "EDUCOMP-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "EDUCOMP SOLUTIONS"
     },
     "5567745": {
       "symbol": "CAPACITE",
@@ -39398,8 +39516,8 @@
       "lotSize": 1,
       "name": "WORTH PERIPHERALS"
     },
-    "5704705": {
-      "symbol": "TIRUPATIFL-BE",
+    "5704193": {
+      "symbol": "TIRUPATIFL",
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "TIRUPATI FORGE"
@@ -42338,12 +42456,6 @@
       "lotSize": 100,
       "name": "SDL TS 7.44% 2053"
     },
-    "6018305": {
-      "symbol": "UEL-BE",
-      "tickSize": 0.05,
-      "lotSize": 1,
-      "name": "UJAAS ENERGY"
-    },
     "6019073": {
       "symbol": "TARACHAND",
       "tickSize": 0.01,
@@ -43568,8 +43680,8 @@
       "lotSize": 1,
       "name": "BOROSIL SCIENTIFIC"
     },
-    "6149633": {
-      "symbol": "TBI-ST",
+    "6148865": {
+      "symbol": "TBI-SM",
       "tickSize": 0.05,
       "lotSize": 600,
       "name": "TBI CORN"
@@ -43741,6 +43853,12 @@
       "tickSize": 0.01,
       "lotSize": 100,
       "name": "SDL JK 7.33% 2051"
+    },
+    "6171393": {
+      "symbol": "SKIL-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "SKIL INFRASTRUCTURE"
     },
     "6172929": {
       "symbol": "GPECO-ST",
@@ -44516,8 +44634,8 @@
       "lotSize": 1,
       "name": "745RECL35-N0"
     },
-    "6273793": {
-      "symbol": "SATIPOLY-ST",
+    "6273025": {
+      "symbol": "SATIPOLY-SM",
       "tickSize": 0.05,
       "lotSize": 500,
       "name": "SATI POLY PLAST"
@@ -46670,8 +46788,8 @@
       "lotSize": 1,
       "name": "MOTHERSON-D1"
     },
-    "6532097": {
-      "symbol": "FLEXITUFF-BE",
+    "6531073": {
+      "symbol": "FLEXITUFF",
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "FLEXITUFF VENTURES INT L"
@@ -48662,8 +48780,8 @@
       "lotSize": 1,
       "name": "769LICH26-N0"
     },
-    "7105025": {
-      "symbol": "INNOVANA",
+    "7109889": {
+      "symbol": "INNOVANA-BE",
       "tickSize": 0.05,
       "lotSize": 1,
       "name": "INNOVANA THINKLABS"
@@ -48938,6 +49056,24 @@
       "lotSize": 1,
       "name": "712PGCIL34-N0"
     },
+    "7330561": {
+      "symbol": "SRPL-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "SHREE RAM PROTEINS"
+    },
+    "7333377": {
+      "symbol": "SUULD-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "SUUMAYA INDUSTRIES"
+    },
+    "7335169": {
+      "symbol": "CLOUD-SZ",
+      "tickSize": 0.05,
+      "lotSize": 1000,
+      "name": "VARANIUM CLOUD"
+    },
     "7337473": {
       "symbol": "DAMCAPITAL",
       "tickSize": 0.01,
@@ -48992,8 +49128,8 @@
       "lotSize": 1,
       "name": "805NIT32-N0"
     },
-    "7373825": {
-      "symbol": "NMSTEEL-ST",
+    "7373057": {
+      "symbol": "NMSTEEL-SM",
       "tickSize": 0.05,
       "lotSize": 1600,
       "name": "NEWMALAYALAM STEEL"
@@ -49514,6 +49650,12 @@
       "lotSize": 100,
       "name": "SDL WB 7.16% 2042"
     },
+    "7427841": {
+      "symbol": "ARSHIYA-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "ARSHIYA"
+    },
     "7428097": {
       "symbol": "CEREBRAINT-BZ",
       "tickSize": 0.01,
@@ -49837,6 +49979,12 @@
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "CAPITAL INFRA TRUST"
+    },
+    "7465985": {
+      "symbol": "SWANDEF-BE",
+      "tickSize": 0.05,
+      "lotSize": 1,
+      "name": "SWAN DEFENCE N HEVY IND L"
     },
     "7466753": {
       "symbol": "723BOB35-N0",
@@ -51488,6 +51636,12 @@
       "lotSize": 1,
       "name": "734UCL28-N0"
     },
+    "7690497": {
+      "symbol": "FCONSUMER-BE",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "FUTURE CONSUMER"
+    },
     "7691521": {
       "symbol": "809CANF27-N0",
       "tickSize": 0.01,
@@ -52172,8 +52326,8 @@
       "lotSize": 1,
       "name": "758LICH35A-N0"
     },
-    "7753985": {
-      "symbol": "GCHOTELS-ST",
+    "7753217": {
+      "symbol": "GCHOTELS-SM",
       "tickSize": 0.05,
       "lotSize": 1200,
       "name": "GRAND CONTINENT HOTELS L"
@@ -52796,6 +52950,12 @@
       "lotSize": 1,
       "name": "ICICIPRAMC - EVIETF"
     },
+    "193516545": {
+      "symbol": "MARSHALL-BZ",
+      "tickSize": 0.01,
+      "lotSize": 1,
+      "name": "MARSHALL MACHINES"
+    },
     "193516801": {
       "symbol": "684TS56-SG",
       "tickSize": 0.01,
@@ -53293,6 +53453,12 @@
       "tickSize": 0.01,
       "lotSize": 1,
       "name": "IIFL21425A-Y1"
+    },
+    "193573377": {
+      "symbol": "KTL-SZ",
+      "tickSize": 0.05,
+      "lotSize": 3000,
+      "name": "KALAHRIDHAAN TRENDZ"
     },
     "193573889": {
       "symbol": "182D021025-TB",
@@ -55400,8 +55566,8 @@
       "lotSize": 1,
       "name": "74342PHF30-N0"
     },
-    "193972993": {
-      "symbol": "SAVY-ST",
+    "193972225": {
+      "symbol": "SAVY-SM",
       "tickSize": 0.05,
       "lotSize": 1200,
       "name": "SAVY INFRA AND LOGI"
@@ -56228,6 +56394,12 @@
       "lotSize": 1,
       "name": "768GSGL28C-N0"
     },
+    "194077441": {
+      "symbol": "JSLL",
+      "tickSize": 0.05,
+      "lotSize": 1,
+      "name": "JEENA SIKHO LIFECARE"
+    },
     "194078977": {
       "symbol": "PERFECT-SZ",
       "tickSize": 0.05,
@@ -56498,6 +56670,30 @@
       "lotSize": 1,
       "name": "799HFL27-N0"
     },
+    "194103297": {
+      "symbol": "AARADHYA-ST",
+      "tickSize": 0.05,
+      "lotSize": 1200,
+      "name": "AARADHYA DISPOSAL INDUS L"
+    },
+    "194104321": {
+      "symbol": "PARTH-ST",
+      "tickSize": 0.05,
+      "lotSize": 800,
+      "name": "PARTH ELEC & ENG"
+    },
+    "194105345": {
+      "symbol": "JYOTIGLOBL-ST",
+      "tickSize": 0.05,
+      "lotSize": 2000,
+      "name": "JYOTI GLOBAL PLAST"
+    },
+    "194106369": {
+      "symbol": "BHADORA-ST",
+      "tickSize": 0.05,
+      "lotSize": 1200,
+      "name": "BHADORA INDUSTRIES"
+    },
     "194122241": {
       "symbol": "995ISF35-N0",
       "tickSize": 0.01,
@@ -56734,7 +56930,7 @@
     }
   },
   "metadata": {
-    "fetchedAt": 1754643473625,
+    "fetchedAt": 1754840203679,
     "source": "Zerodha Kite API",
     "exchange": "NSE",
     "instrumentType": "EQ"

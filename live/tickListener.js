@@ -35,6 +35,10 @@ let historicalCalculationTimer = null; // Timer for minute-based historical calc
 // Cache for historical data results (updated every minute)
 const historicalDataCache = new Map();
 
+// Global variables for pending order placement
+global.pendingOrderFilename = null;
+global.pendingOrderTokens = null;
+
 // Simple order cooldown to prevent multiple orders for same token
 const lastOrderTime = {};
 const ORDER_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
@@ -746,7 +750,7 @@ async function initializeCacheForToken(token, symbol) {
       return true; // Already initialized
     }
 
-    console.log(`🔄 Minimal cache initialization for ${symbol} (${token}) - NO API CALLS`);
+    //console.log(`🔄 Minimal cache initialization for ${symbol} (${token}) - NO API CALLS`);
     
     // OPTIMIZED: Initialize cache with minimal structure for tick processing only
     // Historical data will be fetched in batch when needed for candle body analysis
@@ -757,7 +761,7 @@ async function initializeCacheForToken(token, symbol) {
       symbol: symbol
     });
 
-    console.log(`✅ Minimal cache initialized for ${symbol} - ready for tick processing`);
+   // console.log(`✅ Minimal cache initialized for ${symbol} - ready for tick processing`);
     return true;
   } catch (error) {
     console.error(`❌ Error initializing cache for ${symbol}: ${error.message}`);
@@ -1322,7 +1326,7 @@ async function processTickForCache(tick) {
 
     // Start new candle
     cache.current = createCurrentCandle(tick, currentMinute);
-    console.log(`🕐 Started new candle for ${cache.symbol} at ${new Date(currentMinute).toLocaleTimeString()}`);
+   // console.log(`🕐 Started new candle for ${cache.symbol} at ${new Date(currentMinute).toLocaleTimeString()}`);
   } else {
     // Update current candle with new tick
     updateCurrentCandle(cache.current, tick);
@@ -1517,14 +1521,15 @@ function initTickListener() {
       const delay = isRestart ? 500 : 2000; // Much faster on restart
       
       console.log(`🔄 Calculating immediate historical data for all ${subscribedTokens.length} tokens on connect (${isRestart ? 'server restart' : 'normal'} mode)`);
-      setTimeout(async () => {
-        try {
-          await runMinutelyVWAPADXMACDChecks(subscribedTokens);
-          console.log(`✅ Immediate historical calculation completed for all tokens on connect`);
-        } catch (error) {
+      // IMMEDIATE EXECUTION - NO TIMEOUT
+      try {
+        runMinutelyVWAPADXMACDChecks(subscribedTokens).catch(error => {
           console.error('❌ Error in immediate historical calculation on connect:', error);
-        }
-      }, delay); // Faster delay for server restart
+        });
+        console.log(`✅ Immediate historical calculation completed for all tokens on connect`);
+      } catch (error) {
+        console.error('❌ Error in immediate historical calculation on connect:', error);
+      }
     } else {
       console.log("📡 Ticker connected but no tokens to subscribe to");
     }
@@ -1567,6 +1572,57 @@ async function handleTicks(ticks) {
   if (!ticks || !ticks.length) return;
 
   console.log(`📊 Processing ${ticks.length} ticks at ${new Date().toLocaleTimeString()}`);
+
+  // CHECK FOR PENDING ORDER PLACEMENT WHEN FIRST TICK ARRIVES
+  if (global.pendingOrderFilename && global.pendingOrderTokens && global.pendingOrderTokens.length > 0) {
+    console.log(`🎯 LIVE TICK DATA RECEIVED - Processing pending order placement`);
+    console.log(`📊 DEBUG: Pending tokens (${global.pendingOrderTokens.length}): ${global.pendingOrderTokens.slice(0, 3)}... (showing first 3)`);
+    console.log(`📊 DEBUG: Received tick tokens (${ticks.length}): ${ticks.slice(0, 3).map(t => t.instrument_token)}... (showing first 3)`);
+    
+    // Find the first tick that matches one of our pending tokens (convert both to strings for comparison)
+    const matchingTick = ticks.find(tick => 
+      global.pendingOrderTokens.includes(tick.instrument_token) || 
+      global.pendingOrderTokens.includes(String(tick.instrument_token)) ||
+      global.pendingOrderTokens.map(String).includes(String(tick.instrument_token))
+    );
+    
+    if (matchingTick) {
+      try {
+        const { placeBuyOrder, placeSellOrder } = require("../orders/orderManager");
+        const filename = global.pendingOrderFilename;
+        const filenameLC = filename.toLowerCase();
+        const token = matchingTick.instrument_token;
+        const symbol = getTradingSymbol(token);
+        const livePrice = matchingTick.last_price;
+        
+        console.log(`🎯 Using LIVE TICK DATA from ${symbol}: ₹${livePrice} for order placement`);
+        console.log(`📁 Analyzing filename: "${filename}"`);
+        
+        // Place order using live tick price
+        if (filenameLC.includes('buy')) {
+          console.log(`🟢 FILENAME CONTAINS 'buy' - Placing BUY order for ${symbol} at LIVE PRICE ₹${livePrice}`);
+          await placeBuyOrder(token, symbol, livePrice);
+        } else if (filenameLC.includes('sell')) {
+          console.log(`🔴 FILENAME CONTAINS 'sell' - Placing SELL order for ${symbol} at LIVE PRICE ₹${livePrice}`);
+          await placeSellOrder(token, symbol, livePrice);
+        } else {
+          console.log(`❓ Filename "${filename}" doesn't contain 'buy' or 'sell' - SKIPPING order placement`);
+        }
+        
+        // Clear pending order data after processing
+        global.pendingOrderFilename = null;
+        global.pendingOrderTokens = null;
+        console.log(`✅ Pending order placement completed using live tick data - cleared pending flags`);
+        
+      } catch (error) {
+        console.error(`❌ Error in live tick order placement: ${error.message}`);
+      }
+    } else {
+      console.log(`⏳ NO MATCHING TOKENS FOUND - Will keep waiting for matching tick data`);
+      console.log(`📊 DEBUG: First few pending tokens: ${global.pendingOrderTokens.slice(0, 5)}`);
+      console.log(`📊 DEBUG: First few received tokens: ${ticks.slice(0, 5).map(t => `${t.instrument_token}(${getTradingSymbol(t.instrument_token)})`).join(', ')}`);
+    }
+  }
 
   // Process each tick for live indicator calculation
   const liveDataToBroadcast = [];
@@ -1813,136 +1869,68 @@ async function handleTicks(ticks) {
   }
 }
 
-// Subscribe to new tokens and unsubscribe from removed tokens (incremental update)
+// Subscribe to new tokens after unsubscribing from all previous tokens
 async function subscribeToTokens(tokens, filename = null) {
   const newTokens = [...new Set(tokens)]; // Remove duplicates
-  console.log(`🔄 Incremental token update: ${newTokens.length} tokens in new file`);
+  console.log(`🔄 Full token replacement: ${newTokens.length} tokens in new file`);
   if (filename) {
     console.log(`📄 Source file: ${filename}`);
   }
   console.log(`📊 Current subscriptions: ${subscribedTokens.length} tokens`);
   
-  // Find tokens to add and remove
-  const currentTokens = new Set(subscribedTokens.map(String));
-  const incomingTokens = new Set(newTokens.map(String));
-  
-  const tokensToAdd = newTokens.filter(token => !currentTokens.has(String(token)));
-  const tokensToRemove = subscribedTokens.filter(token => !incomingTokens.has(String(token)));
-  
-  console.log(`➕ Tokens to ADD: ${tokensToAdd.length}`);
-  console.log(`➖ Tokens to REMOVE: ${tokensToRemove.length}`);
-  console.log(`🔄 Tokens staying SAME: ${subscribedTokens.length - tokensToRemove.length}`);
-  
-  if (tokensToAdd.length > 0) {
-    console.log(`🎯 Adding tokens:`, tokensToAdd.slice(0, 10), tokensToAdd.length > 10 ? '...' : '');
+  // Unsubscribe from all previous tokens first
+  if (subscribedTokens.length > 0) {
+    console.log(`📡 Unsubscribing from all ${subscribedTokens.length} previous tokens`);
+    unsubscribeAll();
   }
-  if (tokensToRemove.length > 0) {
-    console.log(`🗑️ Removing tokens:`, tokensToRemove.slice(0, 10), tokensToRemove.length > 10 ? '...' : '');
-  }
+  
+  // Clear all caches when doing full replacement
+  candleCache.clear();
+  lastValidValues.clear();
+  freshHistoricalResults.clear();
+  freshDataTimestamps.clear();
+  Object.keys(lastOrderTime).forEach(key => delete lastOrderTime[key]);
+  Object.keys(lastTickTime).forEach(key => delete lastTickTime[key]);
+  console.log(`🗑️ Cleared all token-related caches`);
 
   // Broadcast update to UI
   if (global.broadcastToClients) {
     global.broadcastToClients({
       type: "token_subscription_update",
-      message: "Incremental Token Update",
+      message: "Full Token Replacement",
       totalTokens: newTokens.length,
-      tokensAdded: tokensToAdd,
-      tokensRemoved: tokensToRemove,
-      tokensSame: subscribedTokens.length - tokensToRemove.length,
+      tokensAdded: newTokens,
+      tokensRemoved: subscribedTokens,
+      tokensSame: 0,
       csvFile: global.lastCSVFile || 'Unknown'
     });
   }
 
   if (ticker && ticker.connected()) {
-    // Unsubscribe from removed tokens
-    if (tokensToRemove.length > 0) {
-      const numericTokensToRemove = tokensToRemove.map(Number);
-      ticker.unsubscribe(numericTokensToRemove);
-      console.log(`📡 Unsubscribed from ${tokensToRemove.length} removed tokens`);
-      
-      // Clear cache for removed tokens
-      tokensToRemove.forEach(token => {
-        if (candleCache.has(token)) {
-          candleCache.delete(token);
-          console.log(`🗑️ Cleared cache for removed token: ${token}`);
-        }
-        // Clear order cooldowns for removed tokens
-        if (lastOrderTime[token]) {
-          delete lastOrderTime[token];
-        }
-        // Clear last tick time for removed tokens
-        if (lastTickTime[token]) {
-          delete lastTickTime[token];
-        }
-        // Clear last valid values for removed tokens
-        const keysToDelete = [];
-        for (const key of lastValidValues.keys()) {
-          if (key.startsWith(`${token}_`)) {
-            keysToDelete.push(key);
-          }
-        }
-        keysToDelete.forEach(key => lastValidValues.delete(key));
-        console.log(`🗑️ Cleared ${keysToDelete.length} cached values for token: ${token}`);
-        
-        // Clear fresh historical data cache for removed tokens
-        if (freshHistoricalResults.has(token)) {
-          freshHistoricalResults.delete(token);
-        }
-        if (freshDataTimestamps.has(token)) {
-          freshDataTimestamps.delete(token);
-        }
-      });
-    }
-
-    // Subscribe to new tokens
-    if (tokensToAdd.length > 0) {
-      const numericTokensToAdd = tokensToAdd.map(Number);
+    // Subscribe to all new tokens
+    if (newTokens.length > 0) {
+      const numericTokensToAdd = newTokens.map(Number);
       ticker.subscribe(numericTokensToAdd);
       ticker.setMode(ticker.modeFull, numericTokensToAdd);
-      console.log(`📡 Subscribed to ${tokensToAdd.length} new tokens in FULL mode`);
+      console.log(`📡 Subscribed to ${newTokens.length} new tokens in FULL mode`);
       
-      // ANALYZE CANDLE BODIES AND PLACE SELL ORDER FOR SMALLEST BODY TOKEN
-      console.log(`� CANDLE BODY ANALYSIS - Analyzing ${tokensToAdd.length} newly subscribed tokens to find smallest body percentage`);
-      setTimeout(async () => {
-        try {
-          // Import the new scan-based analysis function
-          const { placeOrderBasedOnScanType } = require("../orders/orderManager");
-          
-          // Create token list with symbols for analysis
-          const tokenListForAnalysis = tokensToAdd.map(token => {
-            const instrument = instruments.find(inst => inst.instrument_token == token);
-            return {
-              token: token,
-              symbol: instrument ? instrument.tradingsymbol : `Token_${token}`
-            };
-          }).filter(item => item.symbol !== `Token_${item.token}`); // Filter out tokens without symbols
-          
-          if (tokenListForAnalysis.length > 0) {
-            console.log(`📊 Analyzing candle bodies for: ${tokenListForAnalysis.map(t => t.symbol).join(', ')}`);
-            
-            // Analyze all tokens and place order based on scan file type (BUY/SELL)
-            if (filename) {
-              await placeOrderBasedOnScanType(tokenListForAnalysis, filename);
-            } else {
-              console.log(`⚠️ No filename provided - using default SELL order`);
-              const { analyzeAndPlaceSellOrder } = require("../orders/orderManager");
-              await analyzeAndPlaceSellOrder(tokenListForAnalysis);
-            }
-            
-            console.log(`✅ Candle body analysis and order placement completed`);
-          } else {
-            console.log(`⚠️ No valid tokens found for candle body analysis`);
-          }
-        } catch (error) {
-          console.error(`❌ Error in candle body analysis and order placement: ${error.message}`);
-        }
-      }, 1000); // 1 second delay to ensure subscription is complete
+      // WAIT FOR LIVE TICK DATA BEFORE ORDER PLACEMENT
+      console.log(`⏳ WAITING FOR LIVE TICK DATA - Will place order when first tick arrives from ${newTokens.length} newly subscribed tokens`);
+      
+      // Store filename for order placement when tick arrives
+      if (filename) {
+        global.pendingOrderFilename = filename;
+        global.pendingOrderTokens = newTokens;
+        console.log(`📁 Stored filename "${filename}" for order placement when live tick data arrives`);
+      } else {
+        console.log(`⚠️ No filename provided - cannot determine order type when ticks arrive`);
+      }
       
       // COMMENTED OUT - Immediately calculate historical data for newly subscribed tokens
-      // console.log(`🔄 Calculating immediate historical data for ${tokensToAdd.length} newly added tokens`);
-      // setTimeout(async () => {
+      // console.log(`🔄 Calculating immediate historical data for ${newTokens.length} newly added tokens`);
+      // // IMMEDIATE EXECUTION - NO TIMEOUT
       //   try {
-      //     await runMinutelyVWAPADXMACDChecks(tokensToAdd);
+      //     await runMinutelyVWAPADXMACDChecks(newTokens);
       //     console.log(`✅ Immediate historical calculations completed for newly added tokens`);
       //   } catch (error) {
       //     console.error(`❌ Error in immediate historical calculations for new tokens: ${error.message}`);
@@ -1954,10 +1942,10 @@ async function subscribeToTokens(tokens, filename = null) {
       
       // COMMENTED OUT - Calculating immediate historical data (for future use)
       /*
-      console.log(`🔄 Calculating immediate historical data for ${tokensToAdd.length} new tokens (${isRestart ? 'server restart' : 'normal'} mode)`);
-      setTimeout(async () => {
+      console.log(`🔄 Calculating immediate historical data for ${newTokens.length} new tokens (${isRestart ? 'server restart' : 'normal'} mode)`);
+      // IMMEDIATE EXECUTION - NO TIMEOUT
         try {
-          await runMinutelyVWAPADXMACDChecks(tokensToAdd);
+          await runMinutelyVWAPADXMACDChecks(newTokens);
           console.log(`✅ Immediate historical calculation completed for new tokens`);
         } catch (error) {
           console.error('❌ Error in immediate historical calculation:', error);
@@ -1980,25 +1968,26 @@ async function updateTokenSubscriptionsFromCSV(newTokenList, csvFilePath) {
   console.log(`🎯 Incremental token update triggered by CSV: ${csvFilePath}`);
   console.log(`📊 Processing ${Array.isArray(newTokenList) ? newTokenList.length : 'non-array'} tokens`);
   
-  // Store CSV filename for UI display
-  global.lastCSVFile = csvFilePath.split('\\').pop() || csvFilePath.split('/').pop();
-  
-  try {
-    if (!Array.isArray(newTokenList)) {
-      throw new Error('newTokenList must be an array');
-    }
+    // Store CSV filename for UI display
+    global.lastCSVFile = csvFilePath.split('\\').pop() || csvFilePath.split('/').pop();
+    
+    // Extract filename for order placement logic
+    const filename = global.lastCSVFile;
+    
+    try {
+      if (!Array.isArray(newTokenList)) {
+        throw new Error('newTokenList must be an array');
+      }
 
-    // Check if this is the first CSV load or server restart
-    const wasEmpty = subscribedTokens.length === 0;
-    const isServerRestart = isNewServerSession();
-    
-    // Perform incremental update (only add new and remove obsolete tokens)
-    await subscribeToTokens(newTokenList);
-    
-    // CANDLE BODY ANALYSIS - Analyze all tokens and place sell order for smallest body token if first load or server restart
+      // Check if this is the first CSV load or server restart
+      const wasEmpty = subscribedTokens.length === 0;
+      const isServerRestart = isNewServerSession();
+      
+      // Perform incremental update (only add new and remove obsolete tokens)
+      await subscribeToTokens(newTokenList, filename);    // CANDLE BODY ANALYSIS - Analyze all tokens and place sell order for smallest body token if first load or server restart
     if ((wasEmpty && newTokenList.length > 0) || isServerRestart) {
       console.log(`� CANDLE BODY ANALYSIS - First CSV load or server restart detected - analyzing ${newTokenList.length} tokens for smallest body percentage`);
-      setTimeout(async () => {
+      // IMMEDIATE EXECUTION - NO TIMEOUT
         try {
           // Import the new scan-based analysis function  
           const { placeOrderBasedOnScanType } = require("../orders/orderManager");
@@ -2015,14 +2004,7 @@ async function updateTokenSubscriptionsFromCSV(newTokenList, csvFilePath) {
           if (tokenListForAnalysis.length > 0) {
             console.log(`📊 CSV Analysis - Analyzing candle bodies for: ${tokenListForAnalysis.map(t => t.symbol).join(', ')}`);
             
-            // Analyze all tokens and place order based on scan file type (BUY/SELL)
-            if (filename) {
-              await placeOrderBasedOnScanType(tokenListForAnalysis, filename);
-            } else {
-              console.log(`⚠️ No filename provided - using default SELL order`);
-              const { analyzeAndPlaceSellOrder } = require("../orders/orderManager");
-              await analyzeAndPlaceSellOrder(tokenListForAnalysis);
-            }
+            // REMOVED: Candle body analysis - using immediate filename-based orders instead
             
             console.log(`✅ CSV candle body analysis and order placement completed`);
           } else {
@@ -2031,14 +2013,13 @@ async function updateTokenSubscriptionsFromCSV(newTokenList, csvFilePath) {
         } catch (error) {
           console.error(`❌ Error in CSV candle body analysis and order placement: ${error.message}`);
         }
-      }, 1000); // 1 second delay to ensure subscription is complete
     }
     
     // COMMENTED OUT - Force immediate historical calculations if this is first load or server restart
     // if ((wasEmpty && newTokenList.length > 0) || isServerRestart) {
     //   const delay = isServerRestart ? 200 : 1000; // Even faster on restart
     //   console.log(`🚀 First CSV load or server restart detected - forcing immediate historical calculations for ${newTokenList.length} tokens (delay: ${delay}ms)`);
-    //   setTimeout(async () => {
+    //   // IMMEDIATE EXECUTION - NO TIMEOUT
     //     try {
     //       await runMinutelyVWAPADXMACDChecks(newTokenList);
     //       console.log(`✅ Immediate historical calculations completed for CSV tokens`);
@@ -2115,20 +2096,21 @@ function startTickListener() {
     });
   }
   
-  setTimeout(async () => {
-    try {
-      // Check if we have tokens to process
-      if (subscribedTokens.length > 0) {
-        console.log(`🔄 Running immediate fresh historical calculations for ${subscribedTokens.length} tokens on startup (${isRestart ? 'server restart' : 'normal'} mode)...`);
-        await runMinutelyVWAPADXMACDChecks(subscribedTokens);
-        console.log("✅ Initial fresh historical calculations completed on startup");
-      } else {
-        console.log("⏳ No tokens subscribed yet - historical calculations will run when first tokens are added");
-      }
-    } catch (error) {
-      console.error("❌ Error in initial fresh historical calculations:", error.message);
+  // IMMEDIATE EXECUTION FOR STARTUP CALCULATIONS
+  try {
+    // Check if we have tokens to process
+    if (subscribedTokens.length > 0) {
+      console.log(`🔄 Running immediate fresh historical calculations for ${subscribedTokens.length} tokens on startup (${isRestart ? 'server restart' : 'normal'} mode)...`);
+      runMinutelyVWAPADXMACDChecks(subscribedTokens).catch(error => {
+        console.error("❌ Error in initial fresh historical calculations:", error.message);
+      });
+      console.log("✅ Initial fresh historical calculations completed on startup");
+    } else {
+      console.log("⏳ No tokens subscribed yet - historical calculations will run when first tokens are added");
     }
-  }, delay); // Faster delay for server restart
+  } catch (error) {
+    console.error("❌ Error in initial fresh historical calculations:", error.message);
+  }
   
   // COMMENTED OUT - Start fresh VWAP/VWMA/ADX/MACD calculations and order checks every minute (for future use)
   // vwapVwmaTimer = setInterval(runMinutelyVWAPADXMACDChecks, 60000); // Every 1 minute
@@ -2160,6 +2142,11 @@ function stopTickListener() {
   console.log("🛑 Stopping tick listener...");
   unsubscribeAll();
   stopCSVWatching();
+  
+  // Clear pending order state
+  global.pendingOrderFilename = null;
+  global.pendingOrderTokens = null;
+  console.log("🗑️ Cleared pending order state");
   
   // Clear historical data timer
   if (historicalDataTimer) {

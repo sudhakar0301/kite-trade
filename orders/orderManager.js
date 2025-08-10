@@ -142,7 +142,7 @@ const MIS_CUTOFF_TIME = { hours: 15, minutes: 15 }; // 3:15 PM - standard MIS cu
 
 // Track open orders and their exit orders
 const openOrdersTracker = {}; // { symbol: { orderId, quantity, price, exitOrderId, timestamp } }
-const PROFIT_TARGET = 1300; // Fixed profit target of ₹5000
+const PROFIT_TARGET = 5000; // Fixed profit target of ₹5000
 const STOP_LOSS_AMOUNT = 5; // Fixed stop loss of ₹5 (manual handling)
 
 // PREDEFINED VALUES FOR IMMEDIATE SELL ORDERS
@@ -914,7 +914,7 @@ async function placeSellOrder(token, symbol, ltp) {
       return null;
     }
 
-    // Get available funds and calculate quantity for short selling (KEEP EXISTING CALCULATION)
+    // Get available funds and calculate quantity for short selling
     const margins = await getAvailableFunds();
      if (!margins || !margins.equity) {
       console.log(`❌ Could not fetch available funds for ${symbol}`);
@@ -924,9 +924,10 @@ async function placeSellOrder(token, symbol, ltp) {
     const availableFunds = margins.equity.available.live_balance;
     let quantity = Math.floor(calculateQuantity(availableFunds, ltp));
     
-    // Validate quantity
+    // Validate quantity - NO MINIMUM QUANTITY ENFORCEMENT
     if (quantity < 1) {
-      console.log(`❌ Insufficient funds to buy even 1 share of ${symbol} at ₹${ltp}`);
+      console.log(`❌ Insufficient leveraged funds to sell even 1 share of ${symbol} at ₹${ltp}`);
+      console.log(`💰 Available funds: ₹${availableFunds}, Required for 1 share: ₹${ltp}`);
       return null;
     }
     
@@ -1074,29 +1075,28 @@ function calculateQuantity(availableFunds, price) {
     // Validate inputs
     if (!availableFunds || availableFunds <= 0) {
       console.log(`❌ Invalid available funds: ${availableFunds}`);
-      return 1;
+      return 0; // Return 0 instead of 1 to prevent order placement
     }
     
     if (!price || price <= 0) {
       console.log(`❌ Invalid price: ${price}`);
-      return 1;
+      return 0; // Return 0 instead of 1 to prevent order placement
     }
     
-    // For intraday trading, use 4.5x leverage
+    // For intraday trading, use 4.5x leverage (based on product type)
     // Use 80% of leveraged funds to leave buffer for brokerage and margin
-    const leveragedFunds = availableFunds * 0.2;
-   // const usableFunds = leveragedFunds * 0.8;
-    let quantity = Math.floor(leveragedFunds / price);
+    const leverageMultiplier = 4.9;
+    const leveragedFunds = availableFunds * leverageMultiplier;
+    const usableFunds = leveragedFunds * 0.98; // Use 98% to leave margin buffer
+    let quantity = Math.floor(usableFunds / price);
 
-    // Ensure minimum quantity of 1
-    if (quantity < 1) quantity = 1;
-    
-    console.log(`💰 Quantity calculation: Available: ₹${availableFunds}, Leveraged (4.5x): ₹${leveragedFunds.toFixed(2)}, Price: ₹${price}, Calculated Qty: ${quantity}`);
-    
+    // Return calculated quantity (can be 0 if insufficient funds)
+    console.log(`💰 Quantity calculation: Available: ₹${availableFunds}, Leveraged (${leverageMultiplier}x): ₹${leveragedFunds.toFixed(2)}, Usable (98%): ₹${usableFunds.toFixed(2)}, Price: ₹${price}, Calculated Qty: ${quantity}`);
+
     return quantity;
   } catch (err) {
     console.error(`❌ Error calculating quantity: ${err.message}`);
-    return 1; // Default to 1 share instead of undefined variable
+    return 0; // Return 0 instead of default to prevent order placement
   }
 }
 
@@ -1910,76 +1910,130 @@ async function placeOrderBasedOnScanType(tokenList, filename) {
  */
 async function placeBuyOrder(token, symbol, ltp) {
   try {
-    console.log(`\n� ===== BUY ORDER CALCULATION =====`);
-    console.log(`🏢 Stock: ${symbol} (Token: ${token})`);
-    console.log(`💲 Current LTP: ₹${ltp.toFixed(2)}`);
+    console.log(`🟢 IMMEDIATE BUY ORDER for ${symbol} at LTP: ${ltp} (NO CONDITIONS CHECK)`);
     
-    // Use 4.5x leverage for quantity calculation
-    const funds = 11111; // Available funds
-    const leverageMultiplier = 4.5;
-    const leveragedFunds = funds * leverageMultiplier;
-    const quantity = Math.floor(leveragedFunds / ltp);
+    // Get appropriate product type based on current time
+    const productType = getProductType();
+    console.log(`📊 Using product type: ${productType} for ${symbol}`);
+
+    // Check cooldowns
+    if (isInCooldown(symbol)) {
+      console.log(`⏳ Cooldown active for ${symbol}, skipping BUY order`);
+      return null;
+    }
+
+    if (isSameOrderInCooldown(symbol, 'BUY')) {
+      console.log(`� Recent BUY order exists for ${symbol}, skipping`);
+      return null;
+    }
+
+    // Get available funds and calculate quantity
+    const margins = await getAvailableFunds();
+    if (!margins || !margins.equity) {
+      console.log(`❌ Could not fetch available funds for ${symbol}`);
+      return null;
+    }
+
+    const availableFunds = margins.equity.available.live_balance;
+    let quantity = Math.floor(calculateQuantity(availableFunds, ltp));
     
-    console.log(`📊 ===== LEVERAGE CALCULATION =====`);
-    console.log(`💼 Base Funds: ₹${funds.toLocaleString()}`);
-    console.log(`🚀 Leverage Multiplier: ${leverageMultiplier}x`);
-    console.log(`💰 Leveraged Capital: ₹${leveragedFunds.toLocaleString()}`);
-    console.log(`📈 Calculated Quantity: ${quantity} shares`);
-    console.log(`💵 Total Investment: ₹${(quantity * ltp).toLocaleString()}`);
-    console.log(`🎯 Capital Utilization: ${((quantity * ltp / leveragedFunds) * 100).toFixed(1)}%`);
-    
-    if (quantity <= 0) {
-      console.log(`❌ BUY ORDER FAILED: Cannot calculate valid quantity`);
-      console.log(`💡 LTP: ₹${ltp}, Leveraged funds: ₹${leveragedFunds}`);
-      console.log(`🔧 Required: At least ₹${ltp.toFixed(2)} per share`);
-      return;
+    // Validate quantity - NO MINIMUM QUANTITY ENFORCEMENT
+    if (quantity < 1) {
+      console.log(`❌ Insufficient leveraged funds to buy even 1 share of ${symbol} at ₹${ltp}`);
+      console.log(`💰 Available funds: ₹${availableFunds}, Required for 1 share: ₹${ltp}`);
+      return null;
     }
     
-    console.log(`\n� ===== ORDER EXECUTION =====`);
-    console.log(`🔄 Transaction: BUY`);
-    console.log(`🏛️ Exchange: NSE`);
-    console.log(`📊 Product: MIS (Intraday)`);
-    console.log(`📈 Order Type: MARKET`);
-    console.log(`🚀 Executing BUY order for ${symbol}...`);
-    
-    // Place the BUY order
-    const orderResult = await placeOrder(
-      symbol,
-      "BUY",
-      quantity,
-      "MARKET",
-      "MIS",
-      null, // no price for market order
-      null  // no trigger price
-    );
-    
-    if (orderResult && orderResult.order_id) {
-      console.log(`✅ ===== BUY ORDER SUCCESS =====`);
-      console.log(`🎯 Order ID: ${orderResult.order_id}`);
-      console.log(`📈 Stock: ${symbol}`);
-      console.log(`💰 Quantity: ${quantity} shares`);
-      console.log(`💲 Price: ₹${ltp.toFixed(2)} per share`);
-      console.log(`💵 Total Value: ₹${(quantity * ltp).toLocaleString()}`);
-      console.log(`🚀 Strategy: Leveraged intraday buy based on smallest candle body analysis`);
-      
-      // Set up automatic target order for ₹5000 profit
-      const targetPrice = ltp + (PROFIT_TARGET / quantity);
-      console.log(`\n🎯 ===== TARGET SETUP =====`);
-      console.log(`💰 Profit Target: ₹${PROFIT_TARGET.toLocaleString()}`);
-      console.log(`📊 Target Price: ₹${targetPrice.toFixed(2)}`);
-      console.log(`⏰ Target order will be placed in 2 seconds...`);
-      
-      setTimeout(() => {
-        placeTargetOrder(symbol, quantity, targetPrice, orderResult.order_id);
-      }, 2000);
+    // Additional validation for order placement
+    if (!quantity || quantity === 0 || isNaN(quantity)) {
+      console.log(`❌ Invalid quantity calculated for ${symbol}: ${quantity}`);
+      console.log(`Debug: availableFunds=${availableFunds}, ltp=${ltp}, productType=${productType}`);
+      return null;
     }
     
-  } catch (error) {
-    console.log(`❌ ===== BUY ORDER FAILED =====`);
-    console.log(`🏢 Stock: ${symbol}`);
-    console.log(`💲 LTP: ₹${ltp.toFixed(2)}`);
-    console.log(`⚠️ Error: ${error.message}`);
-    console.log(`🔧 Possible reasons: Insufficient margin, market closed, invalid symbol`);
+    let orderReason = `IMMEDIATE Buy Order (${productType}) - Target: ₹${PROFIT_TARGET} (Stop Loss: Manual)`;
+
+    console.log(`� Placing IMMEDIATE buy order for ${symbol}: ${quantity} shares (Available funds: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
+
+    const orderParams = {
+      exchange: 'NSE',
+      tradingsymbol: symbol,
+      transaction_type: 'BUY',
+      quantity: quantity,
+      product: productType,
+      order_type: 'MARKET'
+    };
+    
+    // Final validation before API call
+    console.log(`� Order validation: Symbol=${orderParams.tradingsymbol}, Quantity=${orderParams.quantity}, Type=${orderParams.transaction_type}, Product=${orderParams.product}`);
+    
+    if (!orderParams.quantity || orderParams.quantity <= 0) {
+      console.log(`❌ CRITICAL: Order quantity is invalid: ${orderParams.quantity}`);
+      return null;
+    }
+
+    if (global.kite) {
+      const order = await global.kite.placeOrder('regular', orderParams);
+      console.log(`✅ IMMEDIATE BUY Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Product: ${productType}) - ${orderReason}`);
+      
+      // 🔊 PLAY AUDIO NOTIFICATION FOR ORDER PLACEMENT
+      playOrderPlacedAudio();
+      
+      // Track the order
+      cooldownTracker[symbol] = { 
+        orderType: 'BUY', 
+        timestamp: Date.now(), 
+        orderId: order.order_id,
+        quantity: quantity,
+        reason: orderReason,
+        productType: productType
+      };
+      
+      // Clear position cache to force refresh
+      positionsCache = null;
+      lastPositionsFetch = 0;
+      
+      // Automatically place target order only (manual stop loss handling)
+      console.log(`🎯 Auto-placing target order for LONG position ${symbol} (Stop Loss: Manual)`);
+      setTimeout(async () => {
+        try {
+          const exitOrders = await placeTargetOrder(symbol, quantity, ltp, productType);
+          if (exitOrders) {
+            console.log(`✅ Target order placed for ${symbol} - Manual stop loss handling required`);
+          }
+        } catch (error) {
+          console.error(`❌ Error placing target order for ${symbol}: ${error.message}`);
+        }
+      }, 2000); // 2 second delay to ensure buy order is processed
+      
+      // Broadcast order notification
+      if (global.broadcastToClients) {
+        // Generate chart URL for UI
+        const chartURL = generateKiteChartURL(symbol, token);
+        
+        global.broadcastToClients({
+          type: "order_placed",
+          data: {
+            token,
+            symbol,
+            orderType: 'BUY',
+            price: ltp,
+            quantity: quantity,
+            orderId: order.order_id,
+            productType: productType,
+            reason: orderReason,
+            time: new Date().toLocaleTimeString(),
+            chartURL: chartURL,
+            openChart: true
+          }
+        });
+      }
+      
+      return order;
+    }
+  } catch (err) {
+    console.error(`❌ Error placing IMMEDIATE BUY order for ${symbol}: ${err.message}`);
+    return null;
   }
 }
 
