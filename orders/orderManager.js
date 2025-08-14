@@ -69,6 +69,112 @@ function playWaitingForOrderAudio() {
   }
 }
 
+// Audio notification for order blocking (why we can't place order)
+function playOrderBlockedAudio(reason) {
+  try {
+    // Windows-specific audio using PowerShell with text-to-speech
+    const { exec } = require('child_process');
+    
+    // Create a clear, concise reason for TTS
+    let ttsMessage = 'Order blocked';
+    if (reason.includes('position')) {
+      ttsMessage = 'Order blocked - existing position';
+    } else if (reason.includes('traded')) {
+      ttsMessage = 'Order blocked - already traded today';
+    } else if (reason.includes('cooldown')) {
+      ttsMessage = 'Order blocked - cooldown active';
+    } else if (reason.includes('funds')) {
+      ttsMessage = 'Order blocked - insufficient funds';
+    } else if (reason.includes('pending')) {
+      ttsMessage = 'Order blocked - pending orders exist';
+    }
+    
+    // Method 1: Text-to-Speech announcement with specific reason
+    exec(`powershell -c "Add-Type -AssemblyName System.Speech; $speak = New-Object System.Speech.Synthesis.SpeechSynthesizer; $speak.Rate = 2; $speak.Speak('${ttsMessage}')"`, (ttsError) => {
+      if (ttsError) {
+        // Method 2: System warning sound
+        exec('powershell -c "(New-Object Media.SoundPlayer \'C:\\Windows\\Media\\Windows Exclamation.wav\').PlaySync();"', (soundError) => {
+          if (soundError) {
+            // Method 3: PowerShell warning beep sequence
+            exec('powershell -c "[console]::beep(300,200); Start-Sleep -m 100; [console]::beep(300,200); Start-Sleep -m 100; [console]::beep(300,200)"', (beepError) => {
+              if (beepError) {
+                console.log('\u0007\u0007\u0007'); // Final fallback to triple ASCII bell
+              }
+            });
+          }
+        });
+      }
+    });
+    
+    // Additional console notification with blocking reason
+    console.log(`🚫 AUDIO ALERT: ORDER BLOCKED - ${reason.toUpperCase()} 🚫`);
+    
+  } catch (error) {
+    console.log(`⚠️ Order blocked audio notification failed: ${error.message}`);
+    console.log('\u0007\u0007\u0007'); // Fallback to triple ASCII bell
+  }
+}
+
+// Audio notification specifically for TARGET order placement
+function playTargetOrderAudio() {
+  try {
+    // Windows-specific audio using PowerShell with text-to-speech
+    const { exec } = require('child_process');
+    
+    // Method 1: Text-to-Speech announcement
+    exec('powershell -c "Add-Type -AssemblyName System.Speech; $speak = New-Object System.Speech.Synthesis.SpeechSynthesizer; $speak.Rate = 2; $speak.Speak(\'Target order placed\')"', (ttsError) => {
+      if (ttsError) {
+        // Method 2: System sound with high-pitched beep for target
+        exec('powershell -c "[console]::beep(1000,400)"', (beepError) => {
+          if (beepError) {
+            console.log('\u0007'); // Final fallback to ASCII bell
+          }
+        });
+      }
+    });
+    
+    // Additional console notification with target-specific message
+    console.log(`🎯 AUDIO ALERT: TARGET ORDER PLACED! 🎯`);
+    
+    // Reset the waiting timer since an order was placed
+    resetWaitingTimer();
+    
+  } catch (error) {
+    console.log(`⚠️ Target order audio notification failed: ${error.message}`);
+    console.log('\u0007'); // Fallback to ASCII bell
+  }
+}
+
+// Audio notification specifically for STOP LOSS order placement
+function playStopLossOrderAudio() {
+  try {
+    // Windows-specific audio using PowerShell with text-to-speech
+    const { exec } = require('child_process');
+    
+    // Method 1: Text-to-Speech announcement
+    exec('powershell -c "Add-Type -AssemblyName System.Speech; $speak = New-Object System.Speech.Synthesis.SpeechSynthesizer; $speak.Rate = 2; $speak.Speak(\'Stop loss order placed\')"', (ttsError) => {
+      if (ttsError) {
+        // Method 2: System sound with low-pitched beep for stop loss
+        exec('powershell -c "[console]::beep(500,400)"', (beepError) => {
+          if (beepError) {
+            console.log('\u0007'); // Final fallback to ASCII bell
+          }
+        });
+      }
+    });
+    
+    // Additional console notification with stop loss-specific message
+    console.log(`🛑 AUDIO ALERT: STOP LOSS ORDER PLACED! 🛑`);
+    
+    // Reset the waiting timer since an order was placed
+    resetWaitingTimer();
+    
+  } catch (error) {
+    console.log(`⚠️ Stop loss order audio notification failed: ${error.message}`);
+    console.log('\u0007'); // Fallback to ASCII bell
+  }
+}
+
 // Timer management for waiting audio
 let waitingTimer = null;
 let lastOrderTimestamp = Date.now();
@@ -142,8 +248,10 @@ const MIS_CUTOFF_TIME = { hours: 15, minutes: 15 }; // 3:15 PM - standard MIS cu
 
 // Track open orders and their exit orders
 const openOrdersTracker = {}; // { symbol: { orderId, quantity, price, exitOrderId, timestamp } }
-const PROFIT_TARGET = 5000; // Fixed profit target of ₹5000
-const STOP_LOSS_AMOUNT = 5; // Fixed stop loss of ₹5 (manual handling)
+
+// DYNAMIC PROFIT/LOSS CALCULATION BASED ON USABLE FUNDS
+const TARGET_PROFIT_PERCENTAGE = 0.2; // 0.25% of usable funds for target profit
+const STOP_LOSS_PERCENTAGE = 0.1; // Half of target profit (0.125% of usable funds)
 
 // PREDEFINED VALUES FOR IMMEDIATE SELL ORDERS
 const PREDEFINED_QUANTITY = 1; // Fixed quantity for sell orders
@@ -627,40 +735,105 @@ async function hasAnyPosition() {
 }
 
 // Enhanced function to check if we can place a new position order
-async function canPlaceNewPosition() {
+async function canPlaceNewPosition(symbol = null) {
   try {
-    // Check if we already have a tracked position
-    if (currentPosition) {
-      console.log(`🚫 Cannot place new position - already have position: ${currentPosition.symbol} (${currentPosition.type})`);
-      return false;
+    // If no symbol provided, cannot do symbol-specific checks
+    if (!symbol) {
+      console.log(`⚠️ No symbol provided for position check - allowing order`);
+      return {
+        allowed: true,
+        reason: 'No symbol provided - check bypassed'
+      };
+    }
+    
+    // Check if we already have a tracked position for the SAME SYMBOL only
+    if (currentPosition && currentPosition.symbol === symbol) {
+      console.log(`🚫 Cannot place new position - already have position for ${symbol}: ${currentPosition.type}`);
+      return {
+        allowed: false,
+        reason: `Already have open position for ${symbol} (${currentPosition.type})`
+      };
     }
 
-    // Check for any existing positions via API
-    const hasPosition = await hasAnyPosition();
-    if (hasPosition) {
-      console.log(`🚫 Cannot place new position - existing position found via API`);
-      return false;
-    }
-
-    // Check for pending orders that might become positions
-    if (global.kite) {
-      const orders = await global.kite.getOrders();
-      const pendingOrders = orders.filter(order => 
-        order.status === 'OPEN' || 
-        order.status === 'TRIGGER PENDING' ||
-        order.status === 'PENDING'
+    // Check for symbol-specific positions via API (NOT all positions)
+    const positions = await getPositions();
+    if (positions && positions.day) {
+      const symbolPosition = positions.day.find(pos => 
+        pos.tradingsymbol === symbol && 
+        pos.quantity !== 0
       );
       
-      if (pendingOrders.length > 0) {
-        console.log(`🚫 Cannot place new position - ${pendingOrders.length} pending orders found`);
-        return false;
+      if (symbolPosition) {
+        console.log(`🚫 Cannot place new position - existing position found for ${symbol} via API`);
+        return {
+          allowed: false,
+          reason: `Existing position found for ${symbol} - quantity: ${symbolPosition.quantity}`
+        };
       }
     }
 
-    return true;
+    // Check if this specific symbol has been traded today
+    const symbolTraded = await hasSymbolBeenTraded(symbol);
+    if (symbolTraded) {
+     // console.log(`🚫 Cannot place new position - ${symbol} already traded today`);
+      return {
+        allowed: false,
+        reason: `${symbol} already traded today - avoiding overtrading`
+      };
+    }
+
+    // 🚫 CRITICAL: Check for ANY open positions globally - only allow one stock at a time
+    const hasAnyOpenPosition = await hasAnyPosition();
+    if (hasAnyOpenPosition) {
+      console.log(`🚫 Cannot place new position - already have open positions for other stocks`);
+      return {
+        allowed: false,
+        reason: `Open positions exist for other stocks - only one stock allowed at a time`
+      };
+    }
+
+    // Check for pending orders for the SAME SYMBOL only
+    if (global.kite) {
+      const orders = await global.kite.getOrders();
+      
+      // Filter for orders that create new positions for the SAME SYMBOL
+      const symbolOrders = orders.filter(order => {
+        const isMarketOrder = order.order_type === 'MARKET';
+        const isNewPosition = (order.transaction_type === 'BUY' || order.transaction_type === 'SELL');
+        const isPending = ['OPEN', 'TRIGGER PENDING', 'PENDING'].includes(order.status);
+        const isSameSymbol = order.tradingsymbol === symbol;
+        
+        return isMarketOrder && isNewPosition && isPending && isSameSymbol;
+      });
+      
+      if (symbolOrders.length > 0) {
+        const orderDetails = symbolOrders.map(order => 
+          `${order.transaction_type} ${order.quantity}`
+        ).join(', ');
+        
+        console.log(`🚫 Cannot place new position - ${symbolOrders.length} pending orders found for ${symbol}:`);
+        symbolOrders.forEach(order => {
+          console.log(`   📋 ${order.tradingsymbol}: ${order.transaction_type} ${order.quantity} @ ${order.order_type} (Status: ${order.status})`);
+        });
+        
+        return {
+          allowed: false,
+          reason: `Pending order exists for ${symbol}: ${orderDetails}`
+        };
+      }
+    }
+
+    console.log(`✅ Position check passed - no blocking conditions found for ${symbol}`);
+    return {
+      allowed: true,
+      reason: 'No blocking conditions found'
+    };
   } catch (err) {
     console.error(`❌ Error checking if new position can be placed: ${err.message}`);
-    return false; // Err on the side of caution
+    return {
+      allowed: false,
+      reason: `Error checking positions: ${err.message}`
+    };
   }
 }
 
@@ -899,25 +1072,39 @@ async function placeSellOrder(token, symbol, ltp) {
   try {
     console.log(`� IMMEDIATE SELL ORDER for ${symbol} at LTP: ${ltp} (NO CONDITIONS CHECK)`);
     
+    // 🚫 CRITICAL CHECK: Don't place new position orders if we already have a position
+    const canPlace = await canPlaceNewPosition(symbol);
+    if (!canPlace.allowed) {
+      console.log(`🚫 BLOCKED: Cannot place new SELL order for ${symbol} - ${canPlace.reason}`);
+      playOrderBlockedAudio(`Cannot place sell order for ${symbol}. ${canPlace.reason}`);
+      return null;
+    }
+    
     // Get appropriate product type based on current time
     const productType = getProductType();
     console.log(`📊 Using product type: ${productType} for ${symbol}`);
 
     // Check cooldowns
     if (isInCooldown(symbol)) {
+      const blockReason = "cooldown active";
       console.log(`⏳ Cooldown active for ${symbol}, skipping SELL order`);
+      playOrderBlockedAudio(blockReason);
       return null;
     }
 
     if (isSameOrderInCooldown(symbol, 'SELL')) {
+      const blockReason = "recent same order exists";
       console.log(`📝 Recent SELL order exists for ${symbol}, skipping`);
+      playOrderBlockedAudio(blockReason);
       return null;
     }
 
     // Get available funds and calculate quantity for short selling
     const margins = await getAvailableFunds();
      if (!margins || !margins.equity) {
+      const blockReason = "could not fetch available funds";
       console.log(`❌ Could not fetch available funds for ${symbol}`);
+      playOrderBlockedAudio(blockReason);
       return null;
     }
 
@@ -926,21 +1113,30 @@ async function placeSellOrder(token, symbol, ltp) {
     
     // Validate quantity - NO MINIMUM QUANTITY ENFORCEMENT
     if (quantity < 1) {
+      const blockReason = "insufficient funds";
       console.log(`❌ Insufficient leveraged funds to sell even 1 share of ${symbol} at ₹${ltp}`);
       console.log(`💰 Available funds: ₹${availableFunds}, Required for 1 share: ₹${ltp}`);
+      playOrderBlockedAudio(blockReason);
       return null;
     }
     
     // Additional validation for order placement
     if (!quantity || quantity === 0 || isNaN(quantity)) {
+      const blockReason = "invalid quantity calculated";
       console.log(`❌ Invalid quantity calculated for ${symbol}: ${quantity}`);
       console.log(`Debug: availableFunds=${availableFunds}, ltp=${ltp}, productType=${productType}`);
+      playOrderBlockedAudio(blockReason);
       return null;
     }
     
-    let orderReason = `IMMEDIATE Short Sell (${productType}) - Target: ₹${PROFIT_TARGET} (Stop Loss: Manual)`;
+    // Calculate dynamic profit and stop loss for order description
+    const dynamicProfitTarget = calculateProfitTarget(availableFunds);
+    const dynamicStopLoss = calculateStopLoss(availableFunds);
+    
+    let orderReason = `IMMEDIATE Short Sell (${productType}) - Target: ₹${dynamicProfitTarget} (0.25%), Stop Loss: ₹${dynamicStopLoss} (0.125%)`;
 
     console.log(`💹 Placing IMMEDIATE short sell order for ${symbol}: ${quantity} shares (Available funds: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
+    console.log(`🎯 Dynamic Risk Management: Target=₹${dynamicProfitTarget} (0.25% of usable funds), Stop Loss=₹${dynamicStopLoss} (0.125% of usable funds)`);
 
     const orderParams = {
       exchange: 'NSE',
@@ -955,7 +1151,9 @@ async function placeSellOrder(token, symbol, ltp) {
     console.log(`🔍 Order validation: Symbol=${orderParams.tradingsymbol}, Quantity=${orderParams.quantity}, Type=${orderParams.transaction_type}, Product=${orderParams.product}`);
     
     if (!orderParams.quantity || orderParams.quantity <= 0) {
+      const blockReason = "invalid order quantity";
       console.log(`❌ CRITICAL: Order quantity is invalid: ${orderParams.quantity}`);
+      playOrderBlockedAudio(blockReason);
       return null;
     }
 
@@ -980,16 +1178,16 @@ async function placeSellOrder(token, symbol, ltp) {
       positionsCache = null;
       lastPositionsFetch = 0;
       
-      // Automatically place target order only (manual stop loss handling)
-      console.log(`🎯 Auto-placing target order for SHORT position ${symbol} (Stop Loss: Manual)`);
+      // Automatically place target AND stop loss orders for short position  
+      console.log(`🎯 Auto-placing SHORT TARGET and STOP LOSS orders for SHORT position ${symbol} (Dynamic Stop Loss based on 0.125% of usable funds)`);
       setTimeout(async () => {
         try {
-          const exitOrders = await placeShortTargetOrder(symbol, quantity, ltp, productType);
+          const exitOrders = await placeShortTargetAndStopLoss(symbol, quantity, ltp, productType, availableFunds);
           if (exitOrders.targetOrder) {
-            console.log(`✅ Short target order placed for ${symbol} - Manual stop loss handling required`);
+            console.log(`✅ SHORT TARGET and STOP LOSS orders placed for ${symbol} - Automatic risk management enabled`);
           }
         } catch (error) {
-          console.error(`❌ Error placing short target order for ${symbol}: ${error.message}`);
+          console.error(`❌ Error placing SHORT TARGET and STOP LOSS orders for ${symbol}: ${error.message}`);
         }
       }, 2000); // 2 second delay to ensure sell order is processed
       
@@ -1100,10 +1298,62 @@ function calculateQuantity(availableFunds, price) {
   }
 }
 
-// Function to place exit order with profit target
-async function placeExitOrder(symbol, quantity, buyPrice, productType = 'MIS') {
+// Function to calculate dynamic profit target based on usable funds
+function calculateProfitTarget(availableFunds) {
   try {
-    const profitPerShare = PROFIT_TARGET / quantity; // Distribute ₹5000 across all shares
+    if (!availableFunds || availableFunds <= 0) {
+      console.log(`❌ Invalid available funds for profit calculation: ${availableFunds}`);
+      return 500; // Fallback minimum target
+    }
+    
+    const leverageMultiplier = 4.9;
+    const leveragedFunds = availableFunds * leverageMultiplier;
+    const usableFunds = leveragedFunds * 0.98;
+    
+    // Calculate 0.25% of usable funds as target profit
+    const rawProfitTarget = (usableFunds * TARGET_PROFIT_PERCENTAGE) / 100;
+    const profitTarget = Math.round(rawProfitTarget); // Round to nearest rupee
+    
+    console.log(`🎯 Profit Target Calculation: Usable Funds: ₹${usableFunds.toFixed(2)}, Target (${TARGET_PROFIT_PERCENTAGE}%): ₹${profitTarget}`);
+    
+    return Math.max(profitTarget, 100); // Minimum ₹100 target
+  } catch (err) {
+    console.error(`❌ Error calculating profit target: ${err.message}`);
+    return 500; // Safe fallback
+  }
+}
+
+// Function to calculate dynamic stop loss based on usable funds  
+function calculateStopLoss(availableFunds) {
+  try {
+    if (!availableFunds || availableFunds <= 0) {
+      console.log(`❌ Invalid available funds for stop loss calculation: ${availableFunds}`);
+      return 250; // Fallback minimum stop loss
+    }
+    
+    const leverageMultiplier = 4.9;
+    const leveragedFunds = availableFunds * leverageMultiplier;
+    const usableFunds = leveragedFunds * 0.98;
+    
+    // Calculate 0.125% of usable funds as stop loss (half of target profit)
+    const rawStopLoss = (usableFunds * STOP_LOSS_PERCENTAGE) / 100;
+    const stopLoss = Math.round(rawStopLoss); // Round to nearest rupee
+    
+    console.log(`🛑 Stop Loss Calculation: Usable Funds: ₹${usableFunds.toFixed(2)}, Stop Loss (${STOP_LOSS_PERCENTAGE}%): ₹${stopLoss}`);
+    
+    return Math.max(stopLoss, 50); // Minimum ₹50 stop loss
+  } catch (err) {
+    console.error(`❌ Error calculating stop loss: ${err.message}`);
+    return 250; // Safe fallback
+  }
+}
+
+// Function to place exit order with profit target
+async function placeExitOrder(symbol, quantity, buyPrice, productType = 'MIS', availableFunds) {
+  try {
+    // Calculate dynamic profit target based on available funds
+    const dynamicProfitTarget = calculateProfitTarget(availableFunds);
+    const profitPerShare = dynamicProfitTarget / quantity; // Distribute profit across all shares
     const exitPrice = buyPrice + profitPerShare; // Calculate exit price for distributed profit
     
     const orderParams = {
@@ -1118,13 +1368,13 @@ async function placeExitOrder(symbol, quantity, buyPrice, productType = 'MIS') {
 
     if (global.kite) {
       const order = await global.kite.placeOrder('regular', orderParams);
-      console.log(`🎯 EXIT Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Exit Price: ${exitPrice.toFixed(2)}, Total Target Profit: ₹${PROFIT_TARGET}, Product: ${productType})`);
+      console.log(`🎯 EXIT Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Exit Price: ${exitPrice.toFixed(2)}, Dynamic Target Profit: ₹${dynamicProfitTarget}, Product: ${productType})`);
       
       return {
         orderId: order.order_id,
         exitPrice: exitPrice,
         quantity: quantity, // Use actual quantity
-        targetProfit: PROFIT_TARGET,
+        targetProfit: dynamicProfitTarget,
         productType: productType
       };
     }
@@ -1136,17 +1386,18 @@ async function placeExitOrder(symbol, quantity, buyPrice, productType = 'MIS') {
 }
 
 // Function to place target order with profit target
-async function placeTargetOrder(symbol, quantity, buyPrice, productType = 'MIS') {
+async function placeTargetOrder(symbol, quantity, buyPrice, productType = 'MIS', availableFunds) {
   try {
-    // Calculate target price: buyPrice + (profit per share)
-    const profitPerShare = PROFIT_TARGET / quantity; // Distribute ₹5000 across all shares
+    // Calculate dynamic profit target based on available funds
+    const dynamicProfitTarget = calculateProfitTarget(availableFunds);
+    const profitPerShare = dynamicProfitTarget / quantity; // Distribute profit across all shares
     const rawTargetPrice = buyPrice + profitPerShare;
     
     // Round to appropriate tick size for this symbol
     const tickSize = getTickSize(rawTargetPrice, symbol);
     const targetPrice = roundToTickSize(rawTargetPrice, tickSize);
     
-    console.log(`💰 Price calculation for ${symbol}: Raw target: ₹${rawTargetPrice.toFixed(2)}, Tick size: ${tickSize}, Rounded target: ₹${targetPrice.toFixed(2)}`);
+    console.log(`💰 Price calculation for ${symbol}: Dynamic Target: ₹${dynamicProfitTarget}, Raw target: ₹${rawTargetPrice.toFixed(2)}, Tick size: ${tickSize}, Rounded target: ₹${targetPrice.toFixed(2)}`);
     
     const orderParams = {
       exchange: 'NSE',
@@ -1160,16 +1411,16 @@ async function placeTargetOrder(symbol, quantity, buyPrice, productType = 'MIS')
 
     if (global.kite) {
       const order = await global.kite.placeOrder('regular', orderParams);
-      console.log(`🎯 TARGET Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Total Target Profit: ₹${PROFIT_TARGET}, Product: ${productType})`);
+      console.log(`🎯 TARGET Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Dynamic Target Profit: ₹${dynamicProfitTarget}, Product: ${productType})`);
       
-      // 🔊 PLAY AUDIO NOTIFICATION FOR TARGET ORDER PLACEMENT
-      playOrderPlacedAudio();
+      // 🔊 PLAY SPECIFIC AUDIO NOTIFICATION FOR TARGET ORDER PLACEMENT
+      playTargetOrderAudio();
       
       return {
         orderId: order.order_id,
         price: targetPrice,
         quantity: quantity, // Use actual quantity
-        targetProfit: PROFIT_TARGET,
+        targetProfit: dynamicProfitTarget,
         productType: productType,
         orderType: 'TARGET'
       };
@@ -1182,16 +1433,18 @@ async function placeTargetOrder(symbol, quantity, buyPrice, productType = 'MIS')
 }
 
 // Function to place stop loss order with fixed stop loss amount
-async function placeStopLossOrder(symbol, quantity, buyPrice, productType = 'MIS') {
+async function placeStopLossOrder(symbol, quantity, buyPrice, productType = 'MIS', availableFunds) {
   try {
-    const lossPerShare = STOP_LOSS_AMOUNT / quantity; // Distribute stop loss across all shares
+    // Calculate dynamic stop loss based on available funds
+    const dynamicStopLoss = calculateStopLoss(availableFunds);
+    const lossPerShare = dynamicStopLoss / quantity; // Distribute stop loss across all shares
     const rawStopPrice = buyPrice - lossPerShare; // Calculate stop price per share
     
     // Round to appropriate tick size for this symbol
     const tickSize = getTickSize(rawStopPrice, symbol);
     const stopPrice = roundToTickSize(rawStopPrice, tickSize);
     
-    console.log(`💰 Stop loss calculation for ${symbol}: Raw stop: ₹${rawStopPrice.toFixed(2)}, Tick size: ${tickSize}, Rounded stop: ₹${stopPrice.toFixed(2)}`);
+    console.log(`💰 Stop loss calculation for ${symbol}: Dynamic Stop Loss: ₹${dynamicStopLoss}, Raw stop: ₹${rawStopPrice.toFixed(2)}, Tick size: ${tickSize}, Rounded stop: ₹${stopPrice.toFixed(2)}`);
     
     const orderParams = {
       exchange: 'NSE',
@@ -1205,13 +1458,15 @@ async function placeStopLossOrder(symbol, quantity, buyPrice, productType = 'MIS
 
     if (global.kite) {
       const order = await global.kite.placeOrder('regular', orderParams);
-      console.log(`🛑 STOP LOSS Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Stop Price: ${stopPrice.toFixed(2)}, Total Stop Loss: ₹${STOP_LOSS_AMOUNT}, Product: ${productType})`);
+      console.log(`🛑 STOP LOSS Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Stop Price: ${stopPrice.toFixed(2)}, Dynamic Stop Loss: ₹${dynamicStopLoss}, Product: ${productType})`);
       
+      // 🔊 PLAY SPECIFIC AUDIO NOTIFICATION FOR STOP LOSS ORDER PLACEMENT
+      playStopLossOrderAudio();
       return {
         orderId: order.order_id,
         price: stopPrice,
         quantity: quantity, // Use actual quantity
-        stopLoss: STOP_LOSS_AMOUNT,
+        stopLoss: dynamicStopLoss,
         productType: productType,
         orderType: 'STOP_LOSS'
       };
@@ -1224,24 +1479,34 @@ async function placeStopLossOrder(symbol, quantity, buyPrice, productType = 'MIS
 }
 
 // Function to place both target and stop loss orders after a successful buy
-async function placeTargetAndStopLoss(symbol, quantity, buyPrice, productType = 'MIS') {
+async function placeTargetAndStopLoss(symbol, quantity, buyPrice, productType = 'MIS', availableFunds) {
   try {
-    console.log(`📊 Placing TARGET and STOP LOSS orders for ${symbol} - Buy Price: ${buyPrice}, Quantity: ${quantity}, Target: ₹${PROFIT_TARGET}, Stop Loss: ₹${STOP_LOSS_AMOUNT}`);
+    // Get available funds if not provided
+    if (!availableFunds) {
+      const margins = await getAvailableFunds();
+      availableFunds = margins?.equity?.available?.live_balance || 10000; // Fallback
+    }
+    
+    // Calculate dynamic values for logging
+    const dynamicProfitTarget = calculateProfitTarget(availableFunds);
+    const dynamicStopLoss = calculateStopLoss(availableFunds);
+    
+    console.log(`📊 Placing TARGET and STOP LOSS orders for ${symbol} - Buy Price: ${buyPrice}, Quantity: ${quantity}, Dynamic Target: ₹${dynamicProfitTarget}, Dynamic Stop Loss: ₹${dynamicStopLoss}`);
     
     const results = {
       targetOrder: null,
       stopLossOrder: null
     };
     
-    // Place target order (profit of 1,000)
-    const targetOrder = await placeTargetOrder(symbol, quantity, buyPrice, productType);
+    // Place target order with dynamic profit target
+    const targetOrder = await placeTargetOrder(symbol, quantity, buyPrice, productType, availableFunds);
     if (targetOrder) {
       results.targetOrder = targetOrder;
       console.log(`✅ Target order placed successfully for ${symbol}`);
     }
     
-    // Place stop loss order (loss of 500)
-    const stopLossOrder = await placeStopLossOrder(symbol, quantity, buyPrice, productType);
+    // Place stop loss order with dynamic stop loss
+    const stopLossOrder = await placeStopLossOrder(symbol, quantity, buyPrice, productType, availableFunds);
     if (stopLossOrder) {
       results.stopLossOrder = stopLossOrder;
       console.log(`✅ Stop loss order placed successfully for ${symbol}`);
@@ -1282,9 +1547,19 @@ async function placeTargetAndStopLoss(symbol, quantity, buyPrice, productType = 
 }
 
 // Function to place both target and stop loss orders for SHORT positions
-async function placeShortTargetAndStopLoss(symbol, quantity, sellPrice, productType = 'MIS') {
+async function placeShortTargetAndStopLoss(symbol, quantity, sellPrice, productType = 'MIS', availableFunds) {
   try {
-    console.log(`📊 Placing SHORT TARGET and STOP LOSS orders for ${symbol} - Sell Price: ${sellPrice}, Quantity: ${quantity}, Target: ₹${PROFIT_TARGET}, Stop Loss: ₹${STOP_LOSS_AMOUNT}`);
+    // Get available funds if not provided
+    if (!availableFunds) {
+      const margins = await getAvailableFunds();
+      availableFunds = margins?.equity?.available?.live_balance || 10000; // Fallback
+    }
+    
+    // Calculate dynamic values
+    const dynamicProfitTarget = calculateProfitTarget(availableFunds);
+    const dynamicStopLoss = calculateStopLoss(availableFunds);
+    
+    console.log(`📊 Placing SHORT TARGET and STOP LOSS orders for ${symbol} - Sell Price: ${sellPrice}, Quantity: ${quantity}, Dynamic Target: ₹${dynamicProfitTarget}, Dynamic Stop Loss: ₹${dynamicStopLoss}`);
     
     const results = {
       targetOrder: null,
@@ -1293,8 +1568,8 @@ async function placeShortTargetAndStopLoss(symbol, quantity, sellPrice, productT
     
     // For short positions: target = buy at lower price, stop loss = buy at higher price
     // Calculate prices per share
-    const profitPerShare = PROFIT_TARGET / quantity; // Distribute ₹5000 across all shares
-    const lossPerShare = STOP_LOSS_AMOUNT / quantity; // Distribute stop loss across all shares
+    const profitPerShare = dynamicProfitTarget / quantity; // Distribute dynamic profit across all shares
+    const lossPerShare = dynamicStopLoss / quantity; // Distribute dynamic stop loss across all shares
     const rawTargetPrice = sellPrice - profitPerShare; // Buy back at lower price for profit
     const rawStopPrice = sellPrice + lossPerShare; // Buy back at higher price for loss
     
@@ -1307,6 +1582,7 @@ async function placeShortTargetAndStopLoss(symbol, quantity, sellPrice, productT
     console.log(`💰 Short position price calculation for ${symbol}:`);
     console.log(`   Target: ₹${rawTargetPrice.toFixed(2)} → ₹${targetPrice.toFixed(2)} (tick: ${targetTickSize})`);
     console.log(`   Stop: ₹${rawStopPrice.toFixed(2)} → ₹${stopPrice.toFixed(2)} (tick: ${stopTickSize})`);
+    console.log(`   Dynamic Values: Target Profit=₹${dynamicProfitTarget}, Stop Loss=₹${dynamicStopLoss}`);
     
     // Place target order (buy back at lower price for profit)
     const targetOrderParams = {
@@ -1321,16 +1597,16 @@ async function placeShortTargetAndStopLoss(symbol, quantity, sellPrice, productT
 
     if (global.kite) {
       const targetOrder = await global.kite.placeOrder('regular', targetOrderParams);
-      console.log(`🎯 SHORT TARGET Order placed for ${symbol}: ${targetOrder.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Total Target Profit: ₹${PROFIT_TARGET})`);
+      console.log(`🎯 SHORT TARGET Order placed for ${symbol}: ${targetOrder.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Dynamic Target Profit: ₹${dynamicProfitTarget})`);
       
       // 🔊 PLAY AUDIO NOTIFICATION FOR SHORT TARGET ORDER PLACEMENT
-      playOrderPlacedAudio();
+      playTargetOrderAudio();
       
       results.targetOrder = {
         orderId: targetOrder.order_id,
         price: targetPrice,
         quantity: quantity, // Use actual quantity
-        targetProfit: PROFIT_TARGET,
+        targetProfit: dynamicProfitTarget,
         productType: productType,
         orderType: 'SHORT_TARGET'
       };
@@ -1349,16 +1625,16 @@ async function placeShortTargetAndStopLoss(symbol, quantity, sellPrice, productT
 
     if (global.kite) {
       const stopOrder = await global.kite.placeOrder('regular', stopOrderParams);
-      console.log(`🛑 SHORT STOP LOSS Order placed for ${symbol}: ${stopOrder.order_id} (Qty: ${quantity}, Stop Price: ${stopPrice.toFixed(2)}, Total Stop Loss: ₹${STOP_LOSS_AMOUNT})`);
+      console.log(`🛑 SHORT STOP LOSS Order placed for ${symbol}: ${stopOrder.order_id} (Qty: ${quantity}, Stop Price: ${stopPrice.toFixed(2)}, Dynamic Stop Loss: ₹${dynamicStopLoss})`);
       
-      // 🔊 PLAY AUDIO NOTIFICATION FOR SHORT STOP LOSS ORDER PLACEMENT
-      playOrderPlacedAudio();
+      // 🔊 PLAY SPECIFIC AUDIO NOTIFICATION FOR STOP LOSS ORDER PLACEMENT
+      playStopLossOrderAudio();
       
       results.stopLossOrder = {
         orderId: stopOrder.order_id,
         price: stopPrice,
         quantity: quantity, // Use actual quantity
-        stopLoss: STOP_LOSS_AMOUNT,
+        stopLoss: dynamicStopLoss,
         productType: productType,
         orderType: 'SHORT_STOP_LOSS'
       };
@@ -1475,9 +1751,18 @@ function getTickSize(price, symbol = '', token = null) {
 }
 
 // Function to place only target order for short positions (manual stop loss handling)
-async function placeShortTargetOrder(symbol, quantity, sellPrice, productType = 'MIS') {
+async function placeShortTargetOrder(symbol, quantity, sellPrice, productType = 'MIS', availableFunds) {
   try {
-    console.log(`📊 Placing SHORT TARGET order for ${symbol} - Sell Price: ${sellPrice}, Quantity: ${quantity}, Target: ₹${PROFIT_TARGET} (Stop Loss: Manual)`);
+    // Get available funds if not provided
+    if (!availableFunds) {
+      const margins = await getAvailableFunds();
+      availableFunds = margins?.equity?.available?.live_balance || 10000; // Fallback
+    }
+    
+    // Calculate dynamic profit target based on available funds
+    const dynamicProfitTarget = calculateProfitTarget(availableFunds);
+    
+    console.log(`📊 Placing SHORT TARGET order for ${symbol} - Sell Price: ${sellPrice}, Quantity: ${quantity}, Dynamic Target: ₹${dynamicProfitTarget} (Stop Loss: Manual)`);
     
     const results = {
       targetOrder: null
@@ -1485,14 +1770,14 @@ async function placeShortTargetOrder(symbol, quantity, sellPrice, productType = 
     
     // For short positions: target = buy at lower price
     // Calculate target price: sellPrice - (profit per share)
-    const profitPerShare = PROFIT_TARGET / quantity; // Distribute ₹5000 across all shares
+    const profitPerShare = dynamicProfitTarget / quantity; // Distribute dynamic profit across all shares
     const rawTargetPrice = sellPrice - profitPerShare; // Buy back at lower price for profit
     
     // Round to appropriate tick size for this symbol
     const tickSize = getTickSize(rawTargetPrice, symbol);
     const targetPrice = roundToTickSize(rawTargetPrice, tickSize);
     
-    console.log(`💰 Price calculation for ${symbol}: Raw target: ₹${rawTargetPrice.toFixed(2)}, Tick size: ${tickSize}, Rounded target: ₹${targetPrice.toFixed(2)}`);
+    console.log(`💰 Price calculation for ${symbol}: Dynamic Target: ₹${dynamicProfitTarget}, Raw target: ₹${rawTargetPrice.toFixed(2)}, Tick size: ${tickSize}, Rounded target: ₹${targetPrice.toFixed(2)}`);
     
     // Place target order (buy back at lower price for profit)
     const targetOrderParams = {
@@ -1507,16 +1792,16 @@ async function placeShortTargetOrder(symbol, quantity, sellPrice, productType = 
 
     if (global.kite) {
       const targetOrder = await global.kite.placeOrder('regular', targetOrderParams);
-      console.log(`🎯 SHORT TARGET Order placed for ${symbol}: ${targetOrder.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Total Target Profit: ₹${PROFIT_TARGET})`);
+      console.log(`🎯 SHORT TARGET Order placed for ${symbol}: ${targetOrder.order_id} (Qty: ${quantity}, Target Price: ${targetPrice.toFixed(2)}, Dynamic Target Profit: ₹${dynamicProfitTarget})`);
       
       // 🔊 PLAY AUDIO NOTIFICATION FOR SHORT TARGET ORDER PLACEMENT
-      playOrderPlacedAudio();
+      playTargetOrderAudio();
       
       results.targetOrder = {
         orderId: targetOrder.order_id,
         price: targetPrice,
         quantity: quantity, // Use actual quantity
-        targetProfit: PROFIT_TARGET,
+        targetProfit: dynamicProfitTarget,
         productType: productType,
         orderType: 'SHORT_TARGET'
       };
@@ -1912,6 +2197,14 @@ async function placeBuyOrder(token, symbol, ltp) {
   try {
     console.log(`🟢 IMMEDIATE BUY ORDER for ${symbol} at LTP: ${ltp} (NO CONDITIONS CHECK)`);
     
+    // 🚫 CRITICAL CHECK: Don't place new position orders if we already have a position
+    const canPlace = await canPlaceNewPosition(symbol);
+    if (!canPlace.allowed) {
+      console.log(`🚫 BLOCKED: Cannot place new BUY order for ${symbol} - ${canPlace.reason}`);
+      playOrderBlockedAudio(`Cannot place buy order for ${symbol}. ${canPlace.reason}`);
+      return null;
+    }
+    
     // Get appropriate product type based on current time
     const productType = getProductType();
     console.log(`📊 Using product type: ${productType} for ${symbol}`);
@@ -1951,9 +2244,14 @@ async function placeBuyOrder(token, symbol, ltp) {
       return null;
     }
     
-    let orderReason = `IMMEDIATE Buy Order (${productType}) - Target: ₹${PROFIT_TARGET} (Stop Loss: Manual)`;
+    // Calculate dynamic profit and stop loss for order description
+    const dynamicProfitTarget = calculateProfitTarget(availableFunds);
+    const dynamicStopLoss = calculateStopLoss(availableFunds);
+    
+    let orderReason = `IMMEDIATE Buy Order (${productType}) - Target: ₹${dynamicProfitTarget} (0.25%), Stop Loss: ₹${dynamicStopLoss} (0.125%)`;
 
     console.log(`� Placing IMMEDIATE buy order for ${symbol}: ${quantity} shares (Available funds: ${availableFunds}, Price: ${ltp}, Product: ${productType})`);
+    console.log(`🎯 Dynamic Risk Management: Target=₹${dynamicProfitTarget} (0.25% of usable funds), Stop Loss=₹${dynamicStopLoss} (0.125% of usable funds)`);
 
     const orderParams = {
       exchange: 'NSE',
@@ -1993,16 +2291,16 @@ async function placeBuyOrder(token, symbol, ltp) {
       positionsCache = null;
       lastPositionsFetch = 0;
       
-      // Automatically place target order only (manual stop loss handling)
-      console.log(`🎯 Auto-placing target order for LONG position ${symbol} (Stop Loss: Manual)`);
+      // Automatically place target AND stop loss orders
+      console.log(`🎯 Auto-placing TARGET and STOP LOSS orders for LONG position ${symbol} (Dynamic Stop Loss based on 0.125% of usable funds)`);
       setTimeout(async () => {
         try {
-          const exitOrders = await placeTargetOrder(symbol, quantity, ltp, productType);
+          const exitOrders = await placeTargetAndStopLoss(symbol, quantity, ltp, productType, availableFunds);
           if (exitOrders) {
-            console.log(`✅ Target order placed for ${symbol} - Manual stop loss handling required`);
+            console.log(`✅ TARGET and STOP LOSS orders placed for ${symbol} - Automatic risk management enabled`);
           }
         } catch (error) {
-          console.error(`❌ Error placing target order for ${symbol}: ${error.message}`);
+          console.error(`❌ Error placing TARGET and STOP LOSS orders for ${symbol}: ${error.message}`);
         }
       }, 2000); // 2 second delay to ensure buy order is processed
       
@@ -2073,6 +2371,9 @@ module.exports = {
   // Audio and timer functions
   playOrderPlacedAudio, // Audio notification when order is placed
   playWaitingForOrderAudio, // Audio notification when waiting for order
+  playOrderBlockedAudio, // Audio notification when order is blocked
+  playTargetOrderAudio, // Specific audio for target order placement
+  playStopLossOrderAudio, // Specific audio for stop loss order placement
   startWaitingTimer, // Start the waiting timer
   resetWaitingTimer, // Reset the waiting timer (called when order placed)
   stopWaitingTimer, // Stop the waiting timer

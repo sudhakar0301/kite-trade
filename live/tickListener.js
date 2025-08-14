@@ -1321,7 +1321,7 @@ async function processTickForCache(tick) {
         cache.historical = cache.historical.slice(-MAX_CACHE_CANDLES);
       }
 
-      console.log(`📊 New candle completed for ${cache.symbol}: ${cache.current.close} (${cache.current.tickCount} ticks) - Cache: ${cache.historical.length} candles`);
+     // console.log(`📊 New candle completed for ${cache.symbol}: ${cache.current.close} (${cache.current.tickCount} ticks) - Cache: ${cache.historical.length} candles`);
     }
 
     // Start new candle
@@ -1483,11 +1483,11 @@ async function calculateLiveIndicators(token) {
 
 // Check ticker connection status
 function checkTickerStatus() {
-  console.log("📊 Ticker Status Check:");
-  console.log(`  - Ticker exists: ${!!ticker}`);
+ // console.log("📊 Ticker Status Check:");
+ // console.log(`  - Ticker exists: ${!!ticker}`);
   console.log(`  - Ticker connected: ${ticker ? ticker.connected() : 'N/A'}`);
   console.log(`  - Subscribed tokens: ${subscribedTokens.length}`);
-  console.log(`  - Sample tokens: ${subscribedTokens.slice(0, 5)}`);
+ // console.log(`  - Sample tokens: ${subscribedTokens.slice(0, 5)}`);
   
   if (ticker && !ticker.connected()) {
     console.log("⚠️ Ticker not connected, attempting reconnection...");
@@ -1536,7 +1536,7 @@ function initTickListener() {
   });
 
   ticker.on("ticks", (ticks) => {
-    console.log(`📊 Received ${ticks.length} ticks at ${new Date().toLocaleTimeString()}`);
+   // console.log(`📊 Received ${ticks.length} ticks at ${new Date().toLocaleTimeString()}`);
     handleTicks(ticks);
   });
   
@@ -1571,7 +1571,7 @@ function initTickListener() {
 async function handleTicks(ticks) {
   if (!ticks || !ticks.length) return;
 
-  console.log(`📊 Processing ${ticks.length} ticks at ${new Date().toLocaleTimeString()}`);
+  //console.log(`📊 Processing ${ticks.length} ticks at ${new Date().toLocaleTimeString()}`);
 
   // CHECK FOR PENDING ORDER PLACEMENT WHEN FIRST TICK ARRIVES
   if (global.pendingOrderFilename && global.pendingOrderTokens && global.pendingOrderTokens.length > 0) {
@@ -1588,7 +1588,7 @@ async function handleTicks(ticks) {
     
     if (matchingTick) {
       try {
-        const { placeBuyOrder, placeSellOrder } = require("../orders/orderManager");
+        const { placeBuyOrder, placeSellOrder, canPlaceNewPosition, playOrderBlockedAudio } = require("../orders/orderManager");
         const filename = global.pendingOrderFilename;
         const filenameLC = filename.toLowerCase();
         const token = matchingTick.instrument_token;
@@ -1597,6 +1597,26 @@ async function handleTicks(ticks) {
         
         console.log(`🎯 Using LIVE TICK DATA from ${symbol}: ₹${livePrice} for order placement`);
         console.log(`📁 Analyzing filename: "${filename}"`);
+        
+        // REAL-TIME POSITION/ORDER CHECK - Make API call to verify current state
+        console.log(`🔍 FILE DOWNLOADED - Making real-time API call to check positions and orders for ${symbol}...`);
+        const canPlace = await canPlaceNewPosition(symbol);
+        
+        if (!canPlace.allowed) {
+          // Play detailed audio about what's blocking the order
+          const blockingReason = `Order blocked for ${symbol}. ${canPlace.reason}`;
+          console.log(`🚫 ${blockingReason}`);
+          await playOrderBlockedAudio(blockingReason);
+          
+          // Clear pending order data since we can't place it
+          global.pendingOrderFilename = null;
+          global.pendingOrderTokens = null;
+          console.log(`❌ Cleared pending order data due to blocking conditions`);
+          return;
+        }
+        
+        // If we reach here, position check passed - proceed with order placement
+        console.log(`✅ Real-time position check passed - proceeding with order placement for ${symbol}`);
         
         // Place order using live tick price
         if (filenameLC.includes('buy')) {
@@ -1616,6 +1636,18 @@ async function handleTicks(ticks) {
         
       } catch (error) {
         console.error(`❌ Error in live tick order placement: ${error.message}`);
+        
+        // Play audio about the error
+        try {
+          const { playOrderBlockedAudio } = require("../orders/orderManager");
+          await playOrderBlockedAudio(`Error placing order: ${error.message}`);
+        } catch (audioError) {
+          console.error(`❌ Error playing audio: ${audioError.message}`);
+        }
+        
+        // Clear pending order data on error
+        global.pendingOrderFilename = null;
+        global.pendingOrderTokens = null;
       }
     } else {
       console.log(`⏳ NO MATCHING TOKENS FOUND - Will keep waiting for matching tick data`);

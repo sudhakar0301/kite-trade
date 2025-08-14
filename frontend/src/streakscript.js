@@ -43,7 +43,7 @@ function runScanAndDownload() {
         console.warn('SVG with data-name containing "Component 28" not found.');
         scheduleNextRun();
       }
-    }, 25000); // 10 sec wait after "Run Scan" click
+    }, 40000); // 10 sec wait after "Run Scan" click
 
   } else {
     console.warn('Button with text "Run Scan" not found.');
