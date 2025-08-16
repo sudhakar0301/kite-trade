@@ -250,7 +250,7 @@ const MIS_CUTOFF_TIME = { hours: 15, minutes: 15 }; // 3:15 PM - standard MIS cu
 const openOrdersTracker = {}; // { symbol: { orderId, quantity, price, exitOrderId, timestamp } }
 
 // DYNAMIC PROFIT/LOSS CALCULATION BASED ON USABLE FUNDS
-const TARGET_PROFIT_PERCENTAGE = 0.2; // 0.25% of usable funds for target profit
+const TARGET_PROFIT_PERCENTAGE = 0.25; // 0.25% of usable funds for target profit
 const STOP_LOSS_PERCENTAGE = 0.1; // Half of target profit (0.125% of usable funds)
 
 // PREDEFINED VALUES FOR IMMEDIATE SELL ORDERS
@@ -775,20 +775,10 @@ async function canPlaceNewPosition(symbol = null) {
     // Check if this specific symbol has been traded today
     const symbolTraded = await hasSymbolBeenTraded(symbol);
     if (symbolTraded) {
-     // console.log(`🚫 Cannot place new position - ${symbol} already traded today`);
+      //console.log(`🚫 Cannot place new position - ${symbol} already traded today`);
       return {
-        allowed: false,
-        reason: `${symbol} already traded today - avoiding overtrading`
-      };
-    }
-
-    // 🚫 CRITICAL: Check for ANY open positions globally - only allow one stock at a time
-    const hasAnyOpenPosition = await hasAnyPosition();
-    if (hasAnyOpenPosition) {
-      console.log(`🚫 Cannot place new position - already have open positions for other stocks`);
-      return {
-        allowed: false,
-        reason: `Open positions exist for other stocks - only one stock allowed at a time`
+        allowed: true,
+       // reason: `${symbol} already traded today - avoiding overtrading`
       };
     }
 
@@ -1077,6 +1067,15 @@ async function placeSellOrder(token, symbol, ltp) {
     if (!canPlace.allowed) {
       console.log(`🚫 BLOCKED: Cannot place new SELL order for ${symbol} - ${canPlace.reason}`);
       playOrderBlockedAudio(`Cannot place sell order for ${symbol}. ${canPlace.reason}`);
+      return null;
+    }
+    
+    // 🚫 CHECK: Don't place order if symbol has completed positions today (prevent re-trading)
+    const hasBeenTraded = await hasSymbolBeenTraded(symbol);
+    if (hasBeenTraded) {
+      const blockReason = "already traded today (completed positions exist)";
+      console.log(`🚫 BLOCKED: Symbol ${symbol} has ${blockReason}, skipping SELL order`);
+      playOrderBlockedAudio(blockReason);
       return null;
     }
     

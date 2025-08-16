@@ -4,7 +4,7 @@ function runScanAndDownload() {
     .find(btn => btn.textContent.trim().includes('Run'));
 
   if (runScanBtn instanceof HTMLElement) {
-    runScanBtn.click();
+   // runScanBtn.click();
     console.log('Clicked "Run Scan" button');
 
     // Step 2: Wait 10 seconds
@@ -43,7 +43,7 @@ function runScanAndDownload() {
         console.warn('SVG with data-name containing "Component 28" not found.');
         scheduleNextRun();
       }
-    }, 40000); // 10 sec wait after "Run Scan" click
+    }, 0); // 10 sec wait after "Run Scan" click
 
   } else {
     console.warn('Button with text "Run Scan" not found.');
@@ -53,7 +53,7 @@ function runScanAndDownload() {
 
 // Recursive timeout function for 2-minute interval
 function scheduleNextRun() {
-  setTimeout(runScanAndDownload, 60000); // 2 min = 120,000 ms
+  setInterval(runScanAndDownload, 60000); // 2 min = 120,000 ms
 }
 
 // 🔁 Start immediately
