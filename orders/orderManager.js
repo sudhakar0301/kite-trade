@@ -524,6 +524,29 @@ function generateKiteChartURL(symbol, token) {
   }
 }
 
+// Function to open Kite chart URL in default browser
+function openKiteChart(symbol, token) {
+  try {
+    const chartURL = generateKiteChartURL(symbol, token);
+    if (chartURL) {
+      const { exec } = require('child_process');
+      
+      // Open URL in default browser
+      exec(`start "" "${chartURL}"`, (error) => {
+        if (error) {
+          console.error(`❌ Error opening chart URL: ${error.message}`);
+        } else {
+          console.log(`📊 Opened Kite chart for ${symbol}: ${chartURL}`);
+        }
+      });
+    } else {
+      console.error(`❌ Could not generate chart URL for ${symbol}`);
+    }
+  } catch (error) {
+    console.error(`❌ Error in openKiteChart: ${error.message}`);
+  }
+}
+
 // Cache for positions and margins to avoid frequent API calls
 let positionsCache = null;
 let marginsCache = null;
@@ -1160,7 +1183,10 @@ async function placeSellOrder(token, symbol, ltp) {
       const order = await global.kite.placeOrder('regular', orderParams);
       console.log(`✅ IMMEDIATE SELL Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Product: ${productType}) - ${orderReason}`);
       
-      // 🔊 PLAY AUDIO NOTIFICATION FOR ORDER PLACEMENT
+      // � OPEN KITE CHART FOR THE ORDER
+      openKiteChart(symbol, token);
+      
+      // �🔊 PLAY AUDIO NOTIFICATION FOR ORDER PLACEMENT
       playOrderPlacedAudio();
       
       // Track the order
@@ -2273,7 +2299,10 @@ async function placeBuyOrder(token, symbol, ltp) {
       const order = await global.kite.placeOrder('regular', orderParams);
       console.log(`✅ IMMEDIATE BUY Order placed for ${symbol}: ${order.order_id} (Qty: ${quantity}, Product: ${productType}) - ${orderReason}`);
       
-      // 🔊 PLAY AUDIO NOTIFICATION FOR ORDER PLACEMENT
+      // � OPEN KITE CHART FOR THE ORDER
+      openKiteChart(symbol, token);
+      
+      // �🔊 PLAY AUDIO NOTIFICATION FOR ORDER PLACEMENT
       playOrderPlacedAudio();
       
       // Track the order
@@ -2350,6 +2379,7 @@ module.exports = {
   getCurrentPosition,
   hasCurrentPosition,
   generateKiteChartURL,
+  openKiteChart, // NEW - Function to open Kite chart in browser
   cooldownTracker,
   openOrdersTracker,
   getPositions,
