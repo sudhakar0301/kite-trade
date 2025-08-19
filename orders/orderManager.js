@@ -516,7 +516,7 @@ async function findSmallestBodyToken(tokenList, scanType = 'UNKNOWN') {
 function generateKiteChartURL(symbol, token) {
   try {
     // Zerodha Kite chart URL format: https://kite.zerodha.com/chart/ext/tvc/NSE/SYMBOL/TOKEN
-    const chartURL = `https://kite.zerodha.com/chart/ext/tvc/NSE/${symbol}/${token}`;
+    const chartURL = `https://kite.zerodha.com/chart/ext/ciq/NSE/${symbol}/${token}`;
     return chartURL;
   } catch (error) {
     console.error(`❌ Error generating chart URL for ${symbol}: ${error.message}`);
@@ -762,10 +762,21 @@ async function canPlaceNewPosition(symbol = null) {
   try {
     // If no symbol provided, cannot do symbol-specific checks
     if (!symbol) {
-      console.log(`⚠️ No symbol provided for position check - allowing order`);
+      console.log(`⚠️ No symbol provided for position check - blocking order`);
       return {
-        allowed: true,
-        reason: 'No symbol provided - check bypassed'
+        allowed: false,
+        reason: 'No symbol provided - cannot verify position safety'
+      };
+    }
+    
+    // 🚫 CRITICAL: Check if ANY open positions exist (user requirement)
+    // "dont place any order if any open positions are there. only open, target and stop loss should be there of one stock at a time"
+    const anyPosition = await hasAnyPosition();
+    if (anyPosition) {
+      console.log(`🚫 Cannot place ANY new position - open positions exist (user rule: only one stock at a time)`);
+      return {
+        allowed: false,
+        reason: `Cannot place order - open positions exist. User rule: only one stock at a time`
       };
     }
     
@@ -798,10 +809,10 @@ async function canPlaceNewPosition(symbol = null) {
     // Check if this specific symbol has been traded today
     const symbolTraded = await hasSymbolBeenTraded(symbol);
     if (symbolTraded) {
-      //console.log(`🚫 Cannot place new position - ${symbol} already traded today`);
+      console.log(`🚫 Cannot place new position - ${symbol} already traded today`);
       return {
-        allowed: true,
-       // reason: `${symbol} already traded today - avoiding overtrading`
+        allowed: false,
+        reason: `${symbol} already traded today - avoiding overtrading`
       };
     }
 
