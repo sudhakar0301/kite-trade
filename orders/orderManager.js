@@ -250,8 +250,8 @@ const MIS_CUTOFF_TIME = { hours: 15, minutes: 15 }; // 3:15 PM - standard MIS cu
 const openOrdersTracker = {}; // { symbol: { orderId, quantity, price, exitOrderId, timestamp } }
 
 // DYNAMIC PROFIT/LOSS CALCULATION BASED ON USABLE FUNDS
-const TARGET_PROFIT_PERCENTAGE = 0.25; // 0.25% of usable funds for target profit
-const STOP_LOSS_PERCENTAGE = 0.1; // Half of target profit (0.125% of usable funds)
+const TARGET_PROFIT_PERCENTAGE = 0.5; // 0.5% of usable funds for target profit
+const STOP_LOSS_PERCENTAGE = 0.25; // Half of target profit (0.25% of usable funds)
 
 // PREDEFINED VALUES FOR IMMEDIATE SELL ORDERS
 const PREDEFINED_QUANTITY = 1; // Fixed quantity for sell orders
@@ -826,8 +826,8 @@ async function canPlaceNewPosition(symbol = null) {
         const isNewPosition = (order.transaction_type === 'BUY' || order.transaction_type === 'SELL');
         const isPending = ['OPEN', 'TRIGGER PENDING', 'PENDING'].includes(order.status);
         const isSameSymbol = order.tradingsymbol === symbol;
-        
-        return isMarketOrder && isNewPosition && isPending && isSameSymbol;
+         return isMarketOrder && isNewPosition && isPending ;
+        //return isMarketOrder && isNewPosition && isPending && isSameSymbol;
       });
       
       if (symbolOrders.length > 0) {

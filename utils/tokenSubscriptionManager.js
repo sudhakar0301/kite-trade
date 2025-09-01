@@ -2,6 +2,54 @@ const fs = require("fs");
 const path = require("path");
 const csv = require('csv-parser');
 const os = require('os');
+const { exec } = require('child_process');
+
+/**
+ * Audio notification for empty CSV files
+ */
+function playEmptyFileAudio() {
+  try {
+    const message = 'empty file please download again';
+    
+    console.log(`🔊 AUDIO ALERT: ${message.toUpperCase()} 🔊`);
+    
+    // Step 1: Play beep sounds immediately
+    console.log(`🔊 Playing beep sequence first...`);
+    exec('powershell -c "[console]::beep(400,300); Start-Sleep -m 100; [console]::beep(600,300); Start-Sleep -m 100; [console]::beep(800,300)"', (beepError) => {
+      if (beepError) {
+        console.log(`⚠️ Beep sequence failed: ${beepError.message}`);
+        console.log('\u0007\u0007\u0007'); // Fallback to ASCII bell
+      } else {
+        console.log(`✅ Beep sequence completed`);
+      }
+      
+      // Step 2: After beep, play text-to-speech (with small delay)
+      setTimeout(() => {
+        console.log(`🔊 Playing text-to-speech: "${message}"`);
+        exec(`powershell -c "Add-Type -AssemblyName System.Speech; $speak = New-Object System.Speech.Synthesis.SpeechSynthesizer; $speak.Rate = 2; $speak.Speak('${message}')"`, (ttsError) => {
+          if (ttsError) {
+            console.log(`⚠️ TTS failed: ${ttsError.message}`);
+            // Fallback to system warning sound
+            exec('powershell -c "(New-Object Media.SoundPlayer \'C:\\Windows\\Media\\Windows Exclamation.wav\').PlaySync();"', (soundError) => {
+              if (soundError) {
+                console.log(`⚠️ System sound also failed: ${soundError.message}`);
+                console.log('\u0007\u0007\u0007'); // Final fallback
+              } else {
+                console.log(`✅ System warning sound played as TTS fallback`);
+              }
+            });
+          } else {
+            console.log(`✅ Text-to-speech completed: "${message}"`);
+          }
+        });
+      }, 500); // 500ms delay after beeps complete
+    });
+    
+  } catch (error) {
+    console.log(`⚠️ Empty file audio notification failed: ${error.message}`);
+    console.log('\u0007\u0007\u0007'); // Fallback to triple ASCII bell
+  }
+}
 
 /**
  * Smart Token Subscription Manager
@@ -417,6 +465,7 @@ function setupCSVFileWatcher(onNewCSVDetected) {
           }
         } else {
           console.warn(`⚠️ No valid tokens found in CSV: ${filePath}`);
+          playEmptyFileAudio(); // Play audio alert: "empty file please download again"
         }
       } catch (error) {
         console.error(`❌ Error processing new CSV file ${filePath}:`, error.message);
