@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Scanner Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            color: white;
+            margin: 0;
+            padding: 2rem;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        .status {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+        }
+        .controls {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 1rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+        }
+        .data {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 1rem;
+            border-radius: 8px;
+            min-height: 300px;
+        }
+        button {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 0.5rem;
+        }
+        button:hover {
+            background: #218838;
+        }
+        .connected {
+            color: #28a745;
+        }
+        .disconnected {
+            color: #dc3545;
+        }
+        pre {
+            background: rgba(0, 0, 0, 0.5);
+            padding: 1rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🚀 Trading Scanner Test Page</h1>
+            <p>Testing WebSocket connection and backend API</p>
+        </div>
+
+        <div class="status">
+            <h3>Connection Status</h3>
+            <p>WebSocket: <span id="wsStatus" class="disconnected">Disconnected</span></p>
+            <p>Backend API: <span id="apiStatus">Testing...</span></p>
+        </div>
+
+        <div class="controls">
+            <h3>Controls</h3>
+            <button onclick="connectWS()">Connect WebSocket</button>
+            <button onclick="disconnectWS()">Disconnect WebSocket</button>
+            <button onclick="subscribeSymbol()">Subscribe to RELIANCE</button>
+            <button onclick="testAPI()">Test Backend API</button>
+            <button onclick="clearLog()">Clear Log</button>
+        </div>
+
+        <div class="data">
+            <h3>Live Data & Logs</h3>
+            <pre id="dataLog">Waiting for data...</pre>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        const dataLog = document.getElementById('dataLog');
+        const wsStatus = document.getElementById('wsStatus');
+        const apiStatus = document.getElementById('apiStatus');
+
+        function log(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            dataLog.textContent += `[${timestamp}] ${message}\n`;
+            dataLog.scrollTop = dataLog.scrollHeight;
+        }
+
+        function connectWS() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                log('WebSocket already connected');
+                return;
+            }
+
+            try {
+                ws = new WebSocket('ws://localhost:5000');
+                
+                ws.onopen = function(event) {
+                    log('✅ WebSocket connected successfully');
+                    wsStatus.textContent = 'Connected';
+                    wsStatus.className = 'connected';
+                };
+
+                ws.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        log(`📨 Received: ${data.type || 'Unknown'}`);
+                        
+                        if (data.type === 'tick_update') {
+                            log(`💹 TICK - Symbol: ${data.symbol}, LTP: ₹${data.ltp}, Volume: ${data.volume}`);
+                        } else {
+                            log(`📊 Data: ${JSON.stringify(data, null, 2)}`);
+                        }
+                    } catch (error) {
+                        log(`❌ Error parsing message: ${error.message}`);
+                    }
+                };
+
+                ws.onclose = function(event) {
+                    log(`🔌 WebSocket closed: ${event.code} - ${event.reason || 'Unknown reason'}`);
+                    wsStatus.textContent = 'Disconnected';
+                    wsStatus.className = 'disconnected';
+                };
+
+                ws.onerror = function(error) {
+                    log(`❌ WebSocket error: ${error.message || 'Unknown error'}`);
+                };
+
+            } catch (error) {
+                log(`❌ Failed to create WebSocket: ${error.message}`);
+            }
+        }
+
+        function disconnectWS() {
+            if (ws) {
+                log('🔌 Manually disconnecting WebSocket');
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function subscribeSymbol() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                log('⚠️ WebSocket not connected. Connect first.');
+                return;
+            }
+
+            const message = {
+                type: 'subscribe',
+                symbol: 'RELIANCE'
+            };
+
+            ws.send(JSON.stringify(message));
+            log(`📤 Subscribed to RELIANCE`);
+        }
+
+        async function testAPI() {
+            try {
+                log('🔍 Testing backend API...');
+                
+                // Test health check
+                const healthResponse = await fetch('http://localhost:5000/api/health');
+                if (healthResponse.ok) {
+                    apiStatus.textContent = 'Connected';
+                    apiStatus.className = 'connected';
+                    log('✅ Backend API health check passed');
+                } else {
+                    throw new Error(`Health check failed: ${healthResponse.status}`);
+                }
+
+                // Test scanner endpoint
+                const signalsResponse = await fetch('http://localhost:5000/api/scanner/signals/RELIANCE');
+                if (signalsResponse.ok) {
+                    const signalsData = await signalsResponse.json();
+                    log(`📊 Scanner signals: ${JSON.stringify(signalsData, null, 2)}`);
+                } else {
+                    log(`⚠️ Signals endpoint returned: ${signalsResponse.status}`);
+                }
+
+            } catch (error) {
+                log(`❌ API test failed: ${error.message}`);
+                apiStatus.textContent = 'Failed';
+                apiStatus.className = 'disconnected';
+            }
+        }
+
+        function clearLog() {
+            dataLog.textContent = 'Log cleared...\n';
+        }
+
+        // Auto-connect on page load
+        window.onload = function() {
+            log('🚀 Page loaded. Click "Connect WebSocket" to start.');
+            testAPI();
+        };
+    </script>
+</body>
+</html>
