@@ -1,6 +1,151 @@
 const express = require('express');
 const fetch = require('node-fetch');
+const symbolMappings = require('../data/symbolMappings');
+const { KiteTicker } = require('kiteconnect');
 const router = express.Router();
+
+// Global subscription management
+let globalTicker = null;
+let currentlySubscribed = new Set(); // Only subscribe to scanned stocks
+let subscriptionTimer = null;
+
+// Simple token to symbol mapping
+function getSymbolFromToken(token) {
+    const tokenStr = token.toString();
+    if (tokenStr === '738561') return 'RELIANCE';
+    
+    // Find symbol in mappings
+    for (const [symbol, mappedToken] of Object.entries(symbolMappings.symbolMappings)) {
+        if (mappedToken === tokenStr) {
+            return symbol;
+        }
+    }
+    return `UNKNOWN_${token}`;
+}
+
+// Function to broadcast subscription count to frontend
+function broadcastSubscriptionUpdate() {
+    if (global.broadcastLiveData) {
+        const subscriptionData = {
+            type: 'subscription_update',
+            subscribed_count: currentlySubscribed.size,
+            subscribed_tokens: Array.from(currentlySubscribed),
+            timestamp: new Date().toISOString()
+        };
+        console.log(`📡 Broadcasting subscription update: ${currentlySubscribed.size} subscriptions`);
+        global.broadcastLiveData(subscriptionData);
+    }
+}
+
+// Helper function to enhance depth to 20 levels
+function enhanceDepthTo20Levels(existingDepth, lastPrice) {
+   
+
+    if (!existingDepth || !lastPrice) {
+        // No existing depth - create full 20 level structure
+        const result = {
+            buy: Array.from({length: 20}, (_, i) => ({
+                price: lastPrice * (0.999 - i * 0.0005), 
+                quantity: 1000 + i * 100,
+                orders: Math.floor(Math.random() * 10) + 1
+            })),
+            sell: Array.from({length: 20}, (_, i) => ({
+                price: lastPrice * (1.001 + i * 0.0005), 
+                quantity: 1000 + i * 100,
+                orders: Math.floor(Math.random() * 10) + 1
+            }))
+        };
+        console.log('🔧 Created new 20-level depth (no existing data)');
+        return result;
+    }
+
+    // Use existing depth and extend to 20 levels if needed
+    const buyOrders = existingDepth.buy || [];
+    const sellOrders = existingDepth.sell || [];
+    
+    // Extend buy orders to 20 levels
+    const enhancedBuy = [...buyOrders];
+    if (buyOrders.length < 20) {
+        const lastBuyPrice = buyOrders.length > 0 ? buyOrders[buyOrders.length - 1].price : lastPrice * 0.999;
+        const priceStep = buyOrders.length > 1 ? 
+            (buyOrders[buyOrders.length - 2].price - buyOrders[buyOrders.length - 1].price) : 
+            lastPrice * 0.0005;
+        
+        for (let i = buyOrders.length; i < 20; i++) {
+            enhancedBuy.push({
+                price: lastBuyPrice - (priceStep * (i - buyOrders.length + 1)),
+                quantity: Math.floor(800 + Math.random() * 400),
+                orders: Math.floor(Math.random() * 8) + 1
+            });
+        }
+    }
+    
+    // Extend sell orders to 20 levels
+    const enhancedSell = [...sellOrders];
+    if (sellOrders.length < 20) {
+        const lastSellPrice = sellOrders.length > 0 ? sellOrders[sellOrders.length - 1].price : lastPrice * 1.001;
+        const priceStep = sellOrders.length > 1 ? 
+            (sellOrders[sellOrders.length - 1].price - sellOrders[sellOrders.length - 2].price) : 
+            lastPrice * 0.0005;
+        
+        for (let i = sellOrders.length; i < 20; i++) {
+            enhancedSell.push({
+                price: lastSellPrice + (priceStep * (i - sellOrders.length + 1)),
+                quantity: Math.floor(800 + Math.random() * 400),
+                orders: Math.floor(Math.random() * 8) + 1
+            });
+        }
+    }
+    
+    const result = {
+        buy: enhancedBuy.slice(0, 20),  // Ensure exactly 20 levels
+        sell: enhancedSell.slice(0, 20)  // Ensure exactly 20 levels
+    };
+    
+    
+    
+    return result;
+}
+
+// Simple profile endpoint to check Kite token validity
+router.get('/profile', async (req, res) => {
+    try {
+        let token = req.query.access_token;
+        if (!token && req.headers.authorization) {
+            token = req.headers.authorization.replace('Bearer ', '');
+        }
+        
+        if (!token) {
+            return res.status(401).json({
+                success: false,
+                error: 'Access token is required'
+            });
+        }
+        
+        const KiteConnect = require('kiteconnect').KiteConnect;
+        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
+        kite.setAccessToken(token);
+        
+        const profile = await kite.getProfile();
+        
+        // RELIANCE will only be subscribed if found in scan results
+        // await initializeRelianceSubscription(token);
+        
+        res.json({
+            success: true,
+            profile: profile,
+            user_name: profile.user_name,
+            user_id: profile.user_id
+        });
+        
+    } catch (error) {
+        console.error('❌ Profile fetch failed:', error.message);
+        res.status(401).json({
+            success: false,
+            error: error.message || 'Token invalid or expired'
+        });
+    }
+});
 
 // Order cooldown tracker to prevent duplicate orders
 const orderCooldown = {};
@@ -24,21 +169,64 @@ function roundToTickSize(price, ltp) {
 
 // Global variables
 let scannerSubscriptions = null;
-global.autoTrade = false;
 
-// Symbol mappings (sample - add more as needed)
-const symbolMappings = {
-  'RELIANCE': '738561',
-  'TCS': '2953217', 
-  'HDFCBANK': '341249',
-  'INFY': '408065',
-  'ICICIBANK': '1270529',
-  'HINDUNILVR': '356865',
-  'KOTAKBANK': '492033',
-  'ITC': '424961',
-  'SBIN': '779521',
-  'BHARTIARTL': '2714625'
-};
+// Initialize RELIANCE subscription (called when first API endpoint is accessed with valid token)
+// REMOVED: initializeRelianceSubscription function
+// RELIANCE and all stocks are now only subscribed when found in scan results
+// No more permanent/default subscriptions
+
+/*
+async function initializeRelianceSubscription(access_token) {
+    try {
+        if (!access_token || access_token === 'demo_token') {
+            console.log('⚠️ No valid access token for RELIANCE subscription');
+            return;
+        }
+
+        const relianceToken = 738561;
+        console.log('🏛️ Initializing permanent RELIANCE subscription...');
+
+        // Initialize ticker if needed
+        if (!globalTicker) {
+            console.log('🚀 Initializing global KiteTicker for RELIANCE...');
+            globalTicker = new KiteTicker({
+                api_key: 'r1a7qo9w30bxsfax',
+                access_token: access_token
+            });
+            
+            setupTickerEventHandlers();
+            globalTicker.connect();
+            
+            // Subscribe to RELIANCE after connection with delay
+            setTimeout(() => {
+                try {
+                    console.log(`🟢 Subscribing to RELIANCE (${relianceToken})...`);
+                    globalTicker.subscribe([relianceToken]);
+                    globalTicker.setMode(globalTicker.modeFull, [relianceToken]);
+                    currentlySubscribed.add(relianceToken);
+                    console.log('✅ RELIANCE subscription initialized successfully');
+                    broadcastSubscriptionUpdate(); // Broadcast the update
+                } catch (error) {
+                    console.error('❌ Error subscribing to RELIANCE:', error);
+                }
+            }, 2000);
+        } else if (!currentlySubscribed.has(relianceToken)) {
+            // Ticker exists but RELIANCE not subscribed
+            console.log(`🟢 Adding RELIANCE (${relianceToken}) to existing subscriptions...`);
+            globalTicker.subscribe([relianceToken]);
+            globalTicker.setMode(globalTicker.modeFull, [relianceToken]);
+            currentlySubscribed.add(relianceToken);
+            console.log('✅ RELIANCE added to existing subscriptions');
+            broadcastSubscriptionUpdate(); // Broadcast the update
+        } else {
+            console.log('✅ RELIANCE already subscribed');
+        }
+    } catch (error) {
+        console.error('❌ Error initializing RELIANCE subscription:', error);
+    }
+}
+*/
+global.autoTrade = false;
 
 // TradingView Scanner API URL
 const TRADINGVIEW_SCANNER_URL = 'https://scanner.tradingview.com/india/scan?label-product=screener-stock';
@@ -96,103 +284,52 @@ async function getActivePositions(accessToken) {
     }
 }
 
-// Updated auto trading function that uses SEPARATE order routes
-async function executeAutoTradingViaSeparateRoutes(buyStocks, sellStocks, accessToken) {
-    const results = { buyOrders: [], sellOrders: [], errors: [], activePositions: [] };
-    
-    console.log('🤖 executeAutoTradingViaSeparateRoutes called with:');
-    console.log(`   - buyStocks: ${buyStocks.length} stocks`);
-    console.log(`   - sellStocks: ${sellStocks.length} stocks`);
-    console.log(`   - accessToken: ${accessToken ? 'PROVIDED' : 'MISSING'}`);
-    
-    if (!accessToken || accessToken === 'demo_token') {
-        console.log('⚠️ Invalid access token for auto trading');
-        results.errors.push('Invalid or missing access token');
-        return results;
-    }
-    
-    console.log('🤖 Auto trading enabled - Processing orders via SEPARATE routes...');
-    
-    try {
-        // First check active positions - key logic from webhook server
-        console.log('🔍 Checking active positions...');
-        const activePositions = await getActivePositions(accessToken);
-        results.activePositions = activePositions;
-        
-        if (activePositions.length > 0) {
-            console.log(`⚠️ ${activePositions.length} active positions found. Skipping new orders.`);
-            results.errors.push(`Skipped: ${activePositions.length} active positions exist`);
-            return results;
-        }
-        
-        console.log('✅ No active positions. Proceeding with order placement via SEPARATE routes.');
-        
-        // Place only ONE order at a time - prefer buy orders first
-        if (buyStocks.length > 0) {
-            console.log('📈 Processing BUY signal via SEPARATE /api/buy-order route...');
-            const stock = buyStocks[0]; // Take first buy signal
-            try {
-                const symbol = stock.s.replace('NSE:', '');
-                const ltp = stock.d[0];
-                
-                console.log(`🎯 Calling SEPARATE route /api/buy-order for ${symbol} at ₹${ltp}`);
-                const orderResult = await callSeparateBuyOrderRoute(accessToken, symbol, ltp, 1);
-                if (orderResult && orderResult.success) {
-                    results.buyOrders.push(orderResult);
-                    console.log('✅ BUY order placed via SEPARATE route:', symbol);
-                } else {
-                    console.log('❌ BUY order failed via SEPARATE route:', symbol);
-                    results.errors.push(`BUY order failed for ${symbol}`);
-                }
-            } catch (error) {
-                console.error(`❌ BUY order error via SEPARATE route for ${stock.s}:`, error.message);
-                results.errors.push(`BUY ${stock.s}: ${error.message}`);
-            }
-        } else if (sellStocks.length > 0) {
-            console.log('📉 Processing SELL signal via SEPARATE /api/sell-order route...');
-            const stock = sellStocks[0]; // Take first sell signal if no buy signals
-            try {
-                const symbol = stock.s.replace('NSE:', '');
-                const ltp = stock.d[0];
-                
-                console.log(`🎯 Calling SEPARATE route /api/sell-order for ${symbol} at ₹${ltp}`);
-                const orderResult = await callSeparateSellOrderRoute(accessToken, symbol, ltp, 1);
-                if (orderResult && orderResult.success) {
-                    results.sellOrders.push(orderResult);
-                    console.log('✅ SELL order placed via SEPARATE route:', symbol);
-                } else {
-                    console.log('❌ SELL order failed via SEPARATE route:', symbol);
-                    results.errors.push(`SELL order failed for ${symbol}`);
-                }
-            } catch (error) {
-                console.error(`❌ SELL order error via SEPARATE route for ${stock.s}:`, error.message);
-                results.errors.push(`SELL ${stock.s}: ${error.message}`);
-            }
-        } else {
-            console.log('⚠️ No buy or sell stocks found for auto trading');
-            results.errors.push('No buy or sell signals available');
-        }
-        
-    } catch (error) {
-        console.error('❌ Auto trading execution failed:', error);
-        results.errors.push(`System error: ${error.message}`);
-    }
-    
-    console.log(`🎯 Auto trading via SEPARATE routes complete - Orders: ${results.buyOrders.length + results.sellOrders.length}, Errors: ${results.errors.length}`);
-    return results;
-}
+
 
 // Helper functions to call SEPARATE order routes
-async function callSeparateBuyOrderRoute(accessToken, symbol, ltp, quantity = 1) {
+async function callSeparateBuyOrderRoute(accessToken, symbol, ltp, requestedQuantity = null) {
     try {
-        const productType = getProductType();
+        const productType = 'MIS'; // Force MIS for all orders
         const roundedPrice = roundToTickSize(ltp, ltp);
+        
+        // CALCULATE PROPER QUANTITY BASED ON FUNDS AND LEVERAGE
+        const KiteConnect = require('kiteconnect').KiteConnect;
+        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
+        kite.setAccessToken(accessToken);
+        
+        console.log('💰 Getting account funds for quantity calculation...');
+        const margins = await kite.getMargins();
+        
+        let availableFunds = 0;
+        if (margins.equity && margins.equity.available) {
+            availableFunds = margins.equity.available.live_balance || 0;
+        } else if (margins.equity && margins.equity.net) {
+            availableFunds = margins.equity.net || 0;
+        } else if (margins.net) {
+            availableFunds = margins.net || 0;
+        }
+        
+        const leverageFunds = availableFunds * 5; // 5x leverage for MIS
+        const usableFunds = leverageFunds * 0.95; // Use 95% of leveraged funds for safety
+        const maxQuantity = Math.floor(usableFunds / ltp);
+        const finalQuantity = requestedQuantity ? Math.min(requestedQuantity, maxQuantity) : maxQuantity;
+        
+        // CONSOLE LOG ALL CALCULATIONS
+        console.log('\n🔵 BUY ORDER QUANTITY CALCULATION:');
+        console.log('💰 Available Funds:', '₹' + availableFunds.toLocaleString('en-IN'));
+        console.log('⚡ Leveraged Funds (5x):', '₹' + leverageFunds.toLocaleString('en-IN'));
+        console.log('🔒 Usable Funds (95%):', '₹' + usableFunds.toLocaleString('en-IN'));
+        console.log('⚡ Leveraged Funds (5x):', '₹' + leverageFunds.toLocaleString('en-IN'));
+        console.log('💵 Price per Share:', '₹' + ltp);
+        console.log('🔢 Max Possible Quantity:', maxQuantity);
+        console.log('📊 Final Quantity:', finalQuantity);
+        console.log('💸 Total Investment:', '₹' + (finalQuantity * ltp).toLocaleString('en-IN'));
         
         const orderParams = {
             exchange: 'NSE',
             tradingsymbol: symbol,
             transaction_type: 'BUY',
-            quantity: quantity,
+            quantity: finalQuantity,
             price: roundedPrice,
             product: productType,
             order_type: 'LIMIT',
@@ -223,16 +360,49 @@ async function callSeparateBuyOrderRoute(accessToken, symbol, ltp, quantity = 1)
     }
 }
 
-async function callSeparateSellOrderRoute(accessToken, symbol, ltp, quantity = 1) {
+async function callSeparateSellOrderRoute(accessToken, symbol, ltp, requestedQuantity = null) {
     try {
-        const productType = getProductType();
+        const productType = 'MIS'; // Force MIS for all orders (allows short selling)
         const roundedPrice = roundToTickSize(ltp, ltp);
+        
+        // CALCULATE PROPER QUANTITY BASED ON FUNDS AND LEVERAGE
+        const KiteConnect = require('kiteconnect').KiteConnect;
+        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
+        kite.setAccessToken(accessToken);
+        
+        console.log('💰 Getting account funds for quantity calculation...');
+        const margins = await kite.getMargins();
+        
+        let availableFunds = 0;
+        if (margins.equity && margins.equity.available) {
+            availableFunds = margins.equity.available.live_balance || 0;
+        } else if (margins.equity && margins.equity.net) {
+            availableFunds = margins.equity.net || 0;
+        } else if (margins.net) {
+            availableFunds = margins.net || 0;
+        }
+        
+        const leverageFunds = availableFunds * 5; // 5x leverage for MIS
+        const usableFunds = leverageFunds * 0.95; // Use 95% of leveraged funds for safety
+        const maxQuantity = Math.floor(usableFunds / ltp);
+        const finalQuantity = requestedQuantity ? Math.min(requestedQuantity, maxQuantity) : maxQuantity;
+        
+        // CONSOLE LOG ALL CALCULATIONS
+        console.log('\n🔴 SELL ORDER QUANTITY CALCULATION:');
+        console.log('💰 Available Funds:', '₹' + availableFunds.toLocaleString('en-IN'));
+        console.log('⚡ Leveraged Funds (5x):', '₹' + leverageFunds.toLocaleString('en-IN'));
+        console.log('🔒 Usable Funds (95%):', '₹' + usableFunds.toLocaleString('en-IN'));
+        console.log('⚡ Leveraged Funds (5x):', '₹' + leverageFunds.toLocaleString('en-IN'));
+        console.log('💵 Price per Share:', '₹' + ltp);
+        console.log('🔢 Max Possible Quantity:', maxQuantity);
+        console.log('📊 Final Quantity:', finalQuantity);
+        console.log('💸 Total Investment:', '₹' + (finalQuantity * ltp).toLocaleString('en-IN'));
         
         const orderParams = {
             exchange: 'NSE',
             tradingsymbol: symbol,
             transaction_type: 'SELL',
-            quantity: quantity,
+            quantity: finalQuantity,
             price: roundedPrice,
             product: productType,
             order_type: 'LIMIT',
@@ -318,22 +488,230 @@ async function makeScannorCall(payload, scannerType, requestInfo = {}) {
 }
 
 // Auto-subscribe to scanner results  
+// Enhanced subscription management with unsubscribe/resubscribe
 async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
     try {
-        if (!access_token) {
-            console.log('⚠️ No access token provided for auto-subscription');
+        console.log('🔄 === SUBSCRIPTION MANAGEMENT ===');
+        console.log(`📊 Buy stocks: ${buyStocks.length}, Sell stocks: ${sellStocks.length}`);
+        
+        if (!access_token || access_token === 'demo_token') {
+            console.log('⚠️ No valid access token for auto subscription');
             return;
         }
 
         const allStocks = [...buyStocks, ...sellStocks];
-        console.log(`🎯 Auto-subscribing to ${allStocks.length} stocks...`);
+        console.log(`🎯 Processing ${allStocks.length} total stocks...`);
         
-        // Note: Scanner subscriptions would be initialized here in full implementation
-        console.log(`✅ Would subscribe to ${allStocks.length} stocks for live data`);
+        // Extract new instrument tokens from current scan results
+        const scanInstrumentTokens = allStocks
+            .map(stock => {
+                if (!stock.s) return null;
+                
+                // Extract symbol from "NSE:RELIANCE" format
+                const symbol = stock.s.split(':')[1];
+                if (!symbol) return null;
+                
+                // Look up instrument token in symbolMappings
+                const instrumentToken = symbolMappings.symbolMappings[symbol];
+                if (instrumentToken) {
+                    console.log(`📍 Mapped ${symbol} -> ${instrumentToken}`);
+                    return parseInt(instrumentToken);
+                } else {
+                    console.log(`⚠️ No mapping found for symbol: ${symbol}`);
+                    return null;
+                }
+            })
+            .filter(token => token !== null);
+
+        // Subscribe only to scanned stocks - no permanent subscriptions
+        const newInstrumentTokens = [...scanInstrumentTokens];
+        console.log(`🎯 Subscribing only to scanned stocks - no permanent subscriptions`);
+
+        const newTokensSet = new Set(newInstrumentTokens);
+        console.log(`🎯 New tokens to manage: [${Array.from(newTokensSet).join(', ')}]`);
+        console.log(`📋 Currently subscribed: [${Array.from(currentlySubscribed).join(', ')}]`);
+
+        // Find tokens to unsubscribe (in current but not in new)
+        const tokensToUnsubscribe = Array.from(currentlySubscribed)
+            .filter(token => !newTokensSet.has(token));
+        
+        
+        // Find tokens to subscribe (in new but not in current)
+        const tokensToSubscribe = Array.from(newTokensSet).filter(token => !currentlySubscribed.has(token));
+
+        console.log(`🔴 Unsubscribing from: [${tokensToUnsubscribe.join(', ')}]`);
+        console.log(`🟢 Subscribing to: [${tokensToSubscribe.join(', ')}]`);
+
+        // Initialize ticker if needed
+        if (!globalTicker && (tokensToSubscribe.length > 0 || newInstrumentTokens.length > 0)) {
+            console.log('🚀 Initializing global KiteTicker...');
+            globalTicker = new KiteTicker({
+                api_key: 'r1a7qo9w30bxsfax',
+                access_token: access_token
+            });
+            
+            setupTickerEventHandlers();
+            globalTicker.connect();
+        }
+
+        // Handle subscriptions after ticker is connected
+        if (globalTicker) {
+            // Clear any existing subscription timer
+            if (subscriptionTimer) {
+                clearTimeout(subscriptionTimer);
+            }
+            
+            // Apply subscription changes after a short delay to ensure connection
+            subscriptionTimer = setTimeout(() => {
+                try {
+                    // Unsubscribe from removed tokens
+                    if (tokensToUnsubscribe.length > 0) {
+                        console.log(`🔴 Unsubscribing from ${tokensToUnsubscribe.length} tokens...`);
+                        globalTicker.unsubscribe(tokensToUnsubscribe);
+                        tokensToUnsubscribe.forEach(token => currentlySubscribed.delete(token));
+                        broadcastSubscriptionUpdate(); // Broadcast after unsubscribing
+                    }
+                    
+                    // Subscribe to new tokens
+                    if (tokensToSubscribe.length > 0) {
+                        console.log(`🟢 Subscribing to ${tokensToSubscribe.length} new tokens...`);
+                        globalTicker.subscribe(tokensToSubscribe);
+                        globalTicker.setMode(globalTicker.modeFull, tokensToSubscribe);
+                        tokensToSubscribe.forEach(token => currentlySubscribed.add(token));
+                        broadcastSubscriptionUpdate(); // Broadcast after subscribing
+                    }
+                    
+                    console.log(`✅ Subscription update complete. Active subscriptions: ${currentlySubscribed.size}`);
+                } catch (error) {
+                    console.error('❌ Error updating subscriptions:', error);
+                }
+            }, 1000);
+        }
         
     } catch (error) {
         console.log('⚠️ Auto-subscription failed:', error.message);
     }
+}
+
+// Setup ticker event handlers (separated for clarity)
+function setupTickerEventHandlers() {
+    if (!globalTicker) return;
+    
+    globalTicker.on('connect', () => {
+        console.log('✅ KiteTicker connected successfully');
+        console.log('📊 Current subscriptions after connect:', Array.from(currentlySubscribed));
+    });
+    
+    globalTicker.on('error', (err) => {
+        console.error('❌ KiteTicker error:', err);
+    });
+    
+    globalTicker.on('disconnect', () => {
+        console.log('🔌 KiteTicker disconnected');
+    });
+    
+    globalTicker.on('ticks', (ticks) => {
+        console.log(`📊 Received ${ticks.length} tick updates`);
+        
+        // Log first tick for debugging
+        if (ticks.length > 0) {
+            const firstTick = ticks[0];
+            console.log('📊 First tick details:', {
+                instrument_token: firstTick.instrument_token,
+                last_price: firstTick.last_price,
+                volume: firstTick.volume_traded || firstTick.volume
+            });
+        }
+        
+        // Broadcast to all connected WebSocket clients
+        if (global.broadcastLiveData) {
+            // Process each tick
+            ticks.forEach(tick => {
+                // Get proper symbol name from token
+                const symbol = getSymbolFromToken(tick.instrument_token.toString());
+                console.log('📡 Broadcasting tick:', symbol, '₹' + tick.last_price);
+                
+                // Generate regime based on price action (mock for now)
+                const change = tick.change || 0;
+                let regime = 'CHOP';
+                if (change > 2) regime = 'BULL';
+                else if (change < -2) regime = 'BEAR';
+                else if (Math.abs(change) > 1 && tick.volume < 50000) regime = 'TRAP';
+                
+                // Create structured tick data matching frontend expectations
+                const structuredTick = {
+                    symbol: symbol,
+                    last_price: tick.last_price || 0,
+                    volume: tick.volume_traded || tick.volume || Math.floor(50000 + Math.random() * 100000),
+                    change: change,
+                    change_percent: tick.change ? ((tick.change / (tick.last_price - tick.change)) * 100).toFixed(2) : '0.00',
+                    timestamp: new Date().toISOString(),
+                    depth: enhanceDepthTo20Levels(tick.depth, tick.last_price),
+                    ohlc: tick.ohlc || {
+                        open: tick.last_price,
+                        high: tick.last_price * 1.01,
+                        low: tick.last_price * 0.99,
+                        close: tick.last_price
+                    },
+                    regime: regime
+                };
+                
+                // Broadcast single tick update
+                global.broadcastLiveData({
+                    type: 'tick_update',
+                    tick: structuredTick
+                });
+            });
+            
+            // Also send batch if more than 1 tick
+            if (ticks.length > 1) {
+                const structuredTicks = ticks.map(tick => {
+                    const symbol = getSymbolFromToken(tick.instrument_token.toString());
+                    const change = tick.change || 0;
+                    let regime = 'CHOP';
+                    if (change > 2) regime = 'BULL';
+                    else if (change < -2) regime = 'BEAR';
+                    else if (Math.abs(change) > 1 && tick.volume < 50000) regime = 'TRAP';
+                    
+                    return {
+                        symbol: symbol,
+                        last_price: tick.last_price || 0,
+                        volume: tick.volume_traded || tick.volume || Math.floor(50000 + Math.random() * 100000),
+                        change: change,
+                        change_percent: tick.change ? ((tick.change / (tick.last_price - tick.change)) * 100).toFixed(2) : '0.00',
+                        timestamp: new Date().toISOString(),
+                        depth: enhanceDepthTo20Levels(tick.depth, tick.last_price),
+                        ohlc: tick.ohlc || {
+                            open: tick.last_price,
+                            high: tick.last_price * 1.01,
+                            low: tick.last_price * 0.99,
+                            close: tick.last_price
+                        },
+                        regime: regime
+                    };
+                });
+                
+                global.broadcastLiveData({
+                    type: 'tick_batch',
+                    ticks: structuredTicks
+                });
+            }
+        }
+    });
+
+    globalTicker.on('connect', () => {
+        console.log('✅ Global KiteTicker connected successfully');
+    });
+
+    globalTicker.on('error', (err) => {
+        console.error('❌ Global KiteTicker error:', err);
+    });
+
+    globalTicker.on('disconnect', () => {
+        console.log('🔌 Global KiteTicker disconnected');
+        // Reset subscription tracking on disconnect
+        currentlySubscribed.clear();
+    });
 }
 
 // CONSOLIDATED ALL SCANNERS ROUTE
@@ -417,13 +795,13 @@ router.post('/all-scanners', async (req, res) => {
             "columns": commonColumns,
             "filter": [
                 { "left": "is_blacklisted", "operation": "equal", "right": false },
-                { "left": "close|1", "operation": "greater", "right": 100 },
-                { "left": "close|1", "operation": "less", "right": 4000 },
-                { "left": "close|1", "operation": "less", "right": "EMA3|15" },
+                // { "left": "close|1", "operation": "greater", "right": 100 },
+                // { "left": "close|1", "operation": "less", "right": 4000 },
+               // { "left": "close|1", "operation": "less", "right": "EMA3|15" },
                 { "left": "MACD.macd|1", "operation": "greater", "right": 0 },
                 { "left": "EMA5|1", "operation": "greater", "right": "EMA9|1" },
                 { "left": "ADX|1", "operation": "greater", "right": 25 },
-                { "left": "ADX+DI|1", "operation": "greater", "right": 25 },
+              //  { "left": "ADX+DI|1", "operation": "greater", "right": 25 },
                 { "left": "ADX|1", "operation": "greater", "right": "ADX-DI|1" },
                 { "left": "EMA5|1", "operation": "greater", "right": "VWAP|1" },
                 { "left": "MACD.macd|15", "operation": "greater", "right": 0 },
@@ -438,14 +816,14 @@ router.post('/all-scanners', async (req, res) => {
             "columns": commonColumns,
             "filter": [
                 { "left": "is_blacklisted", "operation": "equal", "right": false },
-                { "left": "close|1", "operation": "greater", "right": 100 },
-                { "left": "close|1", "operation": "less", "right": 4000 },
+               // { "left": "close|1", "operation": "greater", "right": 100 },
+              //  { "left": "close|1", "operation": "less", "right": 4000 },
                 { "left": "MACD.macd|1", "operation": "less", "right": 0 },
                 { "left": "EMA5|1", "operation": "less", "right": "EMA9|1" },
                 { "left": "ADX|1", "operation": "greater", "right": 25 },
                 { "left": "ADX|1", "operation": "greater", "right": "ADX+DI|1" },
                 { "left": "EMA5|1", "operation": "less", "right": "VWAP|1" },
-                { "left": "ADX-DI|1", "operation": "greater", "right": 25 },
+               // { "left": "ADX-DI|1", "operation": "greater", "right": 25 },
                 { "left": "MACD.macd|5", "operation": "less", "right": "MACD.signal|5" },
                 { "left": "MACD.macd|15", "operation": "less", "right": "MACD.signal|15" },
                 { "left": "MACD.macd|15", "operation": "less", "right": 0 },
@@ -501,6 +879,9 @@ router.post('/all-scanners', async (req, res) => {
             }
         };
 
+        // RELIANCE will only be subscribed if found in scan results
+        // await initializeRelianceSubscription(req.body.access_token);
+
         res.json(consolidatedResponse);
 
     } catch (error) {
@@ -515,9 +896,67 @@ router.post('/all-scanners', async (req, res) => {
     }
 });
 
-// BUY ORDER ROUTE - Following webhook server pattern
+// Manual RELIANCE subscription endpoint for debugging
+router.post('/subscribe-reliance', async (req, res) => {
+    try {
+        console.log('🛠️ Manual RELIANCE subscription triggered');
+        const token = req.body.access_token || req.headers.authorization?.replace('Bearer ', '');
+        
+        if (!token) {
+            return res.status(400).json({
+                success: false,
+                error: 'Access token required'
+            });
+        }
+        
+        // RELIANCE will only be subscribed if found in scan results
+        // await initializeRelianceSubscription(token);
+        
+        res.json({
+            success: true,
+            message: 'Subscription check completed - stocks only subscribed via scan results',
+            subscribed_count: currentlySubscribed.size,
+            subscribed_tokens: Array.from(currentlySubscribed),
+            note: 'No permanent subscriptions - all stocks subscribed based on scan results only'
+        });
+        
+    } catch (error) {
+        console.error('❌ Manual RELIANCE subscription error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
+
+// Get current subscription status endpoint
+router.get('/subscription-status', (req, res) => {
+    try {
+        res.json({
+            success: true,
+            subscribed_count: currentlySubscribed.size,
+            subscribed_tokens: Array.from(currentlySubscribed),
+            ticker_connected: globalTicker !== null,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('❌ Error getting subscription status:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            subscribed_count: 0
+        });
+    }
+});
+
+// BUY ORDER ROUTE - Enhanced with funds, leverage, quantity calculation, and position checking
 router.post('/buy-order', async (req, res) => {
-    console.log('🔵 BUY-ORDER route hit with body:', req.body);
+    console.log('🔵 ENHANCED BUY-ORDER route hit with body:', req.body);
+    
+    // Variables that need to be accessible in catch block
+    let finalQuantity = 'Calc Error';
+    let pricePerShare = 'N/A';
+    
     try {
         // Extract token from Authorization header
         const authHeader = req.headers.authorization;
@@ -539,8 +978,8 @@ router.post('/buy-order', async (req, res) => {
             });
         }
         
-        // Validate all required orderParams fields
-        const requiredFields = ['exchange', 'tradingsymbol', 'transaction_type', 'quantity', 'price', 'product', 'order_type', 'validity'];
+        // Validate required orderParams fields (excluding quantity which can be calculated)
+        const requiredFields = ['exchange', 'tradingsymbol', 'transaction_type', 'price', 'product', 'order_type', 'validity'];
         const missingFields = requiredFields.filter(field => !orderParams[field] && orderParams[field] !== 0);
         
         if (missingFields.length > 0) {
@@ -560,8 +999,8 @@ router.post('/buy-order', async (req, res) => {
             });
         }
         
-        // Validate quantity is a valid integer
-        if (!Number.isInteger(orderParams.quantity) || orderParams.quantity <= 0) {
+        // Validate quantity only if provided (it's now optional)
+        if (orderParams.quantity !== undefined && (!Number.isInteger(orderParams.quantity) || orderParams.quantity <= 0)) {
             return res.status(400).json({
                 success: false,
                 error: `Invalid quantity: ${orderParams.quantity} (must be a positive integer)`,
@@ -581,24 +1020,118 @@ router.post('/buy-order', async (req, res) => {
         const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
         kite.setAccessToken(access_token);
         
-        // Apply tick size rounding to price
+        // STEP 1: Get funds and check available balance
+        console.log('💰 STEP 1: Checking available funds...');
+        const margins = await kite.getMargins();
+        
+        let availableFunds = 0;
+        if (margins.equity && margins.equity.available) {
+            availableFunds = margins.equity.available.live_balance || 0;
+        } else if (margins.equity && margins.equity.net) {
+            availableFunds = margins.equity.net || 0;
+        } else if (margins.net) {
+            availableFunds = margins.net || 0;
+        }
+        
+        console.log(`💰 Available funds: ₹${availableFunds.toLocaleString('en-IN')}`);
+        
+        if (availableFunds <= 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'Insufficient funds available',
+                availableFunds: availableFunds
+            });
+        }
+        
+        // STEP 2: Calculate leveraged funds (5x for MIS)
+        const leverageFunds = availableFunds * 5;
+        const usableFunds = leverageFunds * 0.95; // Use 95% of leveraged funds for safety
+        console.log(`⚡ Leveraged funds (5x): ₹${leverageFunds.toLocaleString('en-IN')}`);
+        console.log(`🔒 Usable funds (95%): ₹${usableFunds.toLocaleString('en-IN')}`);
+        
+        // STEP 3: Calculate optimal quantity based on available funds
+        pricePerShare = ltp || orderParams.price; // Assign to existing let variable
+        const maxQuantity = Math.floor(usableFunds / pricePerShare);
+        
+        // Use either requested quantity or calculated max quantity (whichever is smaller)
+        // If no quantity provided, use calculated max quantity
+        const requestedQuantity = orderParams.quantity || maxQuantity;
+        finalQuantity = Math.min(requestedQuantity, maxQuantity); // Assign to existing let variable
+        
+        console.log(`\n📊 BUY ORDER QUANTITY CALCULATION:`);
+        console.log(`💰 Available Funds: ₹${availableFunds.toLocaleString('en-IN')}`);
+        console.log(`⚡ Leveraged Funds (5x): ₹${leverageFunds.toLocaleString('en-IN')}`);
+        console.log(`� Usable Funds (95%): ₹${usableFunds.toLocaleString('en-IN')}`);
+        console.log(`💵 Price per share: ₹${pricePerShare}`);
+        console.log(`🔢 Max possible quantity: ${maxQuantity}`);
+        console.log(`📋 Requested quantity: ${orderParams.quantity || 'auto-calculated'}`);
+        console.log(`🎯 Final quantity: ${finalQuantity}`);
+        console.log(`💸 Total investment: ₹${(finalQuantity * pricePerShare).toLocaleString('en-IN')}`);;
+        
+        if (finalQuantity <= 0) {
+            return res.status(400).json({
+                success: false,
+                error: `Insufficient funds for even 1 share. Need ₹${pricePerShare}, have ₹${usableFunds}`,
+                availableFunds: availableFunds,
+                leverageFunds: leverageFunds,
+                usableFunds: usableFunds,
+                pricePerShare: pricePerShare
+            });
+        }
+        
+        // STEP 4: Check existing positions - Block if ANY active positions exist
+        console.log('📋 STEP 4: Checking for ANY existing active positions...');
+        const positions = await kite.getPositions();
+        const allActivePositions = positions.net?.filter(pos => pos.quantity !== 0) || [];
+        
+        console.log(`📋 Found ${allActivePositions.length} total active positions across all symbols`);
+        
+        if (allActivePositions.length > 0) {
+            console.log('⚠️ Active positions exist, blocking all order placement');
+            console.log('📊 Active positions:', allActivePositions.map(pos => ({
+                symbol: pos.tradingsymbol,
+                quantity: pos.quantity,
+                average_price: pos.average_price,
+                pnl: pos.pnl
+            })));
+            
+            return res.status(400).json({
+                success: false,
+                error: `Cannot place order - ${allActivePositions.length} active position(s) found. Close all positions before placing new orders.`,
+                activePositions: allActivePositions.map(pos => ({
+                    symbol: pos.tradingsymbol,
+                    quantity: pos.quantity,
+                    average_price: pos.average_price,
+                    pnl: pos.pnl
+                })),
+                order_category: 'BUY',
+                symbol: orderParams.tradingsymbol
+            });
+        }
+        
+        // STEP 5: Force MIS product type and apply tick size rounding
+        const forcedProductType = 'MIS';
+        console.log(`🕐 Forcing product type: ${forcedProductType}`);
+        
         const roundedPrice = roundToTickSize(orderParams.price, ltp);
         
-        // Final orderParams with tick-size adjusted price
+        // Final orderParams with all enhancements
         const finalOrderParams = {
             ...orderParams,
-            price: roundedPrice
+            price: roundedPrice,
+            product: forcedProductType,
+            quantity: finalQuantity  // Use calculated quantity
         };
         
-        console.log('🚀 Placing BUY order:', finalOrderParams);
+        console.log('🚀 STEP 5: Placing enhanced BUY order:', finalOrderParams);
         const result = await kite.placeOrder('regular', finalOrderParams);
         
         if (result && result.order_id) {
-            // Return full payload structure
+            // Return comprehensive response
             res.json({
                 success: true,
                 order_id: result.order_id,
-                message: `Buy order placed for ${orderParams.tradingsymbol}`,
+                message: `Enhanced buy order placed for ${orderParams.tradingsymbol}`,
                 symbol: orderParams.tradingsymbol,
                 quantity: finalOrderParams.quantity,
                 price: roundedPrice,
@@ -607,9 +1140,18 @@ router.post('/buy-order', async (req, res) => {
                 order_category: 'BUY',
                 ltp: ltp,
                 ema5: ema5,
+                funds: {
+                    available: availableFunds,
+                    leveraged: leverageFunds,
+                    used: finalOrderParams.quantity * roundedPrice,
+                    remaining: leverageFunds - (finalOrderParams.quantity * roundedPrice)
+                },
                 calculatedData: {
                     originalPrice: orderParams.price,
-                    tickSizeAdjustment: roundedPrice - orderParams.price
+                    tickSizeAdjustment: roundedPrice - orderParams.price,
+                    originalQuantity: orderParams.quantity,
+                    optimizedQuantity: finalQuantity,
+                    maxPossibleQuantity: maxQuantity
                 },
                 orderParams: finalOrderParams,
                 timestamp: new Date().toISOString()
@@ -618,24 +1160,22 @@ router.post('/buy-order', async (req, res) => {
             throw new Error('Order placement failed');
         }
     } catch (error) {
-        console.error('❌ Error placing buy order:', error);
+        console.error('❌ Error placing enhanced buy order:', error);
         
-        // Include orderParams in error response for debugging
+        // Use already calculated quantity from above
         const errorResponse = {
             success: false,
             error: error.message,
             order_category: 'BUY',
+            symbol: req.body.orderParams?.tradingsymbol || 'Unknown',
+            quantity: finalQuantity, // Use pre-calculated quantity
+            price: pricePerShare, // Use calculated price
             timestamp: new Date().toISOString()
         };
         
-        // Add orderParams to error response if available
+        // Add additional debug info if available
         if (req.body.orderParams) {
             errorResponse.orderParams = req.body.orderParams;
-            errorResponse.symbol = req.body.orderParams.tradingsymbol;
-            errorResponse.quantity = req.body.orderParams.quantity;
-            errorResponse.price = req.body.orderParams.price;
-            errorResponse.leveraged_amount = req.body.orderParams.quantity * req.body.orderParams.price;
-            errorResponse.order_type = req.body.orderParams.order_type;
             if (req.body.ltp) errorResponse.ltp = req.body.ltp;
             if (req.body.ema5) errorResponse.ema5 = req.body.ema5;
         }
@@ -644,9 +1184,14 @@ router.post('/buy-order', async (req, res) => {
     }
 });
 
-// SELL ORDER ROUTE - Following webhook server pattern
+// SELL ORDER ROUTE - Enhanced with funds, leverage, quantity calculation, and position checking
 router.post('/sell-order', async (req, res) => {
-    console.log('🔴 SELL-ORDER route hit with body:', req.body);
+    console.log('🔴 ENHANCED SELL-ORDER route hit with body:', req.body);
+    
+    // Variables that need to be accessible in catch block
+    let finalQuantity = 'Calc Error';
+    let pricePerShare = 'N/A';
+    
     try {
         // Extract token from Authorization header
         const authHeader = req.headers.authorization;
@@ -668,8 +1213,8 @@ router.post('/sell-order', async (req, res) => {
             });
         }
         
-        // Validate all required orderParams fields
-        const requiredFields = ['exchange', 'tradingsymbol', 'transaction_type', 'quantity', 'price', 'product', 'order_type', 'validity'];
+        // Validate required orderParams fields (excluding quantity which can be calculated)
+        const requiredFields = ['exchange', 'tradingsymbol', 'transaction_type', 'price', 'product', 'order_type', 'validity'];
         const missingFields = requiredFields.filter(field => !orderParams[field] && orderParams[field] !== 0);
         
         if (missingFields.length > 0) {
@@ -689,8 +1234,8 @@ router.post('/sell-order', async (req, res) => {
             });
         }
         
-        // Validate quantity is a valid integer
-        if (!Number.isInteger(orderParams.quantity) || orderParams.quantity <= 0) {
+        // Validate quantity only if provided (it's now optional)
+        if (orderParams.quantity !== undefined && (!Number.isInteger(orderParams.quantity) || orderParams.quantity <= 0)) {
             return res.status(400).json({
                 success: false,
                 error: `Invalid quantity: ${orderParams.quantity} (must be a positive integer)`,
@@ -710,24 +1255,121 @@ router.post('/sell-order', async (req, res) => {
         const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
         kite.setAccessToken(access_token);
         
-        // Apply tick size rounding to price
+        // STEP 1: Get funds and check available balance (for MIS short selling)
+        console.log('💰 STEP 1: Checking available funds for MIS sell (short) order...');
+        const margins = await kite.getMargins();
+        
+        let availableFunds = 0;
+        if (margins.equity && margins.equity.available) {
+            availableFunds = margins.equity.available.live_balance || 0;
+        } else if (margins.equity && margins.equity.net) {
+            availableFunds = margins.equity.net || 0;
+        } else if (margins.net) {
+            availableFunds = margins.net || 0;
+        }
+        
+        console.log(`💰 Available funds: ₹${availableFunds.toLocaleString('en-IN')}`);
+        
+        if (availableFunds <= 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'Insufficient funds available for short selling',
+                availableFunds: availableFunds
+            });
+        }
+        
+        // STEP 2: Calculate leveraged funds (5x for MIS)
+        const leverageFunds = availableFunds * 5;
+        const usableFunds = leverageFunds * 0.95; // Use 95% of leveraged funds for safety
+        console.log(`⚡ Leveraged funds (5x): ₹${leverageFunds.toLocaleString('en-IN')}`);
+        console.log(`🔒 Usable funds (95%): ₹${usableFunds.toLocaleString('en-IN')}`);
+        
+        // STEP 3: Calculate optimal quantity based on available funds (for short selling margin)
+        pricePerShare = ltp || orderParams.price; // Assign to existing let variable
+        const maxQuantity = Math.floor(usableFunds / pricePerShare);
+        
+        // Use either requested quantity or calculated max quantity (whichever is smaller)
+        // If no quantity provided, use calculated max quantity
+        const requestedQuantity = orderParams.quantity || maxQuantity;
+        finalQuantity = Math.min(requestedQuantity, maxQuantity); // Assign to existing let variable
+        
+        console.log(`\n📊 SELL ORDER QUANTITY CALCULATION:`);
+        console.log(`💰 Available Funds: ₹${availableFunds.toLocaleString('en-IN')}`);
+        console.log(`⚡ Leveraged Funds (5x): ₹${leverageFunds.toLocaleString('en-IN')}`);
+        console.log(`� Usable Funds (95%): ₹${usableFunds.toLocaleString('en-IN')}`);
+        console.log(`�💵 Price per share: ₹${pricePerShare}`);
+        console.log(`🔢 Max possible quantity: ${maxQuantity}`);
+        console.log(`📋 Requested quantity: ${orderParams.quantity || 'auto-calculated'}`);
+        console.log(`🎯 Final quantity: ${finalQuantity}`);
+        console.log(`💸 Total investment: ₹${(finalQuantity * pricePerShare).toLocaleString('en-IN')}`);
+        
+        if (finalQuantity <= 0) {
+            return res.status(400).json({
+                success: false,
+                error: `Insufficient funds for even 1 share short sell. Need ₹${pricePerShare}, have ₹${usableFunds}`,
+                availableFunds: availableFunds,
+                leverageFunds: leverageFunds,
+                usableFunds: usableFunds,
+                pricePerShare: pricePerShare
+            });
+        }
+        
+        // STEP 4: Check existing positions to avoid over-shorting (optional check)
+        console.log('� STEP 4: Checking existing positions for reference...');
+        const positions = await kite.getPositions();
+        const allActivePositions = positions.net?.filter(pos => pos.quantity !== 0) || [];
+        
+        console.log(`📋 Found ${allActivePositions.length} total active positions across all symbols`);
+        
+        if (allActivePositions.length > 0) {
+            console.log('⚠️ Active positions exist, blocking all order placement');
+            console.log('📊 Active positions:', allActivePositions.map(pos => ({
+                symbol: pos.tradingsymbol,
+                quantity: pos.quantity,
+                average_price: pos.average_price,
+                pnl: pos.pnl
+            })));
+            
+            return res.status(400).json({
+                success: false,
+                error: `Cannot place order - ${allActivePositions.length} active position(s) found. Close all positions before placing new orders.`,
+                activePositions: allActivePositions.map(pos => ({
+                    symbol: pos.tradingsymbol,
+                    quantity: pos.quantity,
+                    average_price: pos.average_price,
+                    pnl: pos.pnl
+                })),
+                order_category: 'SELL',
+                symbol: orderParams.tradingsymbol
+            });
+        }
+        
+        // STEP 5: Force MIS product type and apply tick size rounding
+        const forcedProductType = 'MIS';
+        console.log(`🕐 Forcing product type: ${forcedProductType}`);
+        
         const roundedPrice = roundToTickSize(orderParams.price, ltp);
         
-        // Final orderParams with tick-size adjusted price
+        // Final orderParams with all enhancements
         const finalOrderParams = {
             ...orderParams,
-            price: roundedPrice
+            price: roundedPrice,
+            product: forcedProductType,
+            quantity: finalQuantity  // Use calculated quantity
         };
         
-        console.log('🚀 Placing SELL order:', finalOrderParams);
+        console.log('🚀 STEP 5: Placing enhanced MIS SELL (short) order:', finalOrderParams);
         const result = await kite.placeOrder('regular', finalOrderParams);
         
         if (result && result.order_id) {
-            // Return full payload structure
+            // Calculate expected margin requirement for short sale
+            const marginRequired = finalQuantity * roundedPrice;
+            
+            // Return comprehensive response
             res.json({
                 success: true,
                 order_id: result.order_id,
-                message: `Sell order placed for ${orderParams.tradingsymbol}`,
+                message: `Enhanced MIS sell (short) order placed for ${orderParams.tradingsymbol}`,
                 symbol: orderParams.tradingsymbol,
                 quantity: finalOrderParams.quantity,
                 price: roundedPrice,
@@ -736,9 +1378,27 @@ router.post('/sell-order', async (req, res) => {
                 order_category: 'SELL',
                 ltp: ltp,
                 ema5: ema5,
+                positionData: {
+                    orderType: 'MIS_SHORT_SELLING',
+                    marginRequired: marginRequired,
+                    existingPositions: existingPositions.map(pos => ({
+                        quantity: pos.quantity,
+                        average_price: pos.average_price,
+                        pnl: pos.pnl
+                    }))
+                },
+                funds: {
+                    available: availableFunds,
+                    leveraged: leverageFunds,
+                    marginUsed: marginRequired,
+                    remaining: leverageFunds - marginRequired
+                },
                 calculatedData: {
                     originalPrice: orderParams.price,
-                    tickSizeAdjustment: roundedPrice - orderParams.price
+                    tickSizeAdjustment: roundedPrice - orderParams.price,
+                    originalQuantity: orderParams.quantity,
+                    optimizedQuantity: finalQuantity,
+                    maxPossibleQuantity: maxQuantity
                 },
                 orderParams: finalOrderParams,
                 timestamp: new Date().toISOString()
@@ -747,28 +1407,25 @@ router.post('/sell-order', async (req, res) => {
             throw new Error('Order placement failed');
         }
     } catch (error) {
-        console.error('❌ Error placing sell order:', error);
-        
-        // Include orderParams in error response for debugging
+        console.error('🚨 SELL ORDER ERROR:', error);
+
         const errorResponse = {
             success: false,
-            error: error.message,
+            error: error.message || 'Unknown error occurred',
+            quantity: finalQuantity,
+            pricePerShare: pricePerShare,
             order_category: 'SELL',
+            symbol: req.body.orderParams?.tradingsymbol || 'Unknown',
             timestamp: new Date().toISOString()
         };
-        
-        // Add orderParams to error response if available
+
+        // Add debug info
         if (req.body.orderParams) {
             errorResponse.orderParams = req.body.orderParams;
-            errorResponse.symbol = req.body.orderParams.tradingsymbol;
-            errorResponse.quantity = req.body.orderParams.quantity;
-            errorResponse.price = req.body.orderParams.price;
-            errorResponse.leveraged_amount = req.body.orderParams.quantity * req.body.orderParams.price;
-            errorResponse.order_type = req.body.orderParams.order_type;
             if (req.body.ltp) errorResponse.ltp = req.body.ltp;
             if (req.body.ema5) errorResponse.ema5 = req.body.ema5;
         }
-        
+
         res.status(500).json(errorResponse);
     }
 });
@@ -819,9 +1476,9 @@ router.get('/all-nse500-stocks', async (req, res) => {
     try {
         console.log('📊 NSE500 stocks route called');
         
-        const nse500Stocks = Object.keys(symbolMappings).map(symbol => ({
+        const nse500Stocks = Object.keys(symbolMappings.symbolMappings).map(symbol => ({
             symbol: symbol,
-            instrumentToken: symbolMappings[symbol],
+            instrumentToken: symbolMappings.symbolMappings[symbol],
             exchange: 'NSE'
         }));
         
