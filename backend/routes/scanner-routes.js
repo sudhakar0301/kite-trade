@@ -8,6 +8,8 @@ const router = express.Router();
 let globalTicker = null;
 let currentlySubscribed = new Set(); // Only subscribe to scanned stocks
 let subscriptionTimer = null;
+// Track scan types for each instrument token
+let scanTypeTracker = new Map(); // token -> 'BUY_SCAN' | 'SELL_SCAN'
 
 // Simple token to symbol mapping
 function getSymbolFromToken(token) {
@@ -502,26 +504,49 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
         const allStocks = [...buyStocks, ...sellStocks];
         console.log(`🎯 Processing ${allStocks.length} total stocks...`);
         
-        // Extract new instrument tokens from current scan results
-        const scanInstrumentTokens = allStocks
+        // Clear previous scan type tracking
+        scanTypeTracker.clear();
+        
+        // Process buy stocks and mark as BUY_SCAN
+        const buyTokens = buyStocks
             .map(stock => {
                 if (!stock.s) return null;
-                
-                // Extract symbol from "NSE:RELIANCE" format
                 const symbol = stock.s.split(':')[1];
                 if (!symbol) return null;
-                
-                // Look up instrument token in symbolMappings
                 const instrumentToken = symbolMappings.symbolMappings[symbol];
                 if (instrumentToken) {
-                    console.log(`📍 Mapped ${symbol} -> ${instrumentToken}`);
-                    return parseInt(instrumentToken);
+                    const token = parseInt(instrumentToken);
+                    scanTypeTracker.set(token, 'BUY_SCAN');
+                    console.log(`📈 BUY: ${symbol} -> ${token}`);
+                    return token;
                 } else {
-                    console.log(`⚠️ No mapping found for symbol: ${symbol}`);
+                    console.log(`⚠️ No mapping found for BUY symbol: ${symbol}`);
                     return null;
                 }
             })
             .filter(token => token !== null);
+            
+        // Process sell stocks and mark as SELL_SCAN
+        const sellTokens = sellStocks
+            .map(stock => {
+                if (!stock.s) return null;
+                const symbol = stock.s.split(':')[1];
+                if (!symbol) return null;
+                const instrumentToken = symbolMappings.symbolMappings[symbol];
+                if (instrumentToken) {
+                    const token = parseInt(instrumentToken);
+                    scanTypeTracker.set(token, 'SELL_SCAN');
+                    console.log(`📉 SELL: ${symbol} -> ${token}`);
+                    return token;
+                } else {
+                    console.log(`⚠️ No mapping found for SELL symbol: ${symbol}`);
+                    return null;
+                }
+            })
+            .filter(token => token !== null);
+        
+        // Extract new instrument tokens from current scan results
+        const scanInstrumentTokens = [...buyTokens, ...sellTokens];
 
         // Subscribe only to scanned stocks - no permanent subscriptions
         const newInstrumentTokens = [...scanInstrumentTokens];
@@ -638,6 +663,9 @@ function setupTickerEventHandlers() {
                 else if (change < -2) regime = 'BEAR';
                 else if (Math.abs(change) > 1 && tick.volume < 50000) regime = 'TRAP';
                 
+                // Get scan type for this token
+                const scanType = scanTypeTracker.get(tick.instrument_token) || 'UNKNOWN';
+                
                 // Create structured tick data matching frontend expectations
                 const structuredTick = {
                     symbol: symbol,
@@ -653,7 +681,8 @@ function setupTickerEventHandlers() {
                         low: tick.last_price * 0.99,
                         close: tick.last_price
                     },
-                    regime: regime
+                    regime: regime,
+                    scan_type: scanType
                 };
                 
                 // Broadcast single tick update
@@ -673,6 +702,9 @@ function setupTickerEventHandlers() {
                     else if (change < -2) regime = 'BEAR';
                     else if (Math.abs(change) > 1 && tick.volume < 50000) regime = 'TRAP';
                     
+                    // Get scan type for this token
+                    const scanType = scanTypeTracker.get(tick.instrument_token) || 'UNKNOWN';
+                    
                     return {
                         symbol: symbol,
                         last_price: tick.last_price || 0,
@@ -687,7 +719,8 @@ function setupTickerEventHandlers() {
                             low: tick.last_price * 0.99,
                             close: tick.last_price
                         },
-                        regime: regime
+                        regime: regime,
+                        scan_type: scanType
                     };
                 });
                 
