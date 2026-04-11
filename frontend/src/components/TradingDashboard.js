@@ -160,6 +160,29 @@ const PriceInfo = styled.span`
   color: rgba(255, 255, 255, 0.8);
 `;
 
+const VolumeInfo = styled.div`
+  font-size: 9px;
+  color: rgba(255, 255, 255, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+`;
+
+const VolumeRow = styled.div`
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+`;
+
+const VolumeLabel = styled.span`
+  color: rgba(255, 255, 255, 0.6);
+`;
+
+const VolumeValue = styled.span`
+  color: ${props => props.type === 'buy' ? '#10b981' : '#ef4444'};
+  font-weight: 600;
+`;
+
 const SignalStrength = styled.div`
   display: flex;
   flex-direction: column;
@@ -369,6 +392,14 @@ const TradingDashboard = ({ buySignals = [], sellSignals = [], tickData, analysi
                     <PriceInfo>
                       {formatPrice(signal.ltp)} ({signal.change_percent > 0 ? '+' : ''}{signal.change_percent?.toFixed(2)}%)
                     </PriceInfo>
+                    <VolumeInfo>
+                      <VolumeRow>
+                        <VolumeLabel>Current Vol:</VolumeLabel>
+                        <VolumeValue type="buy">
+                          {signal.volume ? signal.volume.toLocaleString() : 'N/A'}
+                        </VolumeValue>
+                      </VolumeRow>
+                    </VolumeInfo>
                   </SymbolInfo>
                   
                   <SpreadInfo>
@@ -419,6 +450,14 @@ const TradingDashboard = ({ buySignals = [], sellSignals = [], tickData, analysi
                     <PriceInfo>
                       {formatPrice(signal.ltp)} ({signal.change_percent > 0 ? '+' : ''}{signal.change_percent?.toFixed(2)}%)
                     </PriceInfo>
+                    <VolumeInfo>
+                      <VolumeRow>
+                        <VolumeLabel>Current Vol:</VolumeLabel>
+                        <VolumeValue type="sell">
+                          {signal.volume ? signal.volume.toLocaleString() : 'N/A'}
+                        </VolumeValue>
+                      </VolumeRow>
+                    </VolumeInfo>
                   </SymbolInfo>
                   
                   <SpreadInfo>

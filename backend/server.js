@@ -18,6 +18,24 @@ app.use(express.static('public'));
 // Routes
 app.use('/api', scannerRoutes);
 
+// Health check endpoint for monitoring order logic
+app.get('/api/health', (req, res) => {
+  const health = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    services: {
+      orderLogic: 'active',
+      webSocket: wss.clients.size > 0 ? 'connected' : 'no_clients',
+      scanner: 'ready'
+    },
+    memory: process.memoryUsage(),
+    version: process.env.npm_package_version || '1.0.0'
+  };
+  
+  res.status(200).json(health);
+});
+
 // OAuth login redirect - at root level (not under /api/)
 app.get('/oauth/login', (req, res) => {
     const kiteApiKey = 'r1a7qo9w30bxsfax';

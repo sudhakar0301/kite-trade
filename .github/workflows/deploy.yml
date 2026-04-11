@@ -1,0 +1,171 @@
+name: 🚀 Auto Deploy Trading Scanner
+
+# Triggers: Push to main branch or manual dispatch
+on:
+  push:
+    branches: [ main, production ]
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'deployment/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+        - production
+        - staging
+      zero_downtime:
+        description: 'Use zero-downtime deployment'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  NODE_VERSION: '18'
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  # Build and Test Stage
+  test:
+    name: 🧪 Test & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+            
+      - name: 📦 Install Backend Dependencies
+        working-directory: ./backend
+        run: |
+          npm ci
+          npm run test --if-present
+          
+      - name: 📦 Install Frontend Dependencies  
+        working-directory: ./frontend
+        run: |
+          npm ci
+          npm run build
+          npm run test --if-present
+          
+      - name: 🐳 Test Docker Build
+        run: |
+          cd backend && docker build -t trading-scanner-backend:test .
+          cd ../frontend && docker build -t trading-scanner-frontend:test .
+          
+  # Deploy to Production
+  deploy:
+    name: 🌐 Deploy to Production
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: 🔧 Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DROPLET_SSH_KEY }}
+          
+      - name: 🔍 Add Droplet to Known Hosts
+        run: |
+          ssh-keyscan -H ${{ secrets.DROPLET_IP }} >> ~/.ssh/known_hosts
+          
+      - name: 📤 Upload Application Files
+        run: |
+          # Create temporary directory with updated configuration
+          TEMP_DIR="/tmp/trading-scanner-deploy"
+          mkdir -p $TEMP_DIR
+          
+          # Copy application files (excluding development files)
+          rsync -av --exclude='node_modules' --exclude='.git' \
+                    --exclude='*.log' --exclude='.env.local' \
+                    ./ $TEMP_DIR/
+          
+          # Update configuration with production settings
+          sed -i "s/your-static-ip/${{ secrets.DROPLET_IP }}/g" $TEMP_DIR/deployment/docker-compose.yml
+          
+          # Upload to droplet
+          rsync -av --delete $TEMP_DIR/ root@${{ secrets.DROPLET_IP }}:/opt/trading-scanner/
+          
+      - name: 🚀 Deploy Application
+        run: |
+          ssh root@${{ secrets.DROPLET_IP }} '
+            cd /opt/trading-scanner
+            
+            # Set up environment
+            export DROPLET_IP=${{ secrets.DROPLET_IP }}
+            export DEPLOY_TIME=$(date +"%Y%m%d_%H%M%S")
+            
+            # Choose deployment method
+            if [ "${{ inputs.zero_downtime }}" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
+              echo "🔄 Starting zero-downtime deployment..."
+              ./deployment/zero-downtime-deploy.sh
+            else
+              echo "⚡ Starting standard deployment..."
+              ./deployment/digitalocean-deploy.sh $DROPLET_IP
+            fi
+            
+            # Health check
+            echo "🔍 Performing health checks..."
+            sleep 10
+            
+            # Check backend health
+            curl -f http://localhost:5000/api/health || exit 1
+            
+            # Check frontend
+            curl -f http://localhost/ || exit 1
+            
+            echo "✅ Deployment completed successfully!"
+          '
+          
+      - name: 📊 Deployment Summary
+        if: always()
+        run: |
+          echo "## 🚀 Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Environment**: Production" >> $GITHUB_STEP_SUMMARY
+          echo "- **Droplet IP**: ${{ secrets.DROPLET_IP }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Frontend URL**: http://${{ secrets.DROPLET_IP }}/" >> $GITHUB_STEP_SUMMARY
+          echo "- **Backend API**: http://${{ secrets.DROPLET_IP }}:5000/" >> $GITHUB_STEP_SUMMARY
+          echo "- **Health Check**: http://${{ secrets.DROPLET_IP }}:5000/api/health" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deployment Time**: $(date)" >> $GITHUB_STEP_SUMMARY
+          
+      - name: 🚨 Notify on Failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed! Check the logs above for details."
+          echo "🔧 Manual intervention may be required on droplet: ${{ secrets.DROPLET_IP }}"
+          
+  # Staging deployment (optional)
+  deploy-staging:
+    name: 🧪 Deploy to Staging
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event.inputs.environment == 'staging'
+    
+    steps:
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
+        
+      - name: 🔧 Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
+          
+      - name: 🧪 Deploy to Staging
+        run: |
+          echo "🧪 Deploying to staging environment..."
+          # Add staging deployment logic here if you have a staging server

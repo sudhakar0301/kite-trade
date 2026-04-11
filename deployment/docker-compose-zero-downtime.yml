@@ -1,0 +1,58 @@
+# Zero-Downtime Trading App Deployment
+# For critical trading periods where you can't afford ANY downtime
+
+version: '3.8'
+services:
+  # Blue-Green Deployment Setup
+  backend-blue:
+    build: 
+      context: ../backend
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+    volumes:
+      - ../backend:/app
+      - /app/node_modules
+    command: npm start
+    restart: unless-stopped
+
+  backend-green:
+    build: 
+      context: ../backend
+      dockerfile: Dockerfile
+    ports:
+      - "5001:5000"  # Different port for green deployment
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+    volumes:
+      - ../backend:/app
+      - /app/node_modules
+    command: npm start
+    restart: unless-stopped
+    profiles: ["green"]  # Only start when explicitly activated
+
+  # Load Balancer for Zero Downtime
+  nginx-lb:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx-lb.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - backend-blue
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+    environment:
+      - REACT_APP_API_URL=http://your-static-ip/api  # Through load balancer
+    restart: unless-stopped

@@ -929,8 +929,7 @@ function App() {
         {/* Live Stock Tracker */}
         <SubscribedStockTracker tickData={symbolTickData} />
         
-        {/* Trading Dashboard - Temporarily Hidden */}
-        {/*
+        {/* Trading Dashboard with Scan Stocks Table */}
         <ScannerSection>
           <TradingDashboard 
             tickData={symbolTickData}
@@ -940,7 +939,6 @@ function App() {
             onSymbolClick={handleSymbolClick}
           />
         </ScannerSection>
-        */}
       </MainContent>
       
       {/* Order Book Panel */}

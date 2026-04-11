@@ -10,6 +10,8 @@ let currentlySubscribed = new Set(); // Only subscribe to scanned stocks
 let subscriptionTimer = null;
 // Track scan types for each instrument token
 let scanTypeTracker = new Map(); // token -> 'BUY_SCAN' | 'SELL_SCAN'
+// Track volume averages for subscribed tokens
+
 
 // Simple token to symbol mapping
 function getSymbolFromToken(token) {
@@ -25,7 +27,46 @@ function getSymbolFromToken(token) {
     return `UNKNOWN_${token}`;
 }
 
-// Function to broadcast subscription count to frontend
+
+
+
+
+// Store the current live tracker symbol for masking
+let liveTrackerSymbol = null;
+
+// Route to set the live tracker symbol for masking
+router.post('/set-live-tracker-symbol', (req, res) => {
+    try {
+        const { symbol } = req.body;
+        
+        console.log(`🎯 BACKEND: Received live tracker symbol update request:`, {
+            receivedSymbol: symbol,
+            symbolType: typeof symbol,
+            symbolLength: symbol ? symbol.length : 'null',
+            previousSymbol: liveTrackerSymbol
+        });
+        
+        liveTrackerSymbol = symbol;
+        
+        console.log(`🎯 BACKEND: Live Tracker Symbol Updated: '${symbol}' - Previous: '${liveTrackerSymbol}'`);
+        
+        if (symbol) {
+            console.log(`🎯 BACKEND: Live Tracker Symbol Set: ${symbol} - Market impact masking now active`);
+        } else {
+            console.log('📊 BACKEND: Live Tracker Symbol Cleared - Market impact masking disabled');
+        }
+        
+        res.json({ 
+            success: true, 
+            liveTrackerSymbol: symbol,
+            maskingActive: !!symbol
+        });
+        
+    } catch (error) {
+        console.error('❌ BACKEND: Error setting live tracker symbol:', error);
+        res.status(500).json({ error: 'Failed to set live tracker symbol' });
+    }
+});
 function broadcastSubscriptionUpdate() {
     if (global.broadcastLiveData) {
         const subscriptionData = {
@@ -39,8 +80,109 @@ function broadcastSubscriptionUpdate() {
     }
 }
 
-// Helper function to enhance depth to 20 levels
-function enhanceDepthTo20Levels(existingDepth, lastPrice) {
+// Helper function to calculate market impact for 490K order
+function calculateMarketImpact(orderBookDepth, ltp, scanType, orderAmount = 490000) {
+    console.log(`🎯 calculateMarketImpact called: LTP=${ltp}, scanType='${scanType}', amount=${orderAmount}`);
+    
+    if (!orderBookDepth || !ltp || !scanType) {
+        console.log(`❌ Missing data for market impact: depth=${!!orderBookDepth}, ltp=${ltp}, scanType='${scanType}'`);
+        return {
+            quantity: 0,
+            impactedLevels: 0,
+            avgExecutionPrice: ltp,
+            totalSlippage: 0
+        };
+    }
+
+    const quantity = Math.floor(orderAmount / ltp);
+    console.log(`💰 Market Impact Analysis: Amount=${orderAmount.toLocaleString()}, LTP=${ltp}, Quantity=${quantity.toLocaleString()}, Type=${scanType}`);
+
+    if (scanType === 'BUY_SCAN') {
+        console.log(`📈 Processing BUY_SCAN - consuming ask levels`);
+        // For buy orders, consume ask levels (sell side)
+        const askLevels = orderBookDepth.sell || [];
+        console.log(`📊 Ask levels available: ${askLevels.length}`);
+        
+        let remainingQty = quantity;
+        let totalCost = 0;
+        let impactedLevels = 0;
+
+        for (let i = 0; i < askLevels.length && remainingQty > 0; i++) {
+            const level = askLevels[i];
+            const availableQty = level.quantity || 0;
+            const consumedQty = Math.min(remainingQty, availableQty);
+            
+            totalCost += consumedQty * level.price;
+            remainingQty -= consumedQty;
+            impactedLevels++;
+            
+            console.log(`📊 BUY Level ${i + 1}: Price=${level.price}, AvailableQty=${availableQty}, ConsumedQty=${consumedQty}, RemainingQty=${remainingQty}`);
+        }
+
+        const avgExecutionPrice = quantity > 0 ? totalCost / (quantity - remainingQty) : ltp;
+        const slippage = ((avgExecutionPrice - ltp) / ltp) * 100;
+
+        const result = {
+            quantity: quantity - remainingQty,
+            impactedLevels,
+            avgExecutionPrice,
+            totalSlippage: slippage,
+            orderType: 'BUY',
+            impactSide: 'ask'
+        };
+        
+        console.log(`✅ BUY Impact Result:`, result);
+        return result;
+        
+    } else if (scanType === 'SELL_SCAN') {
+        console.log(`📉 Processing SELL_SCAN - consuming bid levels`);
+        // For sell orders, consume bid levels (buy side)
+        const bidLevels = orderBookDepth.buy || [];
+        console.log(`📊 Bid levels available: ${bidLevels.length}`);
+        
+        let remainingQty = quantity;
+        let totalValue = 0;
+        let impactedLevels = 0;
+
+        for (let i = 0; i < bidLevels.length && remainingQty > 0; i++) {
+            const level = bidLevels[i];
+            const availableQty = level.quantity || 0;
+            const consumedQty = Math.min(remainingQty, availableQty);
+            
+            totalValue += consumedQty * level.price;
+            remainingQty -= consumedQty;
+            impactedLevels++;
+            
+            console.log(`📊 SELL Level ${i + 1}: Price=${level.price}, AvailableQty=${availableQty}, ConsumedQty=${consumedQty}, RemainingQty=${remainingQty}`);
+        }
+
+        const avgExecutionPrice = quantity > 0 ? totalValue / (quantity - remainingQty) : ltp;
+        const slippage = ((ltp - avgExecutionPrice) / ltp) * 100;
+
+        const result = {
+            quantity: quantity - remainingQty,
+            impactedLevels,
+            avgExecutionPrice,
+            totalSlippage: slippage,
+            orderType: 'SELL',
+            impactSide: 'bid'
+        };
+        
+        console.log(`✅ SELL Impact Result:`, result);
+        return result;
+    } else {
+        console.log(`⚠️ Unknown scanType: '${scanType}' - no masking applied`);
+        return {
+            quantity: 0,
+            impactedLevels: 0,
+            avgExecutionPrice: ltp,
+            totalSlippage: 0
+        };
+    }
+}
+
+// Helper function to enhance depth to 20 levels with optional market impact masking
+function enhanceDepthTo20Levels(existingDepth, lastPrice, scanType = null, applyLiveTrackerMasking = false) {
    
 
     if (!existingDepth || !lastPrice) {
@@ -49,15 +191,47 @@ function enhanceDepthTo20Levels(existingDepth, lastPrice) {
             buy: Array.from({length: 20}, (_, i) => ({
                 price: lastPrice * (0.999 - i * 0.0005), 
                 quantity: 1000 + i * 100,
-                orders: Math.floor(Math.random() * 10) + 1
+                orders: Math.floor(Math.random() * 10) + 1,
+                masked: false,
+                level: i + 1
             })),
             sell: Array.from({length: 20}, (_, i) => ({
                 price: lastPrice * (1.001 + i * 0.0005), 
                 quantity: 1000 + i * 100,
-                orders: Math.floor(Math.random() * 10) + 1
+                orders: Math.floor(Math.random() * 10) + 1,
+                masked: false,
+                level: i + 1
             }))
         };
-        console.log('🔧 Created new 20-level depth (no existing data)');
+
+        // ONLY apply market impact calculations if this is the live tracker symbol
+        if (applyLiveTrackerMasking) {
+            console.log('🎯 BACKEND: MASKING ACTIVE - Calculating market impact for ₹490,000 order');
+            const impact = calculateMarketImpact(result, lastPrice, 'BUY_SCAN'); // Use BUY_SCAN for live display
+            result.marketImpact = impact;
+            result.liveTrackerMasking = true;
+
+            // Mask both buy and sell sides for comprehensive market impact visualization
+            const levelsToMask = 20; // MASK ALL LEVELS FOR TESTING
+            
+            // Mask sell levels (ask side) for buy impact
+            for (let i = 0; i < Math.min(levelsToMask, result.sell.length); i++) {
+                result.sell[i].masked = true;
+                result.sell[i].impactOpacity = 0.5; // Fixed opacity for testing
+            }
+            
+            // Mask buy levels (bid side) for sell impact  
+            for (let i = 0; i < Math.min(levelsToMask, result.buy.length); i++) {
+                result.buy[i].masked = true;
+                result.buy[i].impactOpacity = 0.5; // Fixed opacity for testing
+            }
+            
+            console.log(`💰 BACKEND: Live Tracker Masking Applied: ${levelsToMask} levels on both sides`);
+            console.log(`🎯 BACKEND: MASKING COMPLETE - Market impact data added to depth response`);
+        }
+
+        console.log(`🔧 Created new 20-level depth with market impact (no existing data)`);
+        console.log(`📊 Final masking summary - Masked BID levels: ${result.buy.filter(o => o.masked).length}, Masked ASK levels: ${result.sell.filter(o => o.masked).length}`);
         return result;
     }
 
@@ -77,7 +251,9 @@ function enhanceDepthTo20Levels(existingDepth, lastPrice) {
             enhancedBuy.push({
                 price: lastBuyPrice - (priceStep * (i - buyOrders.length + 1)),
                 quantity: Math.floor(800 + Math.random() * 400),
-                orders: Math.floor(Math.random() * 8) + 1
+                orders: Math.floor(Math.random() * 8) + 1,
+                masked: false,
+                level: i + 1
             });
         }
     }
@@ -94,20 +270,81 @@ function enhanceDepthTo20Levels(existingDepth, lastPrice) {
             enhancedSell.push({
                 price: lastSellPrice + (priceStep * (i - sellOrders.length + 1)),
                 quantity: Math.floor(800 + Math.random() * 400),
-                orders: Math.floor(Math.random() * 8) + 1
+                orders: Math.floor(Math.random() * 8) + 1,
+                masked: false,
+                level: i + 1
             });
         }
     }
     
+    // Add level numbers to existing orders
+    enhancedBuy.forEach((order, index) => {
+        order.level = index + 1;
+        if (!order.hasOwnProperty('masked')) order.masked = false;
+    });
+    
+    enhancedSell.forEach((order, index) => {
+        order.level = index + 1;
+        if (!order.hasOwnProperty('masked')) order.masked = false;
+    });
+
     const result = {
         buy: enhancedBuy.slice(0, 20),  // Ensure exactly 20 levels
         sell: enhancedSell.slice(0, 20)  // Ensure exactly 20 levels
     };
+
+    // ONLY calculate market impact if this is the live tracker symbol
+    if (applyLiveTrackerMasking) {
+        console.log('🎯 BACKEND: EXISTING DEPTH MASKING - Calculating market impact for existing depth');
+        const impact = calculateMarketImpact(result, lastPrice, 'BUY_SCAN');
+        result.marketImpact = impact;
+        result.liveTrackerMasking = true;
+
+        // Mask both buy and sell sides for comprehensive market impact visualization
+        const levelsToMask = 20; // MASK ALL LEVELS FOR TESTING
+        
+        // Mask sell levels (ask side) for buy impact
+        for (let i = 0; i < Math.min(levelsToMask, result.sell.length); i++) {
+            result.sell[i].masked = true;
+            result.sell[i].impactOpacity = 0.5; // Fixed opacity for testing
+        }
+        
+        // Mask buy levels (bid side) for sell impact  
+        for (let i = 0; i < Math.min(levelsToMask, result.buy.length); i++) {
+            result.buy[i].masked = true;
+            result.buy[i].impactOpacity = 0.5; // Fixed opacity for testing
+        }
+        
+        console.log(`💰 BACKEND: Live Tracker Masking Applied to existing depth: ${levelsToMask} levels`);
+        console.log(`🎯 BACKEND: EXISTING DEPTH MASKING COMPLETE`);
+    }
     
     
     
     return result;
 }
+
+// Debug endpoint to check current live tracker symbol state
+router.get('/debug-live-tracker', (req, res) => {
+    try {
+        res.json({
+            success: true,
+            liveTrackerSymbol: liveTrackerSymbol,
+            liveTrackerSymbolType: typeof liveTrackerSymbol,
+            liveTrackerSymbolLength: liveTrackerSymbol ? liveTrackerSymbol.length : null,
+            maskingActive: !!liveTrackerSymbol,
+            currentlySubscribed: Array.from(currentlySubscribed),
+            subscriptionCount: currentlySubscribed.size,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('❌ Debug live tracker error:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
+        });
+    }
+});
 
 // Simple profile endpoint to check Kite token validity
 router.get('/profile', async (req, res) => {
@@ -501,74 +738,80 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
             return;
         }
 
-        const allStocks = [...buyStocks, ...sellStocks];
-        console.log(`🎯 Processing ${allStocks.length} total stocks...`);
+        // Extract tokens from both buy and sell stocks
+        const newTokens = new Set();
         
-        // Clear previous scan type tracking
-        scanTypeTracker.clear();
+        console.log('🔍 DEBUG - buyStocks length:', buyStocks.length);
+        console.log('🔍 DEBUG - sellStocks length:', sellStocks.length);
+        console.log('🔍 DEBUG - First buyStock:', JSON.stringify(buyStocks[0], null, 2));
         
-        // Process buy stocks and mark as BUY_SCAN
-        const buyTokens = buyStocks
-            .map(stock => {
-                if (!stock.s) return null;
-                const symbol = stock.s.split(':')[1];
-                if (!symbol) return null;
-                const instrumentToken = symbolMappings.symbolMappings[symbol];
-                if (instrumentToken) {
-                    const token = parseInt(instrumentToken);
-                    scanTypeTracker.set(token, 'BUY_SCAN');
-                    console.log(`📈 BUY: ${symbol} -> ${token}`);
-                    return token;
-                } else {
-                    console.log(`⚠️ No mapping found for BUY symbol: ${symbol}`);
-                    return null;
-                }
-            })
-            .filter(token => token !== null);
+        // Process buy stocks
+        buyStocks.forEach((stock, index) => {
+            console.log(`🔍 DEBUG - Processing buyStock[${index}]:`, JSON.stringify(stock, null, 2));
             
-        // Process sell stocks and mark as SELL_SCAN
-        const sellTokens = sellStocks
-            .map(stock => {
-                if (!stock.s) return null;
-                const symbol = stock.s.split(':')[1];
-                if (!symbol) return null;
-                const instrumentToken = symbolMappings.symbolMappings[symbol];
-                if (instrumentToken) {
-                    const token = parseInt(instrumentToken);
-                    scanTypeTracker.set(token, 'SELL_SCAN');
-                    console.log(`📉 SELL: ${symbol} -> ${token}`);
-                    return token;
+            // Extract symbol from TradingView format (NSE:SYMBOL)
+            let symbol = null;
+            let token = null;
+            
+            if (stock.s && typeof stock.s === 'string' && stock.s.includes(':')) {
+                symbol = stock.s.split(':')[1]; // Extract SYMBOL from "NSE:SYMBOL"
+                console.log(`🔍 Extracted symbol: "${symbol}" from "${stock.s}"`);
+                
+                if (symbol && symbolMappings.symbolMappings[symbol]) {
+                    token = symbolMappings.symbolMappings[symbol];
+                    console.log(`✅ Found token for ${symbol}: ${token}`);
                 } else {
-                    console.log(`⚠️ No mapping found for SELL symbol: ${symbol}`);
-                    return null;
+                    console.log(`❌ No token mapping found for symbol: "${symbol}"`);
+                    console.log(`🔍 Available mappings sample:`, Object.keys(symbolMappings.symbolMappings).slice(0, 10));
                 }
-            })
-            .filter(token => token !== null);
+            } else {
+                console.log(`❌ Invalid stock.s format:`, stock.s);
+            }
+            
+            if (token && symbol) {
+                newTokens.add(parseInt(token));
+                scanTypeTracker.set(parseInt(token), 'BUY_SCAN');
+                console.log(`🟢 BUY ADDED: ${symbol} (${token}) -> BUY_SCAN tracked`);
+            } else {
+                console.log(`❌ SKIPPED - No valid token for buyStock[${index}]`);
+            }
+        });
         
-        // Extract new instrument tokens from current scan results
-        const scanInstrumentTokens = [...buyTokens, ...sellTokens];
+        // Process sell stocks  
+        sellStocks.forEach((stock, index) => {
+            console.log(`🔍 DEBUG - Processing sellStock[${index}]:`, JSON.stringify(stock, null, 2));
+            
+            // Extract symbol from TradingView format (NSE:SYMBOL)
+            let symbol = null;
+            let token = null;
+            
+            if (stock.s && typeof stock.s === 'string' && stock.s.includes(':')) {
+                symbol = stock.s.split(':')[1]; // Extract SYMBOL from "NSE:SYMBOL"  
+                console.log(`🔍 Extracted symbol: "${symbol}" from "${stock.s}"`);
+                
+                if (symbol && symbolMappings.symbolMappings[symbol]) {
+                    token = symbolMappings.symbolMappings[symbol];
+                    console.log(`✅ Found token for ${symbol}: ${token}`);
+                } else {
+                    console.log(`❌ No token mapping found for symbol: "${symbol}"`);
+                }
+            } else {
+                console.log(`❌ Invalid stock.s format:`, stock.s);
+            }
+            
+            if (token && symbol) {
+                newTokens.add(parseInt(token));
+                scanTypeTracker.set(parseInt(token), 'SELL_SCAN');
+                console.log(`🔴 SELL ADDED: ${symbol} (${token}) -> SELL_SCAN tracked`);
+            } else {
+                console.log(`❌ SKIPPED - No valid token for sellStock[${index}]`);
+            }
+        });
 
-        // Subscribe only to scanned stocks - no permanent subscriptions
-        const newInstrumentTokens = [...scanInstrumentTokens];
-        console.log(`🎯 Subscribing only to scanned stocks - no permanent subscriptions`);
-
-        const newTokensSet = new Set(newInstrumentTokens);
-        console.log(`🎯 New tokens to manage: [${Array.from(newTokensSet).join(', ')}]`);
-        console.log(`📋 Currently subscribed: [${Array.from(currentlySubscribed).join(', ')}]`);
-
-        // Find tokens to unsubscribe (in current but not in new)
-        const tokensToUnsubscribe = Array.from(currentlySubscribed)
-            .filter(token => !newTokensSet.has(token));
+        console.log(`📈 Total unique tokens to subscribe: ${newTokens.size}`);
         
-        
-        // Find tokens to subscribe (in new but not in current)
-        const tokensToSubscribe = Array.from(newTokensSet).filter(token => !currentlySubscribed.has(token));
-
-        console.log(`🔴 Unsubscribing from: [${tokensToUnsubscribe.join(', ')}]`);
-        console.log(`🟢 Subscribing to: [${tokensToSubscribe.join(', ')}]`);
-
         // Initialize ticker if needed
-        if (!globalTicker && (tokensToSubscribe.length > 0 || newInstrumentTokens.length > 0)) {
+        if (!globalTicker && newTokens.size > 0) {
             console.log('🚀 Initializing global KiteTicker...');
             globalTicker = new KiteTicker({
                 api_key: 'r1a7qo9w30bxsfax',
@@ -577,44 +820,76 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
             
             setupTickerEventHandlers();
             globalTicker.connect();
-        }
-
-        // Handle subscriptions after ticker is connected
-        if (globalTicker) {
-            // Clear any existing subscription timer
-            if (subscriptionTimer) {
-                clearTimeout(subscriptionTimer);
+            
+            // Subscribe after connection with delay
+            setTimeout(async () => {
+                try {
+                    const tokensArray = Array.from(newTokens);
+                    console.log(`🟢 Subscribing to tokens: ${tokensArray.join(', ')}`);
+                    globalTicker.subscribe(tokensArray);
+                    globalTicker.setMode(globalTicker.modeFull, tokensArray);
+                    
+                    // Update subscription tracking
+                    tokensArray.forEach(token => currentlySubscribed.add(token));
+                    
+                    console.log('✅ All tokens subscribed successfully');
+                    broadcastSubscriptionUpdate();
+                    
+                } catch (error) {
+                    console.error('❌ Error during subscription:', error);
+                }
+            }, 2000);
+            
+        } else if (globalTicker && newTokens.size > 0) {
+            // Ticker exists, manage subscriptions
+            const tokensToUnsubscribe = [];
+            const tokensToSubscribe = [];
+            
+            // Find tokens to unsubscribe (no longer in scan results)
+            currentlySubscribed.forEach(token => {
+                if (!newTokens.has(token)) {
+                    tokensToUnsubscribe.push(token);
+                }
+            });
+            
+            // Find tokens to subscribe (new in scan results)
+            newTokens.forEach(token => {
+                if (!currentlySubscribed.has(token)) {
+                    tokensToSubscribe.push(token);
+                }
+            });
+            
+            // Unsubscribe from removed tokens
+            if (tokensToUnsubscribe.length > 0) {
+                console.log(`🔴 Unsubscribing from ${tokensToUnsubscribe.length} tokens`);
+                try {
+                    globalTicker.unsubscribe(tokensToUnsubscribe);
+                    tokensToUnsubscribe.forEach(token => {
+                        currentlySubscribed.delete(token);
+                        scanTypeTracker.delete(token);
+                    });
+                } catch (error) {
+                    console.error('❌ Error during unsubscription:', error);
+                }
             }
             
-            // Apply subscription changes after a short delay to ensure connection
-            subscriptionTimer = setTimeout(() => {
+            // Subscribe to new tokens
+            if (tokensToSubscribe.length > 0) {
+                console.log(`🟢 Subscribing to ${tokensToSubscribe.length} new tokens`);
                 try {
-                    // Unsubscribe from removed tokens
-                    if (tokensToUnsubscribe.length > 0) {
-                        console.log(`🔴 Unsubscribing from ${tokensToUnsubscribe.length} tokens...`);
-                        globalTicker.unsubscribe(tokensToUnsubscribe);
-                        tokensToUnsubscribe.forEach(token => currentlySubscribed.delete(token));
-                        broadcastSubscriptionUpdate(); // Broadcast after unsubscribing
-                    }
+                    globalTicker.subscribe(tokensToSubscribe);
+                    globalTicker.setMode(globalTicker.modeFull, tokensToSubscribe);
+                    tokensToSubscribe.forEach(token => currentlySubscribed.add(token));
                     
-                    // Subscribe to new tokens
-                    if (tokensToSubscribe.length > 0) {
-                        console.log(`🟢 Subscribing to ${tokensToSubscribe.length} new tokens...`);
-                        globalTicker.subscribe(tokensToSubscribe);
-                        globalTicker.setMode(globalTicker.modeFull, tokensToSubscribe);
-                        tokensToSubscribe.forEach(token => currentlySubscribed.add(token));
-                        broadcastSubscriptionUpdate(); // Broadcast after subscribing
-                    }
-                    
-                    console.log(`✅ Subscription update complete. Active subscriptions: ${currentlySubscribed.size}`);
                 } catch (error) {
-                    console.error('❌ Error updating subscriptions:', error);
+                    console.error('❌ Error subscribing to new tokens:', error);
                 }
-            }, 1000);
+            }
+            
+            broadcastSubscriptionUpdate();
         }
-        
     } catch (error) {
-        console.log('⚠️ Auto-subscription failed:', error.message);
+        console.error('❌ Error in autoSubscribeToResults:', error);
     }
 }
 
@@ -636,16 +911,16 @@ function setupTickerEventHandlers() {
     });
     
     globalTicker.on('ticks', (ticks) => {
-        console.log(`📊 Received ${ticks.length} tick updates`);
+     //   console.log(`📊 Received ${ticks.length} tick updates`);
         
         // Log first tick for debugging
         if (ticks.length > 0) {
             const firstTick = ticks[0];
-            console.log('📊 First tick details:', {
-                instrument_token: firstTick.instrument_token,
-                last_price: firstTick.last_price,
-                volume: firstTick.volume_traded || firstTick.volume
-            });
+            // console.log('📊 First tick details:', {
+            //     instrument_token: firstTick.instrument_token,
+            //     last_price: firstTick.last_price,
+            //     volume: firstTick.volume_traded || firstTick.volume
+            // });
         }
         
         // Broadcast to all connected WebSocket clients
@@ -654,7 +929,7 @@ function setupTickerEventHandlers() {
             ticks.forEach(tick => {
                 // Get proper symbol name from token
                 const symbol = getSymbolFromToken(tick.instrument_token.toString());
-                console.log('📡 Broadcasting tick:', symbol, '₹' + tick.last_price);
+               // console.log('📡 Broadcasting tick:', symbol, '₹' + tick.last_price);
                 
                 // Generate regime based on price action (mock for now)
                 const change = tick.change || 0;
@@ -666,6 +941,40 @@ function setupTickerEventHandlers() {
                 // Get scan type for this token
                 const scanType = scanTypeTracker.get(tick.instrument_token) || 'UNKNOWN';
                 
+                // Check if this symbol should have live tracker masking applied
+                let isLiveTrackerSymbol = liveTrackerSymbol && symbol === liveTrackerSymbol;
+                
+                // Handle NSE: prefix mismatch - try both formats
+                if (!isLiveTrackerSymbol && liveTrackerSymbol) {
+                    const symbolWithoutNSE = symbol.replace('NSE:', '');
+                    const trackerWithoutNSE = liveTrackerSymbol.replace('NSE:', '');
+                    const symbolWithNSE = symbol.startsWith('NSE:') ? symbol : `NSE:${symbol}`;
+                    const trackerWithNSE = liveTrackerSymbol.startsWith('NSE:') ? liveTrackerSymbol : `NSE:${liveTrackerSymbol}`;
+                    
+                    isLiveTrackerSymbol = symbolWithoutNSE === trackerWithoutNSE || 
+                                         symbolWithNSE === trackerWithNSE ||
+                                         symbol === trackerWithoutNSE ||
+                                         symbolWithoutNSE === liveTrackerSymbol;
+                    
+                    if (isLiveTrackerSymbol) {
+                        console.log(`✅ Symbol match found via format conversion: '${symbol}' matches '${liveTrackerSymbol}'`);
+                    }
+                }
+                
+                // FORCE MASKING DEBUG - Apply masking to RELIANCE for testing
+                if (symbol === 'RELIANCE' || symbol === 'NSE:RELIANCE' || symbol.replace('NSE:', '') === 'RELIANCE') {
+                    console.log(`🔧 BACKEND: FORCE DEBUG - Applying masking to RELIANCE for testing`);
+                    isLiveTrackerSymbol = true;
+                }
+                
+                // TEMPORARY DEBUG: Force masking on ALL symbols to test display
+                console.log(`🔧 BACKEND: DEBUG MASKING - Force applying masking to ${symbol} for testing display`);
+                isLiveTrackerSymbol = true;
+                
+                // Only log when masking is applied or for RELIANCE testing
+                if (isLiveTrackerSymbol) {
+                    console.log(`🎯 BACKEND: MASKING WILL BE APPLIED - Processing ${symbol} with market impact masking`);
+                }
                 // Create structured tick data matching frontend expectations
                 const structuredTick = {
                     symbol: symbol,
@@ -674,7 +983,7 @@ function setupTickerEventHandlers() {
                     change: change,
                     change_percent: tick.change ? ((tick.change / (tick.last_price - tick.change)) * 100).toFixed(2) : '0.00',
                     timestamp: new Date().toISOString(),
-                    depth: enhanceDepthTo20Levels(tick.depth, tick.last_price),
+                    depth: enhanceDepthTo20Levels(tick.depth, tick.last_price, scanType, isLiveTrackerSymbol),
                     ohlc: tick.ohlc || {
                         open: tick.last_price,
                         high: tick.last_price * 1.01,
@@ -682,7 +991,8 @@ function setupTickerEventHandlers() {
                         close: tick.last_price
                     },
                     regime: regime,
-                    scan_type: scanType
+                    scan_type: scanType,
+                    liveTrackerMasking: isLiveTrackerSymbol
                 };
                 
                 // Broadcast single tick update
@@ -705,6 +1015,41 @@ function setupTickerEventHandlers() {
                     // Get scan type for this token
                     const scanType = scanTypeTracker.get(tick.instrument_token) || 'UNKNOWN';
                     
+                    // Check if this symbol should have live tracker masking applied
+                    let isLiveTrackerSymbol = liveTrackerSymbol && symbol === liveTrackerSymbol;
+                    
+                    // Handle NSE: prefix mismatch - try both formats
+                    if (!isLiveTrackerSymbol && liveTrackerSymbol) {
+                        const symbolWithoutNSE = symbol.replace('NSE:', '');
+                        const trackerWithoutNSE = liveTrackerSymbol.replace('NSE:', '');
+                        const symbolWithNSE = symbol.startsWith('NSE:') ? symbol : `NSE:${symbol}`;
+                        const trackerWithNSE = liveTrackerSymbol.startsWith('NSE:') ? liveTrackerSymbol : `NSE:${liveTrackerSymbol}`;
+                        
+                        isLiveTrackerSymbol = symbolWithoutNSE === trackerWithoutNSE || 
+                                             symbolWithNSE === trackerWithNSE ||
+                                             symbol === trackerWithoutNSE ||
+                                             symbolWithoutNSE === liveTrackerSymbol;
+                        
+                        if (isLiveTrackerSymbol) {
+                            console.log(`✅ Batch Symbol match found: '${symbol}' matches '${liveTrackerSymbol}'`);
+                        }
+                    }
+                    
+                    // FORCE MASKING DEBUG - Apply masking to RELIANCE for testing
+                    if (symbol === 'RELIANCE' || symbol === 'NSE:RELIANCE' || symbol.replace('NSE:', '') === 'RELIANCE') {
+                        console.log(`🔧 BATCH: FORCE DEBUG - Applying masking to RELIANCE for testing`);
+                        isLiveTrackerSymbol = true;
+                    }
+                    
+                    // TEMPORARY DEBUG: Force masking on ALL symbols to test display
+                    console.log(`🔧 BATCH: DEBUG MASKING - Force applying masking to ${symbol} for testing display`);
+                    isLiveTrackerSymbol = true;
+                    
+                    // Only log when masking is applied
+                    if (isLiveTrackerSymbol) {
+                        console.log(`🎯 BATCH: MASKING APPLIED - Processing ${symbol} with market impact masking`);
+                    }
+                    
                     return {
                         symbol: symbol,
                         last_price: tick.last_price || 0,
@@ -712,7 +1057,7 @@ function setupTickerEventHandlers() {
                         change: change,
                         change_percent: tick.change ? ((tick.change / (tick.last_price - tick.change)) * 100).toFixed(2) : '0.00',
                         timestamp: new Date().toISOString(),
-                        depth: enhanceDepthTo20Levels(tick.depth, tick.last_price),
+                        depth: enhanceDepthTo20Levels(tick.depth, tick.last_price, scanType, isLiveTrackerSymbol),
                         ohlc: tick.ohlc || {
                             open: tick.last_price,
                             high: tick.last_price * 1.01,
@@ -720,7 +1065,8 @@ function setupTickerEventHandlers() {
                             close: tick.last_price
                         },
                         regime: regime,
-                        scan_type: scanType
+                        scan_type: scanType,
+                        liveTrackerMasking: isLiveTrackerSymbol
                     };
                 });
                 
@@ -828,18 +1174,26 @@ router.post('/all-scanners', async (req, res) => {
             "columns": commonColumns,
             "filter": [
                 { "left": "is_blacklisted", "operation": "equal", "right": false },
+                // Price and volume filters
                 // { "left": "close|1", "operation": "greater", "right": 100 },
                 // { "left": "close|1", "operation": "less", "right": 4000 },
-               // { "left": "close|1", "operation": "less", "right": "EMA3|15" },
+                
+                // MACD conditions - 5min timeframe
+                { "left": "MACD.macd|5", "operation": "greater", "right": "MACD.signal|5" }, // MACD > Signal on 5min
+                
+                // ADX condition - 5min timeframe  
+                { "left": "ADX|5", "operation": "greater", "right": 25 }, // ADX > 25 on 5min
+                
+                // Additional technical conditions
                 { "left": "MACD.macd|1", "operation": "greater", "right": 0 },
                 { "left": "EMA5|1", "operation": "greater", "right": "EMA9|1" },
-                { "left": "ADX|1", "operation": "greater", "right": 25 },
-              //  { "left": "ADX+DI|1", "operation": "greater", "right": 25 },
                 { "left": "ADX|1", "operation": "greater", "right": "ADX-DI|1" },
                 { "left": "EMA5|1", "operation": "greater", "right": "VWAP|1" },
                 { "left": "MACD.macd|15", "operation": "greater", "right": 0 },
                 { "left": "EMA5|5", "operation": "greater", "right": "EMA9|5" },
-                { "left": "EMA3|15", "operation": "greater", "right": "EMA5|5" }
+                { "left": "EMA3|15", "operation": "greater", "right": "EMA5|5" },
+                { "left": "open|15", "operation": "less", "right": "EMA3|15" }, // Open < EMA3 on 15min
+                 { "left": "ADX|1", "operation": "greater", "right": 25 },
             ],
             ...commonSettings
         };
@@ -849,19 +1203,27 @@ router.post('/all-scanners', async (req, res) => {
             "columns": commonColumns,
             "filter": [
                 { "left": "is_blacklisted", "operation": "equal", "right": false },
+                // Price and volume filters
                // { "left": "close|1", "operation": "greater", "right": 100 },
               //  { "left": "close|1", "operation": "less", "right": 4000 },
+                
+                // MACD conditions - 5min timeframe
+                { "left": "MACD.macd|5", "operation": "less", "right": "MACD.signal|5" }, // MACD < Signal on 5min
+                
+                // ADX condition - 5min timeframe
+                { "left": "ADX|5", "operation": "greater", "right": 25 }, // ADX > 25 on 5min
+                
+                // Additional technical conditions
                 { "left": "MACD.macd|1", "operation": "less", "right": 0 },
                 { "left": "EMA5|1", "operation": "less", "right": "EMA9|1" },
-                { "left": "ADX|1", "operation": "greater", "right": 25 },
                 { "left": "ADX|1", "operation": "greater", "right": "ADX+DI|1" },
+                { "left": "ADX|1", "operation": "greater", "right": 25 },
                 { "left": "EMA5|1", "operation": "less", "right": "VWAP|1" },
-               // { "left": "ADX-DI|1", "operation": "greater", "right": 25 },
-                { "left": "MACD.macd|5", "operation": "less", "right": "MACD.signal|5" },
                 { "left": "MACD.macd|15", "operation": "less", "right": "MACD.signal|15" },
                 { "left": "MACD.macd|15", "operation": "less", "right": 0 },
                 { "left": "EMA5|5", "operation": "less", "right": "EMA9|5" },
-                { "left": "EMA5|5", "operation": "greater", "right": "EMA3|15" }
+                { "left": "EMA5|5", "operation": "greater", "right": "EMA3|15" },
+                { "left": "open|15", "operation": "greater", "right": "EMA3|15" } // Open > EMA3 on 15min
             ],
             ...commonSettings
         };
@@ -892,25 +1254,71 @@ router.post('/all-scanners', async (req, res) => {
         console.log(`   Buy Scanner: ${buyStocks.length} stocks`);
         console.log(`   Sell Scanner: ${sellStocks.length} stocks`);
 
-        // AUTO-SUBSCRIBE TO SCANNER RESULTS (but NO auto trading in backend)
-        await autoSubscribeToResults(buyStocks, sellStocks, req.body.access_token);
+        // Helper function to enrich stock data 
+        const enrichStockData = (stock) => {
+            const symbol = stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : null;
+            const token = symbol && symbolMappings.symbolMappings[symbol] ? 
+                symbolMappings.symbolMappings[symbol] : null;
+            
+            // Transform TradingView data structure to what frontend expects
+            const transformedStock = {
+                symbol: symbol,
+                token: parseInt(token) || null,
+                instrument_token: parseInt(token) || null,
+                s: stock.s,  // Keep original for reference
+                d: stock.d,  // Keep original data array
+                
+                // Extract common values from data array if available
+                ltp: stock.d && stock.d[0] ? parseFloat(stock.d[0]) : 0,
+                volume: stock.d && stock.d[1] ? parseInt(stock.d[1]) : 0,
+                change_percent: stock.d && stock.d[2] ? parseFloat(stock.d[2]) : 0
+            };
+            
+            return transformedStock;
+        };
 
-        // Return ONLY scanner data - Frontend handles auto trading via separate routes
+        // Enrich scanner results with basic stock data
+        const enrichedBuyStocks = buyStocks.map(enrichStockData);
+        const enrichedSellStocks = sellStocks.map(enrichStockData);
+
+        console.log(`📊 Scanner Results Processed:`);
+        console.log(`   Buy stocks: ${enrichedBuyStocks.length}`);
+        console.log(`   Sell stocks: ${enrichedSellStocks.length}`);
+
+        // AUTO-SUBSCRIBE TO SCANNER RESULTS
+        console.log('🔄 Starting auto-subscription...');
+        autoSubscribeToResults(buyStocks, sellStocks, req.body.access_token).then(() => {
+            console.log('✅ Auto-subscription completed');
+        }).catch(error => {
+            console.error('❌ Error in auto-subscription:', error);
+        });
+
+        // Return enriched scanner data
         const consolidatedResponse = {
             success: true,
             timestamp: new Date().toISOString(),
             duration: duration,
-            totalStocks: buyStocks.length + sellStocks.length,
-            buyStocks: buyStocks,
-            sellStocks: sellStocks,
-            message: 'Scanner completed. Frontend will handle auto trading via separate /api/buy-order and /api/sell-order routes.',
+            totalStocks: enrichedBuyStocks.length + enrichedSellStocks.length,
+            buyStocks: enrichedBuyStocks,
+            sellStocks: enrichedSellStocks,
+            message: 'Scanner completed. Frontend will handle auto trading via separate routes.',
             statistics: {
-                buyCount: buyStocks.length,
-                sellCount: sellStocks.length,
-                totalCount: buyStocks.length + sellStocks.length,
+                buyCount: enrichedBuyStocks.length,
+                sellCount: enrichedSellStocks.length,
+                totalCount: enrichedBuyStocks.length + enrichedSellStocks.length,
                 executionTime: duration
             }
         };
+
+        // Send initial results via WebSocket too
+        if (global.broadcastLiveData) {
+            global.broadcastLiveData({
+                type: 'scanner_results',
+                buySignals: enrichedBuyStocks,
+                sellSignals: enrichedSellStocks,
+                timestamp: new Date().toISOString()
+            });
+        }
 
         // RELIANCE will only be subscribed if found in scan results
         // await initializeRelianceSubscription(req.body.access_token);

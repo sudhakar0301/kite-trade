@@ -8,6 +8,11 @@ const executeFlash = keyframes`
   100% { background: transparent !important; }
 `;
 
+const shimmer = keyframes`
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+`;
+
 const OrderRow = styled.tr`
   &:hover {
     background: rgba(30, 60, 114, 0.15);
@@ -15,6 +20,26 @@ const OrderRow = styled.tr`
   
   ${props => props.executing && css`
     animation: ${executeFlash} 1s ease-out;
+  `}
+  
+  ${props => props.masked && css`
+    opacity: ${props.impactOpacity || 0.1} !important;
+    background: red !important;
+    border: 5px solid yellow !important;
+    color: white !important;
+    position: relative;
+    
+    &::after {
+      content: '🔥 MASKED 🔥';
+      position: absolute;
+      right: 8px;
+      top: 50%;
+      transform: translateY(-50%);
+      opacity: 1;
+      font-size: 14px;
+      color: yellow;
+      font-weight: bold;
+    }
   `}
 `;
 
@@ -195,7 +220,7 @@ const OrderBookPanel = ({ isOpen, symbol, tickData, onClose }) => {
   const bidOrders = currentTick.depth?.buy || [];
   const askOrders = currentTick.depth?.sell || [];
   
-  console.log('📊 OrderBook Debug:', {
+  console.log('📊 FRONTEND: OrderBook Debug:', {
     symbol: symbol,
     bidLevels: bidOrders.length,
     askLevels: askOrders.length,
@@ -204,8 +229,59 @@ const OrderBookPanel = ({ isOpen, symbol, tickData, onClose }) => {
     fullBidQty: bidOrders.reduce((sum, order) => sum + order.quantity, 0),
     fullAskQty: askOrders.reduce((sum, order) => sum + order.quantity, 0),
     bidSample: bidOrders.slice(0, 3),
-    askSample: askOrders.slice(0, 3)
+    askSample: askOrders.slice(0, 3),
+    marketImpact: currentTick.depth?.marketImpact,
+    maskedBidLevels: bidOrders.filter(order => order.masked).length,
+    maskedAskLevels: askOrders.filter(order => order.masked).length,
+    scanType: currentTick.scan_type,
+    liveTrackerMasking: currentTick.liveTrackerMasking,
+    hasLiveTrackerMasking: !!currentTick.liveTrackerMasking,
+    tickKeys: Object.keys(currentTick),
+    depthKeys: currentTick.depth ? Object.keys(currentTick.depth) : 'no depth'
   });
+  
+  // Additional debug for masking properties
+  console.log('🔍 FRONTEND MASKING DEBUG:', {
+    symbol,
+    currentTick: currentTick ? Object.keys(currentTick) : 'No tick data',
+    hasDepth: !!currentTick?.depth,
+    depthBuyLength: currentTick?.depth?.buy?.length || 0,
+    depthSellLength: currentTick?.depth?.sell?.length || 0,
+    sampleBuyOrder: currentTick?.depth?.buy?.[0] || 'No buy data',
+    sampleSellOrder: currentTick?.depth?.sell?.[0] || 'No sell data',
+    liveTrackerMasking: currentTick?.liveTrackerMasking,
+    marketImpact: currentTick?.depth?.marketImpact,
+    bidOrdersSample: bidOrders?.slice(0, 3),
+    askOrdersSample: askOrders?.slice(0, 3)
+  });
+  
+  if (bidOrders.some(order => order.masked) || askOrders.some(order => order.masked)) {
+    console.log('🎯 MASKING DETECTED:', {
+      symbol,
+      maskedBids: bidOrders.filter(order => order.masked).map(order => ({ 
+        level: order.level, 
+        masked: order.masked, 
+        impactOpacity: order.impactOpacity,
+        price: order.price,
+        quantity: order.quantity
+      })),
+      maskedAsks: askOrders.filter(order => order.masked).map(order => ({ 
+        level: order.level, 
+        masked: order.masked, 
+        impactOpacity: order.impactOpacity,
+        price: order.price,
+        quantity: order.quantity
+      }))
+    });
+  } else {
+    console.log('❌ NO MASKING FOUND:', {
+      symbol,
+      bidCount: bidOrders?.length,
+      askCount: askOrders?.length,
+      bidHasMaskedProp: bidOrders?.[0]?.hasOwnProperty('masked'),
+      askHasMaskedProp: askOrders?.[0]?.hasOwnProperty('masked')
+    });
+  }
   
   const bestBid = bidOrders[0]?.price || 0;
   const bestAsk = askOrders[0]?.price || 0;
@@ -246,6 +322,74 @@ const OrderBookPanel = ({ isOpen, symbol, tickData, onClose }) => {
           <strong>Bid-Ask Spread: ₹{spread.toFixed(2)} ({spreadPercent}%)</strong>
         </SpreadInfo>
 
+        {/* Live Tracker Masking Indicator */}
+        {currentTick.liveTrackerMasking && (
+          <div style={{
+            background: 'linear-gradient(135deg, rgba(255, 215, 0, 0.15), rgba(255, 165, 0, 0.1))',
+            border: '2px solid rgba(255, 215, 0, 0.6)',
+            borderRadius: '10px',
+            padding: '16px',
+            margin: '15px 0',
+            fontSize: '12px',
+            textAlign: 'center',
+            position: 'relative',
+            overflow: 'hidden'
+          }}>
+            <div style={{ 
+              color: '#ffd700', 
+              fontWeight: 'bold', 
+              marginBottom: '8px',
+              fontSize: '14px',
+              textShadow: '0 0 10px rgba(255, 215, 0, 0.3)'
+            }}>
+              🎯 LIVE TRACKER MASKING ACTIVE
+            </div>
+            <div style={{ color: '#e6edf3', lineHeight: '1.4' }}>
+              This symbol is currently displayed in the Live Tracker.<br/>
+              <span style={{color: '#79c0ff'}}>Market impact visualization shows ₹490,000 order effects.</span>
+            </div>
+            <div style={{ 
+              position: 'absolute',
+              top: '0',
+              left: '0',
+              right: '0',
+              bottom: '0',
+              background: 'linear-gradient(45deg, transparent 40%, rgba(255, 215, 0, 0.05) 50%, transparent 60%)',
+              animation: 'shimmer 3s ease-in-out infinite'
+            }} />
+          </div>
+        )}
+
+        {/* Market Impact Visualization */}
+        {currentTick.depth?.marketImpact && !currentTick.liveTrackerMasking && (
+          <div style={{
+            background: 'rgba(255, 215, 0, 0.1)',
+            border: '1px solid rgba(255, 215, 0, 0.4)',
+            borderRadius: '8px',
+            padding: '12px',
+            margin: '15px 0',
+            fontSize: '11px'
+          }}>
+            <div style={{ color: '#ffd700', fontWeight: 'bold', marginBottom: '8px', textAlign: 'center' }}>
+              💰 Market Impact Analysis (₹490,000 Order)
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', color: '#e6edf3' }}>
+              <div>Order Type: <span style={{color: '#79c0ff'}}>{currentTick.depth.marketImpact.orderType}</span></div>
+              <div>Quantity: <span style={{color: '#79c0ff'}}>{currentTick.depth.marketImpact.quantity?.toLocaleString()}</span></div>
+              <div>Levels Impacted: <span style={{color: '#f85149'}}>{currentTick.depth.marketImpact.impactedLevels}</span></div>
+              <div>Avg Price: <span style={{color: '#3fb950'}}>₹{currentTick.depth.marketImpact.avgExecutionPrice?.toFixed(2)}</span></div>
+              <div style={{gridColumn: '1 / -1', textAlign: 'center', marginTop: '4px'}}>
+                Slippage: <span style={{color: currentTick.depth.marketImpact.totalSlippage > 0 ? '#f85149' : '#3fb950'}}>
+                  {currentTick.depth.marketImpact.totalSlippage?.toFixed(3)}%
+                </span>
+              </div>
+            </div>
+            <div style={{ textAlign: 'center', marginTop: '8px', color: '#8b949e', fontSize: '10px' }}>
+              💡 Transparent rows show levels consumed by this order
+            </div>
+          </div>
+        )}
+
         {/* Real-time Order Execution Indicator */}
         <OrderExecutionIndicator 
           symbol={symbol}
@@ -266,7 +410,12 @@ const OrderBookPanel = ({ isOpen, symbol, tickData, onClose }) => {
             </thead>
             <tbody>
               {bidOrders.slice(0, 20).map((order, index) => (
-                <OrderRow key={index} executing={executingRows.has(`bid-${index}`)}>
+                <OrderRow 
+                  key={index} 
+                  executing={executingRows.has(`bid-${index}`)}
+                  masked={order.masked || false}
+                  impactOpacity={order.impactOpacity || 1.0}
+                >
                   <OrderCell className="price-bid">₹{order.price.toFixed(2)}</OrderCell>
                   <OrderCell className="quantity">{order.quantity.toLocaleString()}</OrderCell>
                   <OrderCell className="quantity">₹{(order.price * order.quantity).toLocaleString()}</OrderCell>
@@ -290,7 +439,12 @@ const OrderBookPanel = ({ isOpen, symbol, tickData, onClose }) => {
             </thead>
             <tbody>
               {askOrders.slice(0, 20).map((order, index) => (
-                <OrderRow key={index} executing={executingRows.has(`ask-${index}`)}>
+                <OrderRow 
+                  key={index} 
+                  executing={executingRows.has(`ask-${index}`)}
+                  masked={order.masked || false}
+                  impactOpacity={order.impactOpacity || 1.0}
+                >
                   <OrderCell className="price-ask">₹{order.price.toFixed(2)}</OrderCell>
                   <OrderCell className="quantity">{order.quantity.toLocaleString()}</OrderCell>
                   <OrderCell className="quantity">₹{(order.price * order.quantity).toLocaleString()}</OrderCell>
