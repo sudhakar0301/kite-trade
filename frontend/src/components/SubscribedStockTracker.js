@@ -133,9 +133,12 @@ const NoDataMessage = styled.div`
 
 
 
-const SubscribedStockTracker = ({ tickData }) => {
+const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
   // State to track currently selected stock symbol
   const [selectedSymbol, setSelectedSymbol] = useState(null);
+  
+  // State to track real subscribed symbols from backend API
+  const [realSubscribedSymbols, setRealSubscribedSymbols] = useState([]);
   
   // State to trigger re-renders for countdown timer
   const [currentTime, setCurrentTime] = useState(Date.now());
@@ -621,23 +624,37 @@ const SubscribedStockTracker = ({ tickData }) => {
     return allSymbols;
   }, [tickData]);
 
-  // Get stocks that have actual live data (messages in their arrays)
+  // Get stocks that are actually currently subscribed to KiteTicker
   const getSubscribedStocks = useCallback(() => {
-    if (!tickData) {
-      console.log('🔍 No tickData available');
-      return [];
+    console.log('🔍 DEBUG - realSubscribedSymbols:', realSubscribedSymbols);
+    console.log('🔍 DEBUG - tickData keys:', tickData ? Object.keys(tickData) : 'no tickData');
+    
+    // Use real subscribed symbols if available
+    if (realSubscribedSymbols.length > 0) {
+      console.log('🔍 Using real subscribed symbols from backend:', realSubscribedSymbols);
+      return realSubscribedSymbols;
     }
     
-    const stocks = Object.keys(tickData).filter(symbol => {
-      const history = tickData[symbol];
-      const hasData = history && history.length > 0;
-      console.log(`🔍 Stock ${symbol}: hasData=${hasData}, arrayLength=${history?.length || 0}`);
-      return hasData;
-    });
+    // Show all stocks but sort by most recent activity (newest on top)
+    if (tickData) {
+      const stocks = Object.keys(tickData).sort((a, b) => {
+        const aHistory = tickData[a];
+        const bHistory = tickData[b];
+        
+        const aLatestTime = aHistory && aHistory.length > 0 ? 
+          new Date(aHistory[aHistory.length - 1]?.timestamp || 0).getTime() : 0;
+        const bLatestTime = bHistory && bHistory.length > 0 ? 
+          new Date(bHistory[bHistory.length - 1]?.timestamp || 0).getTime() : 0;
+          
+        return bLatestTime - aLatestTime; // Newest first
+      });
+      
+      console.log('🔍 Stocks sorted by recent activity (newest first):', stocks.slice(0, 5));
+      return stocks;
+    }
     
-    console.log('🔍 getSubscribedStocks result:', stocks);
-    return stocks;
-  }, [tickData]);
+    return [];
+  }, [realSubscribedSymbols, tickData]);
 
   // Enhanced chart URL function with better debugging
   const getKiteChartUrl = (symbol) => {
@@ -668,6 +685,33 @@ const SubscribedStockTracker = ({ tickData }) => {
     
     return chartUrl;
   };
+
+  // Fetch real subscribed symbols from backend API
+  useEffect(() => {
+    const fetchSubscribedSymbols = async () => {
+      try {
+        const response = await fetch('http://localhost:5000/api/subscription-status');
+        if (response.ok) {
+          const data = await response.json();
+          const subscribedSymbols = data.subscribed_symbols || [];
+          console.log('🔍 Real subscribed symbols from backend:', subscribedSymbols);
+          setRealSubscribedSymbols(subscribedSymbols);
+        } else {
+          console.log('⚠️ Failed to get subscription status from backend');
+        }
+      } catch (error) {
+        console.log('❌ Error fetching subscription status:', error);
+      }
+    };
+
+    // Fetch initially
+    fetchSubscribedSymbols();
+
+    // Fetch every 10 seconds to keep in sync
+    const interval = setInterval(fetchSubscribedSymbols, 10000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     const subscribedStocks = getSubscribedStocks();
@@ -868,14 +912,26 @@ const SubscribedStockTracker = ({ tickData }) => {
     return () => clearInterval(timer);
   }, []);
   
+  // Helper function to extract symbol name from exchange:symbol format
+  const extractSymbolName = (fullSymbol) => {
+    if (typeof fullSymbol === 'string' && fullSymbol.includes(':')) {
+      return fullSymbol.split(':')[1];
+    }
+    return fullSymbol;
+  };
+
   // Get stock data for the currently selected symbol
   const getAvailableStockData = () => {
     if (!tickData || !selectedSymbol) {
       return { data: null, symbol: null, hasSymbol: false, isWaitingForData: false };
     }
     
-    const history = tickData[selectedSymbol];
-    const hasSymbol = tickData.hasOwnProperty(selectedSymbol);
+    // Extract symbol name without exchange prefix for tickData lookup
+    const symbolKey = extractSymbolName(selectedSymbol);
+    console.log('🔍 Looking up symbol:', selectedSymbol, '→ key:', symbolKey);
+    
+    const history = tickData[symbolKey];
+    const hasSymbol = tickData.hasOwnProperty(symbolKey);
     const isWaitingForData = hasSymbol && (!history || history.length === 0);
     
     if (history && history.length > 0) {
@@ -891,7 +947,7 @@ const SubscribedStockTracker = ({ tickData }) => {
       return { data: null, symbol: selectedSymbol, hasSymbol: true, isWaitingForData: true };
     }
     
-    console.log('🔍 ❌ No data for selected stock:', selectedSymbol);
+    console.log('🔍 ❌ No data for selected stock:', selectedSymbol, 'key tried:', symbolKey);
     return { data: null, symbol: null, hasSymbol: false, isWaitingForData: false };
   };
 
@@ -1151,7 +1207,7 @@ const SubscribedStockTracker = ({ tickData }) => {
           borderBottom: '1px solid rgba(255, 215, 0, 0.3)',
           paddingBottom: '10px'
         }}>
-          📊 All Subscribed Stocks - Market Impact Dashboard ({Object.keys(tickData || {}).length})
+          📊 Current Subscribed Stocks ({getSubscribedStocks().length})
         </div>
         
         {/* Table Header */}
@@ -1176,12 +1232,40 @@ const SubscribedStockTracker = ({ tickData }) => {
           <div>📋 L5: Levels</div>
         </div>
         
-        {/* Table Data - Only Subscribed Symbols with Live Data */}
-        {Object.keys(tickData || {}).map(symbol => {
-          const symbolData = tickData?.[symbol];
+        {/* Table Data - Only Currently Subscribed Symbols with Active Live Data */}
+        {getSubscribedStocks().map(symbol => {
+          console.log('🔍 TABLE RENDER - Processing symbol:', symbol, 'Type:', typeof symbol);
+          
+          // Extract symbol name for tickData lookup (in case it has exchange prefix)
+          const symbolKey = extractSymbolName(symbol);
+          console.log('🔍 TABLE RENDER - Symbol key for lookup:', symbolKey);
+          
+          const symbolData = tickData?.[symbolKey];
+          console.log('🔍 TABLE RENDER - Found symbolData:', !!symbolData, 'Length:', symbolData?.length);
+          
           const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
+          console.log('🔍 TABLE RENDER - Latest tick exists:', !!latestTick);
+          
+          if (latestTick) {
+            console.log('🔍 TABLE RENDER - Tick keys:', Object.keys(latestTick));
+            console.log('🔍 TABLE RENDER - scan_type value:', latestTick.scan_type);
+          }
+          
           const marketImpact = latestTick?.depth?.marketImpact;
           const scanType = latestTick?.scan_type || 'UNKNOWN';
+          
+          // Debug: Log tick data structure
+          if (latestTick && symbol === 'ABFRL') {
+            console.log('🔍 DEBUG TICK DATA for', symbol, ':', {
+              hasTickData: !!latestTick,
+              tickKeys: latestTick ? Object.keys(latestTick) : [],
+              scanType: latestTick?.scan_type,
+              hasDepth: !!latestTick?.depth,
+              depthKeys: latestTick?.depth ? Object.keys(latestTick.depth) : [],
+              hasMarketImpact: !!latestTick?.depth?.marketImpact,
+              marketImpact: latestTick?.depth?.marketImpact
+            });
+          }
           
           // Calculate L5 data for this specific symbol
           const l5Data = latestTick?.depth ? (() => {
@@ -1242,6 +1326,11 @@ const SubscribedStockTracker = ({ tickData }) => {
                 if (chartUrl) {
                   window.open(chartUrl, 'kite-chart-tab');
                   console.log('🔍 Chart opened for:', symbol);
+                }
+                // Also open the SST side panel (OrderBookPanel) if callback is provided
+                if (onSymbolClick) {
+                  onSymbolClick(symbol);
+                  console.log('🎯 SST side panel opened for:', symbol);
                 }
               }}
             >
@@ -1335,18 +1424,18 @@ const SubscribedStockTracker = ({ tickData }) => {
             alignItems: 'center'
           }}>
             <div>
-              📈 Total: {Object.keys(tickData || {}).length} symbols
+              📈 Total: {getSubscribedStocks().length} symbols
             </div>
             <div style={{ display: 'flex', gap: '15px' }}>
               <span style={{ color: '#00ff00' }}>
-                🟢 Buy: {Object.keys(tickData || {}).filter(symbol => {
+                🟢 Buy: {getSubscribedStocks().filter(symbol => {
                   const symbolData = tickData?.[symbol];
                   const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
                   return latestTick?.scan_type === 'BUY_SCAN';
                 }).length}
               </span>
               <span style={{ color: '#ff6b6b' }}>
-                🔴 Sell: {Object.keys(tickData || {}).filter(symbol => {
+                🔴 Sell: {getSubscribedStocks().filter(symbol => {
                   const symbolData = tickData?.[symbol];
                   const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
                   return latestTick?.scan_type === 'SELL_SCAN';

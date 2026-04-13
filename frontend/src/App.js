@@ -927,7 +927,10 @@ function App() {
         {/* <AlgorithmTutorial /> */}
         
         {/* Live Stock Tracker */}
-        <SubscribedStockTracker tickData={symbolTickData} />
+        <SubscribedStockTracker 
+          tickData={symbolTickData} 
+          onSymbolClick={handleSymbolClick}
+        />
         
         {/* Trading Dashboard with Scan Stocks Table */}
         <ScannerSection>

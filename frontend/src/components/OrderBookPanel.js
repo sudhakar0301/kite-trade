@@ -1,44 +1,19 @@
-import React, { useState, useEffect } from 'react';
-import styled, { keyframes, css } from 'styled-components';
-import OrderFlowVisualizer from './OrderFlowVisualizer';
-import OrderExecutionIndicator from './OrderExecutionIndicator';
-
-const executeFlash = keyframes`
-  0% { background: rgba(255, 215, 0, 0.5) !important; }
-  100% { background: transparent !important; }
-`;
-
-const shimmer = keyframes`
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
-`;
+import React from 'react';
+import styled, { css } from 'styled-components';
 
 const OrderRow = styled.tr`
   &:hover {
     background: rgba(30, 60, 114, 0.15);
   }
   
-  ${props => props.executing && css`
-    animation: ${executeFlash} 1s ease-out;
-  `}
-  
   ${props => props.masked && css`
-    opacity: ${props.impactOpacity || 0.1} !important;
-    background: red !important;
-    border: 5px solid yellow !important;
-    color: white !important;
-    position: relative;
+    background: rgba(255, 107, 107, 0.2) !important;
+    border-left: 4px solid rgba(239, 68, 68, 0.8) !important;
+    opacity: 0.7 !important;
     
-    &::after {
-      content: '🔥 MASKED 🔥';
-      position: absolute;
-      right: 8px;
-      top: 50%;
-      transform: translateY(-50%);
-      opacity: 1;
-      font-size: 14px;
-      color: yellow;
-      font-weight: bold;
+    &:hover {
+      background: rgba(255, 107, 107, 0.3) !important;
+      opacity: 0.8 !important;
     }
   `}
 `;
@@ -130,166 +105,49 @@ const OrderCell = styled.td`
   &.quantity { color: #79c0ff; }
 `;
 
-const SymbolInfo = styled.div`
-  background: rgba(30, 60, 114, 0.2);
-  border: 1px solid #30363d;
-  border-radius: 8px;
-  padding: 15px;
-  margin-bottom: 20px;
-`;
-
-const InfoRow = styled.div`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-  
-  &:last-child {
-    margin-bottom: 0;
-  }
-`;
-
-const InfoLabel = styled.span`
-  color: #8b949e;
-  font-size: 11px;
-`;
-
-const InfoValue = styled.span`
-  color: #ffd700;
-  font-weight: 600;
-  font-size: 12px;
-`;
-
-const SpreadInfo = styled.div`
-  background: rgba(255, 215, 0, 0.1);
-  border: 1px solid rgba(255, 215, 0, 0.3);
-  border-radius: 6px;
-  padding: 10px;
-  margin: 15px 0;
-  text-align: center;
-`;
-
 const OrderBookPanel = ({ isOpen, symbol, tickData, onClose }) => {
-  const [executingRows, setExecutingRows] = useState(new Set());
-  
-  // Track price changes for execution animation - moved to top before any returns
-  useEffect(() => {
-    if (!isOpen || !symbol || !tickData) return;
-    
-    const currentTick = tickData[symbol]?.[0];
-    const previousTick = tickData[symbol]?.[1];
-    
-    if (!currentTick || !previousTick) return;
-    
-    if (currentTick.last_price !== previousTick.last_price) {
-      // Animate rows near the executed price
-      const executedPrice = currentTick.last_price;
-      const priceRange = Math.abs(currentTick.last_price - previousTick.last_price) * 2;
-      
-      const bidOrders = currentTick.depth?.buy || [];
-      const askOrders = currentTick.depth?.sell || [];
-      const newExecutingRows = new Set();
-      
-      // Find bid orders near execution price
-      bidOrders.forEach((order, index) => {
-        if (Math.abs(order.price - executedPrice) <= priceRange) {
-          newExecutingRows.add(`bid-${index}`);
-        }
-      });
-      
-      // Find ask orders near execution price
-      askOrders.forEach((order, index) => {
-        if (Math.abs(order.price - executedPrice) <= priceRange) {
-          newExecutingRows.add(`ask-${index}`);
-        }
-      });
-      
-      setExecutingRows(newExecutingRows);
-      
-      // Clear animations after 1.5 seconds
-      setTimeout(() => setExecutingRows(new Set()), 1500);
-    }
-  }, [isOpen, symbol, tickData]);
-  
   if (!isOpen || !symbol || !tickData) return null;
 
-  const currentTick = tickData[symbol]?.[0];
+  // Helper function to extract symbol name from exchange:symbol format
+  const extractSymbolName = (fullSymbol) => {
+    if (typeof fullSymbol === 'string' && fullSymbol.includes(':')) {
+      return fullSymbol.split(':')[1];
+    }
+    return fullSymbol;
+  };
+
+  // Extract symbol name for tickData lookup
+  const symbolKey = extractSymbolName(symbol);
+  console.log('🔍 OrderBook - Symbol:', symbol, '→ Key:', symbolKey);
+  
+  // Get the latest tick (last item in the array, not first)
+  const symbolHistory = tickData[symbolKey];
+  const currentTick = symbolHistory && symbolHistory.length > 0 ? 
+    symbolHistory[symbolHistory.length - 1] : null;
+    
+  console.log('🔍 OrderBook - Found tick data:', !!currentTick, 'History length:', symbolHistory?.length);
   
   if (!currentTick) return null;
 
   const bidOrders = currentTick.depth?.buy || [];
   const askOrders = currentTick.depth?.sell || [];
-  
-  console.log('📊 FRONTEND: OrderBook Debug:', {
-    symbol: symbol,
-    bidLevels: bidOrders.length,
-    askLevels: askOrders.length,
-    firstFiveBidQty: bidOrders.slice(0, 5).reduce((sum, order) => sum + order.quantity, 0),
-    firstFiveAskQty: askOrders.slice(0, 5).reduce((sum, order) => sum + order.quantity, 0),
-    fullBidQty: bidOrders.reduce((sum, order) => sum + order.quantity, 0),
-    fullAskQty: askOrders.reduce((sum, order) => sum + order.quantity, 0),
-    bidSample: bidOrders.slice(0, 3),
-    askSample: askOrders.slice(0, 3),
-    marketImpact: currentTick.depth?.marketImpact,
-    maskedBidLevels: bidOrders.filter(order => order.masked).length,
-    maskedAskLevels: askOrders.filter(order => order.masked).length,
-    scanType: currentTick.scan_type,
-    liveTrackerMasking: currentTick.liveTrackerMasking,
-    hasLiveTrackerMasking: !!currentTick.liveTrackerMasking,
-    tickKeys: Object.keys(currentTick),
-    depthKeys: currentTick.depth ? Object.keys(currentTick.depth) : 'no depth'
-  });
-  
-  // Additional debug for masking properties
-  console.log('🔍 FRONTEND MASKING DEBUG:', {
-    symbol,
-    currentTick: currentTick ? Object.keys(currentTick) : 'No tick data',
-    hasDepth: !!currentTick?.depth,
-    depthBuyLength: currentTick?.depth?.buy?.length || 0,
-    depthSellLength: currentTick?.depth?.sell?.length || 0,
-    sampleBuyOrder: currentTick?.depth?.buy?.[0] || 'No buy data',
-    sampleSellOrder: currentTick?.depth?.sell?.[0] || 'No sell data',
-    liveTrackerMasking: currentTick?.liveTrackerMasking,
-    marketImpact: currentTick?.depth?.marketImpact,
-    bidOrdersSample: bidOrders?.slice(0, 3),
-    askOrdersSample: askOrders?.slice(0, 3)
-  });
-  
-  if (bidOrders.some(order => order.masked) || askOrders.some(order => order.masked)) {
-    console.log('🎯 MASKING DETECTED:', {
-      symbol,
-      maskedBids: bidOrders.filter(order => order.masked).map(order => ({ 
-        level: order.level, 
-        masked: order.masked, 
-        impactOpacity: order.impactOpacity,
-        price: order.price,
-        quantity: order.quantity
-      })),
-      maskedAsks: askOrders.filter(order => order.masked).map(order => ({ 
-        level: order.level, 
-        masked: order.masked, 
-        impactOpacity: order.impactOpacity,
-        price: order.price,
-        quantity: order.quantity
-      }))
-    });
-  } else {
-    console.log('❌ NO MASKING FOUND:', {
-      symbol,
-      bidCount: bidOrders?.length,
-      askCount: askOrders?.length,
-      bidHasMaskedProp: bidOrders?.[0]?.hasOwnProperty('masked'),
-      askHasMaskedProp: askOrders?.[0]?.hasOwnProperty('masked')
-    });
-  }
-  
-  const bestBid = bidOrders[0]?.price || 0;
-  const bestAsk = askOrders[0]?.price || 0;
-  const spread = bestAsk - bestBid;
-  const spreadPercent = bestBid > 0 ? ((spread / bestBid) * 100).toFixed(3) : 0;
+  const scanType = currentTick.scan_type;
+  const marketImpact = currentTick.depth?.marketImpact;
+  const liveTrackerMasking = currentTick.liveTrackerMasking;
 
-  const totalBidQty = bidOrders.reduce((sum, order) => sum + order.quantity, 0);
-  const totalAskQty = askOrders.reduce((sum, order) => sum + order.quantity, 0);
+  // Get number of levels to mask based on market impact
+  const impactedLevels = marketImpact?.impactedLevels || 0;
+
+  console.log('🔍 OrderBook Masking Debug:', {
+    symbol: symbol,
+    symbolKey: symbolKey,
+    scanType: scanType,
+    impactedLevels: impactedLevels,
+    marketImpact: marketImpact,
+    liveTrackerMasking: liveTrackerMasking,
+    bidLevels: bidOrders.length,
+    askLevels: askOrders.length
+  });
 
   return (
     <PanelOverlay isOpen={isOpen}>
@@ -299,161 +157,171 @@ const OrderBookPanel = ({ isOpen, symbol, tickData, onClose }) => {
       </PanelHeader>
       
       <OrderBookContainer>
-        <SymbolInfo>
-          <InfoRow>
-            <InfoLabel>Last Traded Price:</InfoLabel>
-            <InfoValue>₹{currentTick.last_price.toFixed(2)}</InfoValue>
-          </InfoRow>
-          <InfoRow>
-            <InfoLabel>Volume:</InfoLabel>
-            <InfoValue>{currentTick.volume?.toLocaleString() || 'N/A'}</InfoValue>
-          </InfoRow>
-          <InfoRow>
-            <InfoLabel>Regime:</InfoLabel>
-            <InfoValue>{currentTick.regime || 'UNKNOWN'}</InfoValue>
-          </InfoRow>
-          <InfoRow>
-            <InfoLabel>Timestamp:</InfoLabel>
-            <InfoValue>{new Date(currentTick.timestamp).toLocaleTimeString()}</InfoValue>
-          </InfoRow>
-        </SymbolInfo>
-
-        <SpreadInfo>
-          <strong>Bid-Ask Spread: ₹{spread.toFixed(2)} ({spreadPercent}%)</strong>
-        </SpreadInfo>
-
-        {/* Live Tracker Masking Indicator */}
-        {currentTick.liveTrackerMasking && (
-          <div style={{
-            background: 'linear-gradient(135deg, rgba(255, 215, 0, 0.15), rgba(255, 165, 0, 0.1))',
-            border: '2px solid rgba(255, 215, 0, 0.6)',
-            borderRadius: '10px',
-            padding: '16px',
-            margin: '15px 0',
-            fontSize: '12px',
-            textAlign: 'center',
-            position: 'relative',
-            overflow: 'hidden'
-          }}>
-            <div style={{ 
-              color: '#ffd700', 
-              fontWeight: 'bold', 
-              marginBottom: '8px',
-              fontSize: '14px',
-              textShadow: '0 0 10px rgba(255, 215, 0, 0.3)'
-            }}>
-              🎯 LIVE TRACKER MASKING ACTIVE
-            </div>
-            <div style={{ color: '#e6edf3', lineHeight: '1.4' }}>
-              This symbol is currently displayed in the Live Tracker.<br/>
-              <span style={{color: '#79c0ff'}}>Market impact visualization shows ₹490,000 order effects.</span>
-            </div>
-            <div style={{ 
-              position: 'absolute',
-              top: '0',
-              left: '0',
-              right: '0',
-              bottom: '0',
-              background: 'linear-gradient(45deg, transparent 40%, rgba(255, 215, 0, 0.05) 50%, transparent 60%)',
-              animation: 'shimmer 3s ease-in-out infinite'
-            }} />
-          </div>
-        )}
-
-        {/* Market Impact Visualization */}
-        {currentTick.depth?.marketImpact && !currentTick.liveTrackerMasking && (
-          <div style={{
-            background: 'rgba(255, 215, 0, 0.1)',
-            border: '1px solid rgba(255, 215, 0, 0.4)',
-            borderRadius: '8px',
-            padding: '12px',
-            margin: '15px 0',
-            fontSize: '11px'
-          }}>
-            <div style={{ color: '#ffd700', fontWeight: 'bold', marginBottom: '8px', textAlign: 'center' }}>
-              💰 Market Impact Analysis (₹490,000 Order)
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', color: '#e6edf3' }}>
-              <div>Order Type: <span style={{color: '#79c0ff'}}>{currentTick.depth.marketImpact.orderType}</span></div>
-              <div>Quantity: <span style={{color: '#79c0ff'}}>{currentTick.depth.marketImpact.quantity?.toLocaleString()}</span></div>
-              <div>Levels Impacted: <span style={{color: '#f85149'}}>{currentTick.depth.marketImpact.impactedLevels}</span></div>
-              <div>Avg Price: <span style={{color: '#3fb950'}}>₹{currentTick.depth.marketImpact.avgExecutionPrice?.toFixed(2)}</span></div>
-              <div style={{gridColumn: '1 / -1', textAlign: 'center', marginTop: '4px'}}>
-                Slippage: <span style={{color: currentTick.depth.marketImpact.totalSlippage > 0 ? '#f85149' : '#3fb950'}}>
-                  {currentTick.depth.marketImpact.totalSlippage?.toFixed(3)}%
-                </span>
+        {scanType === 'BUY_SCAN' ? (
+          <>
+            {/* For BUY stocks - show ASK levels first (what you're buying from) */}
+            <OrderBookSection>
+              <SectionTitle>🔴 ASK ORDERS (Sell) - {askOrders.length} levels</SectionTitle>
+              <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #30363d', borderRadius: '4px' }}>
+                <OrderTable>
+                <thead>
+                  <tr>
+                    <OrderHeader align="right">Price</OrderHeader>
+                    <OrderHeader align="right">Quantity</OrderHeader>
+                  </tr>
+                </thead>
+                <tbody>
+                  {askOrders.slice(0, 10).map((order, index) => {
+                    // For BUY scans, mask the first N ask levels based on impactedLevels
+                    const shouldMask = scanType === 'BUY_SCAN' && index < impactedLevels;
+                    
+                    console.log(`🎭 ASK Level ${index + 1} DYNAMIC MASKING:`, {
+                      level: index + 1,
+                      price: order.price,
+                      quantity: order.quantity,
+                      scanType: scanType,
+                      impactedLevels: impactedLevels,
+                      shouldMask: shouldMask,
+                      maskingReason: shouldMask ? `Level ${index + 1} <= ${impactedLevels} impacted levels` : 'Not masked'
+                    });
+                    
+                    return (
+                      <OrderRow 
+                        key={index}
+                        masked={shouldMask}
+                        style={{
+                          opacity: shouldMask ? 0.6 : 1.0,
+                          background: shouldMask ? 'rgba(255, 107, 107, 0.3)' : 'transparent',
+                          borderLeft: shouldMask ? '4px solid rgba(239, 68, 68, 0.8)' : 'none'
+                        }}
+                      >
+                        <OrderCell className="price-ask">₹{order.price.toFixed(2)}</OrderCell>
+                        <OrderCell className="quantity">{order.quantity.toLocaleString()}</OrderCell>
+                      </OrderRow>
+                    );
+                  })}
+                </tbody>
+              </OrderTable>
               </div>
-            </div>
-            <div style={{ textAlign: 'center', marginTop: '8px', color: '#8b949e', fontSize: '10px' }}>
-              💡 Transparent rows show levels consumed by this order
-            </div>
-          </div>
+            </OrderBookSection>
+
+            <OrderBookSection>
+              <SectionTitle>🟢 BID ORDERS (Buy) - {bidOrders.length} levels</SectionTitle>
+              <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #30363d', borderRadius: '4px' }}>
+                <OrderTable>
+                <thead>
+                  <tr>
+                    <OrderHeader align="right">Price</OrderHeader>
+                    <OrderHeader align="right">Quantity</OrderHeader>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bidOrders.slice(0, 10).map((order, index) => {
+                    // For BUY scans, don't mask BID levels (they're not impacted)
+                    const shouldMask = false;
+                    
+                    return (
+                      <OrderRow 
+                        key={index}
+                        masked={shouldMask}
+                        style={{
+                          opacity: 1.0,
+                          background: 'transparent'
+                        }}
+                      >
+                        <OrderCell className="price-bid">₹{order.price.toFixed(2)}</OrderCell>
+                        <OrderCell className="quantity">{order.quantity.toLocaleString()}</OrderCell>
+                      </OrderRow>
+                    );
+                  })}
+                </tbody>
+              </OrderTable>
+              </div>
+            </OrderBookSection>
+          </>
+        ) : (
+          <>
+            {/* For SELL stocks - show BID levels first (what's buying from you) */}
+            <OrderBookSection>
+              <SectionTitle>🟢 BID ORDERS (Buy) - {bidOrders.length} levels</SectionTitle>
+              <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #30363d', borderRadius: '4px' }}>
+                <OrderTable>
+                <thead>
+                  <tr>
+                    <OrderHeader align="right">Price</OrderHeader>
+                    <OrderHeader align="right">Quantity</OrderHeader>
+                  </tr>
+                </thead>
+                <tbody>
+                  {bidOrders.slice(0, 10).map((order, index) => {
+                    // For SELL scans, mask the first N bid levels based on impactedLevels
+                    const shouldMask = scanType === 'SELL_SCAN' && index < impactedLevels;
+                    
+                    console.log(`🎭 BID Level ${index + 1} DYNAMIC MASKING:`, {
+                      level: index + 1,
+                      price: order.price,
+                      quantity: order.quantity,
+                      scanType: scanType,
+                      impactedLevels: impactedLevels,
+                      shouldMask: shouldMask,
+                      maskingReason: shouldMask ? `Level ${index + 1} <= ${impactedLevels} impacted levels` : 'Not masked'
+                    });
+                    
+                    return (
+                      <OrderRow 
+                        key={index}
+                        masked={shouldMask}
+                        style={{
+                          opacity: shouldMask ? 0.6 : 1.0,
+                          background: shouldMask ? 'rgba(255, 107, 107, 0.3)' : 'transparent',
+                          borderLeft: shouldMask ? '4px solid rgba(239, 68, 68, 0.8)' : 'none'
+                        }}
+                      >
+                        <OrderCell className="price-bid">₹{order.price.toFixed(2)}</OrderCell>
+                        <OrderCell className="quantity">{order.quantity.toLocaleString()}</OrderCell>
+                      </OrderRow>
+                    );
+                  })}
+                </tbody>
+              </OrderTable>
+              </div>
+            </OrderBookSection>
+
+            <OrderBookSection>
+              <SectionTitle>🔴 ASK ORDERS (Sell) - {askOrders.length} levels</SectionTitle>
+              <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #30363d', borderRadius: '4px' }}>
+                <OrderTable>
+                <thead>
+                  <tr>
+                    <OrderHeader align="right">Price</OrderHeader>
+                    <OrderHeader align="right">Quantity</OrderHeader>
+                  </tr>
+                </thead>
+                <tbody>
+                  {askOrders.slice(0, 10).map((order, index) => {
+                    // For SELL scans, don't mask ASK levels (they're not impacted)
+                    const shouldMask = false;
+                    
+                    return (
+                      <OrderRow 
+                        key={index}
+                        masked={shouldMask}
+                        style={{
+                          opacity: 1.0,
+                          background: 'transparent'
+                        }}
+                      >
+                        <OrderCell className="price-ask">₹{order.price.toFixed(2)}</OrderCell>
+                        <OrderCell className="quantity">{order.quantity.toLocaleString()}</OrderCell>
+                      </OrderRow>
+                    );
+                  })}
+                </tbody>
+              </OrderTable>
+              </div>
+            </OrderBookSection>
+          </>
         )}
-
-        {/* Real-time Order Execution Indicator */}
-        <OrderExecutionIndicator 
-          symbol={symbol}
-          tickData={tickData}
-          isOpen={isOpen}
-        />
-
-        <OrderBookSection>
-          <SectionTitle>🟢 BID ORDERS (Buy) - Total: {totalBidQty.toLocaleString()} (Top 20)</SectionTitle>
-          <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #30363d', borderRadius: '4px' }}>
-            <OrderTable>
-            <thead>
-              <tr>
-                <OrderHeader align="right">Price</OrderHeader>
-                <OrderHeader align="right">Quantity</OrderHeader>
-                <OrderHeader align="right">Total</OrderHeader>
-              </tr>
-            </thead>
-            <tbody>
-              {bidOrders.slice(0, 20).map((order, index) => (
-                <OrderRow 
-                  key={index} 
-                  executing={executingRows.has(`bid-${index}`)}
-                  masked={order.masked || false}
-                  impactOpacity={order.impactOpacity || 1.0}
-                >
-                  <OrderCell className="price-bid">₹{order.price.toFixed(2)}</OrderCell>
-                  <OrderCell className="quantity">{order.quantity.toLocaleString()}</OrderCell>
-                  <OrderCell className="quantity">₹{(order.price * order.quantity).toLocaleString()}</OrderCell>
-                </OrderRow>
-              ))}
-            </tbody>
-          </OrderTable>
-          </div>
-        </OrderBookSection>
-
-        <OrderBookSection>
-          <SectionTitle>🔴 ASK ORDERS (Sell) - Total: {totalAskQty.toLocaleString()} (Top 20)</SectionTitle>
-          <div style={{ maxHeight: '300px', overflowY: 'auto', border: '1px solid #30363d', borderRadius: '4px' }}>
-            <OrderTable>
-            <thead>
-              <tr>
-                <OrderHeader align="right">Price</OrderHeader>
-                <OrderHeader align="right">Quantity</OrderHeader>
-                <OrderHeader align="right">Total</OrderHeader>
-              </tr>
-            </thead>
-            <tbody>
-              {askOrders.slice(0, 20).map((order, index) => (
-                <OrderRow 
-                  key={index} 
-                  executing={executingRows.has(`ask-${index}`)}
-                  masked={order.masked || false}
-                  impactOpacity={order.impactOpacity || 1.0}
-                >
-                  <OrderCell className="price-ask">₹{order.price.toFixed(2)}</OrderCell>
-                  <OrderCell className="quantity">{order.quantity.toLocaleString()}</OrderCell>
-                  <OrderCell className="quantity">₹{(order.price * order.quantity).toLocaleString()}</OrderCell>
-                </OrderRow>
-              ))}
-            </tbody>
-          </OrderTable>
-          </div>
-        </OrderBookSection>
 
         {bidOrders.length === 0 && askOrders.length === 0 && (
           <div style={{ 
@@ -465,13 +333,6 @@ const OrderBookPanel = ({ isOpen, symbol, tickData, onClose }) => {
             📭 No order book data available for {symbol}
           </div>
         )}
-
-        {/* Order Flow Visualization */}
-        <OrderFlowVisualizer 
-          symbol={symbol}
-          tickData={tickData}
-          isOpen={isOpen}
-        />
       </OrderBookContainer>
     </PanelOverlay>
   );

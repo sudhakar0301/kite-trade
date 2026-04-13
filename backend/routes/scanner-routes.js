@@ -1373,10 +1373,17 @@ router.post('/subscribe-reliance', async (req, res) => {
 // Get current subscription status endpoint
 router.get('/subscription-status', (req, res) => {
     try {
+        const subscribedTokens = Array.from(currentlySubscribed);
+        const subscribedSymbols = subscribedTokens.map(token => {
+            const symbol = getSymbolFromToken(token);
+            return `NSE:${symbol}`; // Add NSE: prefix to match frontend format
+        });
+        
         res.json({
             success: true,
             subscribed_count: currentlySubscribed.size,
-            subscribed_tokens: Array.from(currentlySubscribed),
+            subscribed_tokens: subscribedTokens,
+            subscribed_symbols: subscribedSymbols,
             ticker_connected: globalTicker !== null,
             timestamp: new Date().toISOString()
         });
