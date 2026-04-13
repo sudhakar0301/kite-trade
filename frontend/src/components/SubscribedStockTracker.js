@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import styled, { keyframes } from 'styled-components';
+import { checkAutoTradeConditions, analyzeAllSubscribedStocks } from '../utils/autoTradeCheck';
 
 // Animation for live tracker masking indicator
 const pulse = keyframes`
@@ -147,6 +148,7 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
   const symbolTimestampsRef = useRef({});
   const previousSymbolsRef = useRef(new Set());
   const symbolsAtSelectionRef = useRef({}); // Track which symbols existed when each symbol was selected
+  const autoOpenedChartsRef = useRef(new Set()); // Track auto-opened charts to prevent duplicates
   
   // Complete Symbol to Token mapping (NSE symbols with Kite instrument tokens)
   const symbolToTokenMap = {
@@ -903,6 +905,58 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     }
   }, [selectedSymbol, getAllAvailableSymbols]);
   
+  // Effect to analyze all subscribed stocks for trading opportunities
+  useEffect(() => {
+    if (tickData && Object.keys(tickData).length > 0) {
+      const opportunities = analyzeAllSubscribedStocks(tickData, getSubscribedStocks());
+      
+      if (opportunities.length > 0) {
+        console.log('🚀 TRADING OPPORTUNITIES FOUND:', opportunities.map(opp => ({
+          symbol: opp.symbol,
+          canTrade: opp.analysis.canTrade,
+          conditions: opp.analysis.conditions
+        })));
+
+        // Automatically open charts for trading opportunities
+        opportunities.forEach(opportunity => {
+          const { symbol, analysis } = opportunity;
+          
+          if (analysis.canTrade && !autoOpenedChartsRef.current.has(symbol)) {
+            console.log(`🚨 NEW TRADING OPPORTUNITY DETECTED: ${symbol}`);
+            console.log(`📈 AUTO-OPENING CHART for: ${symbol}`);
+            
+            // Mark as auto-opened to prevent duplicates
+            autoOpenedChartsRef.current.add(symbol);
+            
+            // Get chart URL and open in new tab
+            const chartUrl = getKiteChartUrl(symbol);
+            if (chartUrl) {
+              window.open(chartUrl, `chart-${symbol.replace(':', '-')}`);
+              console.log(`✅ Chart opened automatically for: ${symbol}`);
+            }
+            
+            // Also trigger the SST panel if callback is available
+            if (onSymbolClick) {
+              onSymbolClick(symbol);
+              console.log(`🎯 SST panel opened automatically for: ${symbol}`);
+            }
+            
+            // Set as selected symbol for highlighting
+            setSelectedSymbol(symbol);
+            
+            // Clear the auto-opened flag after 2 minutes to allow re-opening if conditions re-emerge
+            setTimeout(() => {
+              autoOpenedChartsRef.current.delete(symbol);
+              console.log(`♻️ Chart auto-open cooldown expired for: ${symbol}`);
+            }, 2 * 60 * 1000); // 2 minutes cooldown
+          } else if (analysis.canTrade && autoOpenedChartsRef.current.has(symbol)) {
+            console.log(`⏳ Trading opportunity still active for ${symbol} (chart already opened)`);
+          }
+        });
+      }
+    }
+  }, [tickData, getAllAvailableSymbols]); // Re-analyze when tick data updates
+  
   // Effect to update current time every second for countdown display
   useEffect(() => {
     const timer = setInterval(() => {
@@ -1213,7 +1267,7 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
         {/* Table Header */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: '100px 60px 80px 80px 100px 120px 140px',
+          gridTemplateColumns: '100px 60px 80px 80px 100px 120px 140px 120px',
           gap: '8px',
           padding: '8px',
           fontSize: '11px',
@@ -1230,6 +1284,7 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
           <div>📈 Slippage</div>
           <div>💰 Avg Price</div>
           <div>📋 L5: Levels</div>
+          <div>🎯 Trade Ready</div>
         </div>
         
         {/* Table Data - Only Currently Subscribed Symbols with Active Live Data */}
@@ -1253,6 +1308,29 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
           
           const marketImpact = latestTick?.depth?.marketImpact;
           const scanType = latestTick?.scan_type || 'UNKNOWN';
+          
+          // Check auto-trade conditions using the new checker
+          const tradeConditions = latestTick ? checkAutoTradeConditions(latestTick) : null;
+          
+          // Log trade conditions for debugging
+          if (tradeConditions && symbol === symbolKey) {
+            console.log(`🎯 TRADE CONDITIONS for ${symbol}:`, {
+              canTrade: tradeConditions.canTrade,
+              reason: tradeConditions.reason,
+              conditions: tradeConditions.conditions,
+              scanType: scanType
+            });
+          }
+          
+          // Debug the data extraction
+          console.log(`🔍 DATA EXTRACTION for ${symbol}:`, {
+            symbolKey: symbolKey,
+            hasSymbolData: !!symbolData,
+            dataLength: symbolData?.length,
+            hasLatestTick: !!latestTick,
+            scanType: scanType,
+            hasMarketImpact: !!marketImpact
+          });
           
           // Debug: Log tick data structure
           if (latestTick && symbol === 'ABFRL') {
@@ -1307,7 +1385,7 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
               key={symbol}
               style={{
                 display: 'grid',
-                gridTemplateColumns: '100px 60px 80px 80px 100px 120px 140px',
+                gridTemplateColumns: '100px 60px 80px 80px 100px 120px 140px 120px',
                 gap: '8px',
                 padding: '8px',
                 fontSize: '10px',
@@ -1401,6 +1479,23 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
                     )}
                   </span>
                 ) : '-'}
+              </div>
+              
+              {/* Trade Condition Status */}
+              <div style={{ 
+                color: tradeConditions?.canTrade ? '#00ff00' : '#ff6b6b',
+                fontSize: '9px',
+                fontWeight: '600'
+              }}>
+                {tradeConditions ? (
+                  tradeConditions.canTrade ? (
+                    <span>✅ Ready</span>
+                  ) : (
+                    <span title={tradeConditions.reason}>❌ Wait</span>
+                  )
+                ) : (
+                  <span>⏳ Loading</span>
+                )}
               </div>
             </div>
           );
