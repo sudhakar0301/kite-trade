@@ -2,6 +2,35 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import styled, { keyframes } from 'styled-components';
 import { checkAutoTradeConditions, analyzeAllSubscribedStocks } from '../utils/autoTradeCheck';
 
+// Import symbol mappings from backend
+let symbolMappings = {};
+try {
+  // Try to fetch from backend API as fallback
+  fetch('http://localhost:5000/api/symbol-mappings')
+    .then(res => res.json())
+    .then(data => {
+      symbolMappings = data.symbolMappings || {};
+      console.log('📊 Symbol mappings loaded from backend:', Object.keys(symbolMappings).length, 'symbols');
+    })
+    .catch(err => console.log('⚠️ Could not fetch symbol mappings from backend:', err));
+} catch (err) {
+  console.log('⚠️ Error loading symbol mappings:', err);
+}
+
+// Fallback local mapping for essential symbols  
+const fallbackSymbolMappings = {
+  'SAREGAMA': '1252353',
+  'RELIANCE': '738561',
+  'TCS': '2953217',
+  'INFY': '408065',
+  'HDFCBANK': '341249',
+  'ICICIBANK': '1270529',
+  'SBIN': '779521',
+  'BHARTIARTL': '2714625',
+  'ITC': '424961',
+  'LT': '2939649'
+};
+
 // Animation for live tracker masking indicator
 const pulse = keyframes`
   0% { opacity: 0.6; transform: scale(1); }
@@ -26,12 +55,60 @@ const MaskingBadge = styled.span`
 `;
 
 const TrackerContainer = styled.div`
-  background: rgba(0, 0, 0, 0.85);
-  border: 1px solid #333;
-  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin: 20px;
+`;
+
+const AccordionSection = styled.div`
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.4);
   overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+`;
+
+const AccordionHeader = styled.div`
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background: ${props => props.primary 
+    ? 'linear-gradient(135deg, #1e3c72 0%, #2a5298 100%)' 
+    : 'rgba(255, 215, 0, 0.1)'};
+  cursor: pointer;
+  transition: all 0.2s;
+  border-bottom: ${props => props.isExpanded ? '1px solid rgba(255, 255, 255, 0.1)' : 'none'};
+  
+  &:hover {
+    background: ${props => props.primary 
+      ? 'linear-gradient(135deg, #2a5298 0%, #3a6bc8 100%)' 
+      : 'rgba(255, 215, 0, 0.15)'};
+  }
+`;
+
+const AccordionTitle = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  color: ${props => props.primary ? 'white' : '#ffd700'};
+  font-size: 14px;
+`;
+
+const AccordionIcon = styled.div`
+  color: ${props => props.primary ? 'white' : '#ffd700'};
+  font-size: 14px;
+  transition: transform 0.2s;
+  transform: ${props => props.isExpanded ? 'rotate(90deg)' : 'rotate(0deg)'};
+`;
+
+const AccordionContent = styled.div`
+  max-height: ${props => props.isExpanded ? '1000px' : '0'};
+  overflow: hidden;
+  transition: max-height 0.3s ease;
+  padding: ${props => props.isExpanded ? '20px' : '0 20px'};
 `;
 
 const TrackerHeader = styled.div`
@@ -144,475 +221,65 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
   // State to trigger re-renders for countdown timer
   const [currentTime, setCurrentTime] = useState(Date.now());
   
+  // Accordion state
+  const [expandedSections, setExpandedSections] = useState({
+    liveTracker: true,
+    orderBook: true,
+    allStocks: true
+  });
+  
+  const toggleSection = (sectionKey) => {
+    setExpandedSections(prev => ({
+      ...prev,
+      [sectionKey]: !prev[sectionKey]
+    }));
+  };
+  
   // Refs to avoid infinite loops
   const symbolTimestampsRef = useRef({});
   const previousSymbolsRef = useRef(new Set());
   const symbolsAtSelectionRef = useRef({}); // Track which symbols existed when each symbol was selected
   const autoOpenedChartsRef = useRef(new Set()); // Track auto-opened charts to prevent duplicates
   
-  // Complete Symbol to Token mapping (NSE symbols with Kite instrument tokens)
-  const symbolToTokenMap = {
-    '360ONE': '3343617',
-    '3MINDIA': '121345',
-    'ABB': '3329',
-    'ACC': '5633',
-    'ACMESOLAR': '6927617',
-    'AIAENG': '3350017',
-    'APLAPOLLO': '6599681',
-    'AUBANK': '5436929',
-    'AWL': '2076161',
-    'AADHARHFC': '6074625',
-    'AARTIIND': '1793',
-    'AAVAS': '1378561',
-    'ABBOTINDIA': '4583169',
-    'ACE': '3478273',
-    'ADANIENSOL': '2615553',
-    'ADANIENT': '6401',
-    'ADANIGREEN': '912129',
-    'ADANIPORTS': '3861249',
-    'ADANIPOWER': '4451329',
-    'ATGL': '1552897',
-    'ABCAPITAL': '5533185',
-    'ABFRL': '7707649',
-    'ABLBL': '193751809',
-    'ABREL': '160001',
-    'ABSLAMC': '1540609',
-    'AEGISLOG': '10241',
-    'AEGISVOPAK': '193878017',
-    'AFCONS': '6650113',
-    'AFFLE': '2903809',
-    'AJANTPHARM': '2079745',
-    'AKUMS': '6327041',
-    'AKZOINDIA': '375553',
-    'APLLTD': '6483969',
-    'ALKEM': '2995969',
-    'ALKYLAMINE': '1148673',
-    'ALOKINDS': '4524801',
-    'ARE&M': '25601',
-    'AMBER': '303361',
-    'AMBUJACEM': '325121',
-    'ANANDRATHI': '1829121',
-    'ANANTRAJ': '3486721',
-    'ANGELONE': '82945',
-    'APARINDS': '2941697',
-    'APOLLOHOSP': '40193',
-    'APOLLOTYRE': '41729',
-    'APTUS': '1391361',
-    'ASAHIINDIA': '1376769',
-    'ASHOKLEY': '54273',
-    'ASIANPAINT': '60417',
-    'ASTERDM': '386049',
-    'ASTRAZEN': '1436161',
-    'ASTRAL': '3691009',
-    'ATHERENERG': '193957121',
-    'ATUL': '67329',
-    'AUROPHARMA': '70401',
-    'AIIL': '6029569',
-    'DMART': '5097729',
-    'AXISBANK': '1510401',
-    'BASF': '94209',
-    'BEML': '101121',
-    'BLS': '4423425',
-    'BSE': '5013761',
-    'BAJAJ-AUTO': '4267265',
-    'BAJFINANCE': '81153',
-    'BAJAJFINSV': '4268801',
-    'BAJAJHLDNG': '78081',
-    'BAJAJHFL': '6469121',
-    'BALKRISIND': '85761',
-    'BALRAMCHIN': '87297',
-    'BANDHANBNK': '579329',
-    'BANKBARODA': '1195009',
-    'BANKINDIA': '1214721',
-    'MAHABANK': '2912513',
-    'BATAINDIA': '94977',
-    'BAYERCROP': '4589313',
-    'BERGEPAINT': '103425',
-    'BDL': '548865',
-    'BEL': '98049',
-    'BHARATFORG': '108033',
-    'BHEL': '112129',
-    'BPCL': '134657',
-    'BHARTIARTL': '2714625',
-    'BHARTIHEXA': '6013185',
-    'BIKAJI': '3063297',
-    'BIOCON': '2911489',
-    'BSOFT': '1790465',
-    'BLUEDART': '126721',
-    'BLUEJET': '5039617',
-    'BLUESTARCO': '2127617',
-    'BBTC': '97281',
-    'BOSCHLTD': '558337',
-    'FIRSTCRY': '6352385',
-    'BRIGADE': '3887105',
-    'BRITANNIA': '140033',
-    'MAPMYINDIA': '1850113',
-    'CCL': '2931713',
-    'CESC': '160769',
-    'CGPOWER': '194561',
-    'CRISIL': '193793',
-    'CAMPUS': '2396673',
-    'CANFINHOME': '149249',
-    'CANBK': '2763265',
-    'CAPLIPOINT': '999937',
-    'CGCL': '5204225',
-    'CARBORUNIV': '152321',
-    'CASTROLIND': '320001',
-    'CEATLTD': '3905025',
-    'CENTRALBK': '3812865',
-    'CDSL': '5420545',
-    'CENTURYPLY': '3406081',
-    'CERA': '3849985',
-    'CHALET': '2187777',
-    'CHAMBLFERT': '163073',
-    'CHENNPETRO': '524545',
-    'CHOICEIN': '2269697',
-    'CHOLAHLDNG': '5565441',
-    'CHOLAFIN': '175361',
-    'CIPLA': '177665',
-    'CUB': '1459457',
-    'CLEAN': '1292545',
-    'COALINDIA': '5215745',
-    'COCHINSHIP': '5506049',
-    'COFORGE': '2955009',
-    'COHANCE': '4593921',
-    'COLPAL': '3876097',
-    'CAMS': '87553',
-    'CONCORDBIO': '4623361',
-    'CONCOR': '1215745',
-    'COROMANDEL': '189185',
-    'CRAFTSMAN': '730625',
-    'CREDITACC': '1131777',
-    'CROMPTON': '4376065',
-    'CUMMINSIND': '486657',
-    'CYIENT': '1471489',
-    'DCMSHRIRAM': '207617',
-    'DLF': '3771393',
-    'DOMS': '5261057',
-    'DABUR': '197633',
-    'DALBHARAT': '2067201',
-    'DATAPATTNS': '1883649',
-    'DEEPAKFERT': '211713',
-    'DEEPAKNTR': '5105409',
-    'DELHIVERY': '2457345',
-    'DEVYANI': '1375489',
-    'DIVISLAB': '2800641',
-    'DIXON': '5552641',
-    'AGARWALEYE': '7539713',
-    'LALPATHLAB': '2983425',
-    'DRREDDY': '225537',
-    'EIDPARRY': '234497',
-    'EIHOTEL': '235265',
-    'EICHERMOT': '232961',
-    'ELECON': '3492609',
-    'ELGIEQUIP': '239873',
-    'EMAMILTD': '3460353',
-    'EMCURE': '6245889',
-    'ENDURANCE': '4818433',
-    'ENGINERSIN': '1256193',
-    'ERIS': '5415425',
-    'ESCORTS': '245249',
-    'ETERNAL': '1304833',
-    'EXIDEIND': '173057',
-    'NYKAA': '1675521',
-    'FEDERALBNK': '261889',
-    'FACT': '258049',
-    'FINCABLES': '265729',
-    'FINPIPE': '266497',
-    'FSL': '3661825',
-    'FIVESTAR': '3080193',
-    'FORCEMOT': '2962689',
-    'FORTIS': '3735553',
-    'GAIL': '1207553',
-    'GVT&D': '4296449',
-    'GMRAIRPORT': '3463169',
-    'GRSE': '1401601',
-    'GICRE': '70913',
-    'GILLETTE': '403457',
-    'GLAND': '303617',
-    'GLAXO': '295169',
-    'GLENMARK': '1895937',
-    'MEDANTA': '3060737',
-    'GODIGIT': '6092545',
-    'GPIL': '3432705',
-    'GODFRYPHLP': '302337',
-    'GODREJAGRO': '36865',
-    'GODREJCP': '2585345',
-    'GODREJIND': '2796801',
-    'GODREJPROP': '4576001',
-    'GRANULES': '3039233',
-    'GRAPHITE': '151553',
-    'GRASIM': '315393',
-    'GRAVITA': '5256705',
-    'GESHIP': '3526657',
-    'FLUOROCHEM': '3520001',
-    'GUJGASLTD': '2713345',
-    'GMDCLTD': '1332225',
-    'GSPL': '3378433',
-    'HEG': '342017',
-    'HBLENGINE': '3575297',
-    'HCLTECH': '1850625',
-    'HDFCAMC': '1086465',
-    'HDFCBANK': '341249',
-    'HDFCLIFE': '119553',
-    'HFCL': '5619457',
-    'HAPPSTMNDS': '12289',
-    'HAVELLS': '2513665',
-    'HEROMOTOCO': '345089',
-    'HEXT': '7594497',
-    'HSCL': '3669505',
-    'HINDALCO': '348929',
-    'HAL': '589569',
-    'HINDCOPPER': '4592385',
-    'HINDPETRO': '359937',
-    'HINDUNILVR': '356865',
-    'HINDZINC': '364545',
-    'POWERINDIA': '4724993',
-    'HOMEFIRST': '526337',
-    'HONASA': '5072129',
-    'HONAUT': '874753',
-    'HUDCO': '5331201',
-    'HYUNDAI': '6616065',
-    'ICICIBANK': '1270529',
-    'ICICIGI': '5573121',
-    'ICICIPRULI': '4774913',
-    'IDBI': '377857',
-    'IDFCFIRSTB': '2863105',
-    'IFCI': '381697',
-    'IIFL': '3023105',
-    'INOXINDIA': '5275393',
-    'IRB': '3920129',
-    'IRCON': '1276417',
-    'ITCHOTELS': '7488257',
-    'ITC': '424961',
-    'ITI': '428801',
-    'INDGN': '6065409',
-    'INDIACEM': '387841',
-    'INDIAMART': '2745857',
-    'INDIANB': '3663105',
-    'IEX': '56321',
-    'INDHOTEL': '387073',
-    'IOC': '415745',
-    'IOB': '2393089',
-    'IRCTC': '3484417',
-    'IRFC': '519425',
-    'IREDA': '5186817',
-    'IGL': '2883073',
-    'INDUSTOWER': '7458561',
-    'INDUSINDBK': '1346049',
-    'NAUKRI': '3520257',
-    'INFY': '408065',
-    'INOXWIND': '2010113',
-    'INTELLECT': '1517057',
-    'INDIGO': '2865921',
-    'IGIL': '7264769',
-    'IKS': '7200001',
-    'IPCALAB': '418049',
-    'JBCHEPHARM': '441857',
-    'JKCEMENT': '3397121',
-    'JBMA': '2983681',
-    'JKTYRE': '3695361',
-    'JMFINANCIL': '3491073',
-    'JSWCEMENT': '194165761',
-    'JSWENERGY': '4574465',
-    'JSWINFRA': '4869121',
-    'JSWSTEEL': '3001089',
-    'JPPOWER': '3011329',
-    'J&KBANK': '1442049',
-    'JINDALSAW': '774145',
-    'JSL': '2876417',
-    'JINDALSTEL': '1723649',
-    'JIOFIN': '4644609',
-    'JUBLFOOD': '4632577',
-    'JUBLINGREA': '712449',
-    'JUBLPHARMA': '931073',
-    'JWL': '5177345',
-    'JYOTHYLAB': '3877377',
-    'JYOTICNC': '5461505',
-    'KPRMILL': '3817473',
-    'KEI': '3407361',
-    'KPITTECH': '2478849',
-    'KSB': '498945',
-    'KAJARIACER': '462849',
-    'KPIL': '464385',
-    'KALYANKJIL': '756481',
-    'KARURVYSYA': '470529',
-    'KAYNES': '3095553',
-    'KEC': '3394561',
-    'KFINTECH': '3419905',
-    'KIRLOSBROS': '4756737',
-    'KIRLOSENG': '5359617',
-    'KOTAKBANK': '492033',
-    'KIMS': '1240833',
-    'LTF': '6386689',
-    'LTTS': '4752385',
-    'LICHSGFIN': '511233',
-    'LTFOODS': '3536897',
-    'LTM': '4561409',
-    'LT': '2939649',
-    'LATENTVIEW': '1745409',
-    'LAURUSLABS': '4923905',
-    'THELEELA': '193795585',
-    'LEMONTREE': '667137',
-    'LICI': '2426881',
-    'LINDEINDIA': '416513',
-    'LLOYDSME': '4432129',
-    'LODHA': '824321',
-    'LUPIN': '2672641',
-    'MMTC': '4596993',
-    'MRF': '582913',
-    'MGL': '4488705',
-    'MAHSCOOTER': '533761',
-    'MAHSEAMLES': '534529',
-    'M&MFIN': '3400961',
-    'M&M': '519937',
-    'MANAPPURAM': '4879617',
-    'MRPL': '584449',
-    'MANKIND': '3937281',
-    'MARICO': '1041153',
-    'MARUTI': '2815745',
-    'MFSL': '548353',
-    'MAXHEALTH': '5728513',
-    'MAZDOCK': '130305',
-    'METROPOLIS': '2452737',
-    'MINDACORP': '6629633',
-    'MSUMI': '2200577',
-    'MOTILALOFS': '3826433',
-    'MPHASIS': '1152769',
-    'MCX': '7982337',
-    'MUTHOOTFIN': '6054401',
-    'NATCOPHARM': '1003009',
-    'NBCC': '8042241',
-    'NCC': '593665',
-    'NHPC': '4454401',
-    'NLCINDIA': '2197761',
-    'NMDC': '3924993',
-    'NSLNISP': '3630081',
-    'NTPCGREEN': '6957057',
-    'NTPC': '2977281',
-    'NH': '3031041',
-    'NATIONALUM': '1629185',
-    'NAVA': '1027585',
-    'NAVINFLUOR': '3756033',
-    'NESTLEIND': '4598529',
-    'NETWEB': '4462849',
-    'NEULANDLAB': '615937',
-    'NEWGEN': '297985',
-    'NAM-INDIA': '91393',
-    'NIVABUPA': '6936833',
-    'NUVAMA': '4792577',
-    'NUVOCO': '1389057',
-    'OBEROIRLTY': '5181953',
-    'ONGC': '633601',
-    'OIL': '4464129',
-    'OLAELEC': '6342913',
-    'OLECTRA': '2723073',
-    'PAYTM': '1716481',
-    'ONESOURCE': '7481345',
-    'OFSS': '2748929',
-    'POLICYBZR': '1703937',
-    'PCBL': '678145',
-    'PGEL': '6491649',
-    'PIIND': '6191105',
-    'PNBHOUSING': '4840449',
-    'PTCIL': '4270593',
-    'PVRINOX': '3365633',
-    'PAGEIND': '3689729',
-    'PATANJALI': '4359425',
-    'PERSISTENT': '4701441',
-    'PETRONET': '2905857',
-    'PFIZER': '676609',
-    'PHOENIXLTD': '3725313',
-    'PIDILITIND': '681985',
-    'PPLPHARMA': '2962177',
-    'POLYMED': '6583809',
-    'POLYCAB': '2455041',
-    'POONAWALLA': '2919169',
-    'PFC': '3660545',
-    'POWERGRID': '3834113',
-    'PRAJIND': '692481',
-    'PREMIERENE': '6412545',
-    'PRESTIGE': '5197313',
-    'PGHH': '648961',
-    'PNB': '2730497',
-    'RRKABEL': '4752897',
-    'RBLBANK': '4708097',
-    'RECLTD': '3930881',
-    'RHIM': '7977729',
-    'RITES': '962817',
-    'RADICO': '2813441',
-    'RVNL': '2445313',
-    'RAILTEL': '622337',
-    'RAINBOW': '2408449',
-    'RKFORGE': '2921217',
-    'RCF': '733697',
-    'RPOWER': '772609',
-    'RELIANCE': '738561',
-    'RITES': '962817',
-    'RSMML': '2077185',
-    'RSYSTEMS': '6051073',
-    'RTNINDIA': '3705089',
-    'RTNPOWER': '139521',
-    'RCOM': '746753',
-    'SAIL': '758529',
-    'SJVN': '2970881',
-    'SKFINDIA': '773121',
-    'SRF': '857857',
-    'SCHAEFFLER': '4914433',
-    'SCHNEIDER': '775169',
-    'SCI': '778497',
-    'SHANKARA': '1194753',
-    'SHAREINDIA': '5107457',
-    'SHREECEM': '794113',
-    'SHRIRAMFIN': '4078849',
-    'SHYAMMETL': '1027329',
-    'SIEMENS': '784129',
-    'SIL': '819201',
-    'SBIN': '779521',
-    'SONACOMS': '960513',
-    'SPANDANA': '1030913',
-    'SPARC': '793857',
-    'STARHEALTH': '1073921',
-    'SUMICHEM': '2017281',
-    'SUNTECK': '2856961',
-    'SUNTV': '838401',
-    'SUPREMEIND': '847617',
-    'SUZLON': '857601',
-    'SWANENERGY': '1123073',
-    'SYMPHONY': '3985409',
-    'SYNGENE': '4475137',
-    'TVSMOTOR': '900609',
-    'TATACHEM': '5505',
-    'TATACOMM': '1895169',
-    'TATAGOLD': '4359169',
-    'TATAMOTORS': '884737',
-    'TATAPOWER': '877825',
-    'TATASTEEL': '895745',
-    'TCS': '2953217',
-    'TECHM': '3465729',
-    'TEJASNET': '5347329',
-    'THERMAX': '513793',
-    'THYROCARE': '1123329',
-    'TIINDIA': '919297',
-    'TITAN': '897537',
-    'TRIVENI': '936961',
-    'UCOBANK': '2675969',
-    'UBL': '2889473',
-    'UNIONBANK': '5448961',
-    'UPL': '512257',
-    'UTIAMC': '2984193',
-    'VEDL': '784641',
-    'VGUARD': '5334017',
-    'VIPIND': '970753',
-    'VOLTAS': '969473',
-    'WELCORP': '1007105',
-    'WIPRO': '975873',
-    'YESBANK': '3050241',
-    'ZEEL': '975105',
-    'ZOMATO': '1134849'
+  // Responsive grid template columns function
+  const getResponsiveGridTemplate = () => {
+    const screenWidth = window.innerWidth;
+    
+    if (screenWidth <= 768) {
+      // Mobile: Show only essential columns
+      return '80px 50px 60px 80px 90px';
+    } else if (screenWidth <= 1024) {
+      // Tablet: Reduced widths
+      return '90px 55px 70px 70px 90px 90px 100px';
+    } else {
+      // Desktop: Full width
+      return '100px 60px 80px 80px 100px 100px 120px 100px 120px';
+    }
   };
+  
+  // State for responsive grid template
+  const [gridTemplate, setGridTemplate] = useState(() => getResponsiveGridTemplate());
+  
+  // Handle window resize for responsive table
+  useEffect(() => {
+    const handleResize = () => {
+      setGridTemplate(getResponsiveGridTemplate());
+    };
+    
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  
+  // Get dynamic symbol mappings with fallback
+  const getSymbolToTokenMap = useCallback(() => {
+    // Merge backend mappings with fallback mappings
+    const mergedMappings = { ...fallbackSymbolMappings, ...symbolMappings };
+    console.log('📊 Using symbol mappings:', Object.keys(mergedMappings).length, 'symbols available');
+    return mergedMappings;
+  }, []);
 
   // Get all available symbols (including those without live data yet, e.g., just subscribed)
+
   const getAllAvailableSymbols = useCallback(() => {
     if (!tickData) {
       console.log('🔍 No tickData available for symbol detection');
@@ -658,8 +325,8 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     return [];
   }, [realSubscribedSymbols, tickData]);
 
-  // Enhanced chart URL function with better debugging
-  const getKiteChartUrl = (symbol) => {
+  // Enhanced chart URL function with better debugging and symbol matching
+  const getKiteChartUrl = useCallback((symbol) => {
     console.log('🔍 getKiteChartUrl called with:', symbol, 'Type:', typeof symbol);
     
     if (!symbol) {
@@ -668,16 +335,48 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     }
     
     // Clean the symbol (remove NSE: prefix if present)
-    const cleanSymbol = typeof symbol === 'string' ? symbol.replace('NSE:', '') : String(symbol);
+    let cleanSymbol = typeof symbol === 'string' ? symbol.replace('NSE:', '') : String(symbol);
     console.log('🔍 Clean symbol:', cleanSymbol);
     
+    // Get current symbol mappings
+    const symbolToTokenMap = getSymbolToTokenMap();
+    
     // Look up the token from our mapping
-    const token = symbolToTokenMap[cleanSymbol];
-    console.log('🔍 Token lookup for', cleanSymbol, '- Found:', token);
+    let token = symbolToTokenMap[cleanSymbol];
+    
+    // If not found, try common symbol variations and partial matches
+    if (!token) {
+      console.log('🔍 Direct lookup failed, trying variations...');
+      
+      // Try partial matches (for cases like SAREGA -> SAREGAMA)
+      const possibleMatches = Object.keys(symbolToTokenMap).filter(key => 
+        key.startsWith(cleanSymbol) || cleanSymbol.startsWith(key)
+      );
+      
+      if (possibleMatches.length > 0) {
+        console.log('🔍 Found possible matches:', possibleMatches);
+        cleanSymbol = possibleMatches[0]; // Use first match
+        token = symbolToTokenMap[cleanSymbol];
+        console.log('🔍 Using symbol variation:', cleanSymbol, 'Token:', token);
+      }
+    }
+    
+    console.log('🔍 Final token lookup for', cleanSymbol, '- Found:', token);
     
     if (!token) {
       console.log('🔍 ❌ No token found for symbol:', cleanSymbol);
-      console.log('🔍 Available tokens sample:', Object.keys(symbolToTokenMap).slice(0, 10));
+      console.log('🔍 Available symbols:', Object.keys(symbolToTokenMap).slice(0, 20));
+      
+      // Try to find similar symbols
+      const similarSymbols = Object.keys(symbolToTokenMap).filter(key => 
+        key.toLowerCase().includes(cleanSymbol.toLowerCase()) ||
+        cleanSymbol.toLowerCase().includes(key.toLowerCase())
+      ).slice(0, 5);
+      
+      if (similarSymbols.length > 0) {
+        console.log('🔍 Similar symbols found:', similarSymbols);
+      }
+      
       return null;
     }
     
@@ -686,7 +385,7 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     console.log('🔍 ✅ Generated chart URL:', chartUrl);
     
     return chartUrl;
-  };
+  }, [getSymbolToTokenMap]);
 
   // Fetch real subscribed symbols from backend API
   useEffect(() => {
@@ -734,60 +433,85 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
       console.log('🔍 Current selectedSymbol:', selectedSymbol);
       console.log('🔍 Current symbolTimestampsRef:', symbolTimestampsRef.current);
       
-      // Check if current symbol can be changed (2 minutes elapsed or no current symbol)
+      // Check if current symbol can be changed (30 seconds elapsed or no current symbol)
       const currentTime = Date.now();
       const canChangeSymbol = !selectedSymbol || 
         !symbolTimestampsRef.current[selectedSymbol] || 
-        (currentTime - symbolTimestampsRef.current[selectedSymbol] >= 2 * 60 * 1000); // 2 minutes in milliseconds
+        (currentTime - symbolTimestampsRef.current[selectedSymbol] >= 30 * 1000); // 30 seconds in milliseconds
       
       if (canChangeSymbol) {
-        // Switch to the most recently subscribed new symbol
-        const newSymbol = newSymbols[newSymbols.length - 1];
-        console.log('🔍 🔄 Switching to new symbol:', newSymbol);
-        setSelectedSymbol(newSymbol);
+        // PRIORITY 1: Check for trade-ready symbols first
+        console.log('🎯 Checking for trade-ready symbols...');
+        let tradeReadySymbol = null;
         
-        // Auto-open chart in reusable tab for new symbol - Enhanced debugging
-        console.log('🚀 Attempting auto-chart open for:', newSymbol);
-        console.log('🔍 Symbol format check - Original:', newSymbol, 'Type:', typeof newSymbol);
+        // Check all available symbols for trade readiness
+        for (const symbol of allAvailableSymbols) {
+          const tickSymbols = tickData ? Object.keys(tickData) : [];
+          const latestTick = tickSymbols.includes(symbol) ? tickData[symbol] : null;
+          
+          if (latestTick) {
+            const tradeConditions = checkAutoTradeConditions(latestTick);
+            if (tradeConditions?.canTrade) {
+              tradeReadySymbol = symbol;
+              console.log('🎯 ✅ TRADE-READY SYMBOL FOUND:', symbol, 'Conditions:', tradeConditions);
+              break; // Use the first trade-ready symbol found
+            }
+          }
+        }
         
-        const chartUrl = getKiteChartUrl(newSymbol);
+        // PRIORITY 2: Use trade-ready symbol if found, otherwise use new symbol
+        const symbolToSelect = tradeReadySymbol || newSymbols[newSymbols.length - 1];
+        console.log('🔍 🔄 Switching to symbol:', symbolToSelect, tradeReadySymbol ? '(TRADE-READY)' : '(NEW)');
+        setSelectedSymbol(symbolToSelect);
+        
+        // Auto-open chart in reusable tab for selected symbol - Enhanced debugging
+        console.log('🚀 Attempting auto-chart open for:', symbolToSelect);
+        console.log('🔍 Symbol format check - Original:', symbolToSelect, 'Type:', typeof symbolToSelect);
+        
+        const chartUrl = getKiteChartUrl(symbolToSelect);
         console.log('🔍 Chart URL result:', chartUrl);
         
         if (chartUrl) {
-          console.log('🚀 AUTO-OPENING CHART NOW for:', newSymbol, 'URL:', chartUrl);
+          console.log('🚀 AUTO-OPENING CHART NOW for:', symbolToSelect, 'URL:', chartUrl);
           
           // Try to open chart with popup blocker detection
           try {
             const newTab = window.open(chartUrl, 'kite-chart-tab'); // Named tab - reuses same tab
             if (newTab) {
-              console.log('✅ Chart opened in reusable tab for:', newSymbol.replace('NSE:', ''));
+              console.log('✅ Chart opened in reusable tab for:', symbolToSelect.replace('NSE:', ''));
               // Focus the chart tab to bring it to front
               newTab.focus();
+              
+              // Also open the order book panel for the same symbol
+              if (onSymbolClick) {
+                onSymbolClick(symbolToSelect);
+                console.log('🎯 Order book panel opened for:', symbolToSelect.replace('NSE:', ''));
+              }
             } else {
               console.error('❌ Popup blocked! Enable popups for automatic chart opening');
               // Show alert as fallback
-              alert(`📊 Chart blocked by popup blocker!\nClick OK to open chart for ${newSymbol.replace('NSE:', '')}\n\nURL: ${chartUrl}`);
+              alert(`📊 Chart blocked by popup blocker!\nClick OK to open chart for ${symbolToSelect.replace('NSE:', '')}\n\nURL: ${chartUrl}`);
             }
           } catch (error) {
             console.error('❌ Error opening chart:', error);
           }
         } else {
-          console.log('⚠️ No chart URL available for:', newSymbol);
-          console.log('🔍 Debug: Checking token mapping for symbol:', newSymbol.replace('NSE:', ''));
+          console.log('⚠️ No chart URL available for:', symbolToSelect);
+          console.log('🔍 Debug: Checking token mapping for symbol:', symbolToSelect.replace('NSE:', ''));
         }
         
-        // Update timestamp for the new symbol
+        // Update timestamp for the selected symbol
         const newTimestamps = {
           ...symbolTimestampsRef.current,
-          [newSymbol]: currentTime
+          [symbolToSelect]: currentTime
         };
         symbolTimestampsRef.current = newTimestamps;
         
         // Record which symbols existed when this symbol was selected
-        symbolsAtSelectionRef.current[newSymbol] = new Set(allAvailableSymbols);
+        symbolsAtSelectionRef.current[symbolToSelect] = new Set(allAvailableSymbols);
       } else {
-        // Current symbol is still in its 2-minute display period
-        const timeRemaining = 2 * 60 * 1000 - (currentTime - symbolTimestampsRef.current[selectedSymbol]);
+        // Current symbol is still in its 30-second display period
+        const timeRemaining = 30 * 1000 - (currentTime - symbolTimestampsRef.current[selectedSymbol]);
         console.log('🔍 ⏰ Current symbol still has', Math.ceil(timeRemaining / 1000), 'seconds remaining. New symbols will queue.');
       }
     }
@@ -835,6 +559,81 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     
   }, [tickData, selectedSymbol, getAllAvailableSymbols, getSubscribedStocks, getKiteChartUrl]);
   
+  // Continuous trade-ready monitoring - runs independently of new symbol detection
+  useEffect(() => {
+    const checkTradeReadySymbols = () => {
+      const allAvailableSymbols = getAllAvailableSymbols();
+      const currentTime = Date.now();
+      
+      console.log('🎯 CONTINUOUS CHECK: Monitoring trade-ready symbols...');
+      
+      // Check if current symbol can be changed (30 seconds elapsed or no current symbol)
+      const canChangeSymbol = !selectedSymbol || 
+        !symbolTimestampsRef.current[selectedSymbol] || 
+        (currentTime - symbolTimestampsRef.current[selectedSymbol] >= 30 * 1000);
+      
+      if (canChangeSymbol) {
+        // Look for trade-ready symbols
+        let tradeReadySymbol = null;
+        
+        for (const symbol of allAvailableSymbols) {
+          const tickSymbols = tickData ? Object.keys(tickData) : [];
+          const latestTick = tickSymbols.includes(symbol) ? tickData[symbol] : null;
+          
+          if (latestTick) {
+            const tradeConditions = checkAutoTradeConditions(latestTick);
+            if (tradeConditions?.canTrade) {
+              tradeReadySymbol = symbol;
+              console.log('🎯 ✅ CONTINUOUS CHECK: TRADE-READY SYMBOL FOUND:', symbol);
+              break;
+            }
+          }
+        }
+        
+        // If we found a trade-ready symbol and it's different from current
+        if (tradeReadySymbol && tradeReadySymbol !== selectedSymbol) {
+          console.log('🎯 🔄 CONTINUOUS CHECK: Switching to trade-ready symbol:', tradeReadySymbol);
+          setSelectedSymbol(tradeReadySymbol);
+          
+          // Update timestamp
+          symbolTimestampsRef.current[tradeReadySymbol] = currentTime;
+          
+          // Auto-open chart and order panel
+          const chartUrl = getKiteChartUrl(tradeReadySymbol);
+          if (chartUrl) {
+            console.log('🚀 CONTINUOUS CHECK: Opening chart for trade-ready symbol:', tradeReadySymbol);
+            try {
+              const newTab = window.open(chartUrl, 'kite-chart-tab');
+              if (newTab) {
+                newTab.focus();
+                console.log('✅ Chart opened for trade-ready symbol:', tradeReadySymbol.replace('NSE:', ''));
+              }
+            } catch (error) {
+              console.error('❌ Error opening chart for trade-ready symbol:', error);
+            }
+          }
+          
+          // Open order panel
+          if (onSymbolClick) {
+            onSymbolClick(tradeReadySymbol);
+            console.log('🎯 Order panel opened for trade-ready symbol:', tradeReadySymbol.replace('NSE:', ''));
+          }
+        }
+      } else if (selectedSymbol) {
+        const timeRemaining = 30 * 1000 - (currentTime - symbolTimestampsRef.current[selectedSymbol]);
+        console.log('🎯 CONTINUOUS CHECK: Current symbol has', Math.ceil(timeRemaining / 1000), 'seconds remaining');
+      }
+    };
+    
+    // Check immediately
+    checkTradeReadySymbols();
+    
+    // Then check every 5 seconds for trade-ready opportunities
+    const tradeReadyInterval = setInterval(checkTradeReadySymbols, 5000);
+    
+    return () => clearInterval(tradeReadyInterval);
+  }, [tickData, selectedSymbol, getAllAvailableSymbols, getKiteChartUrl, onSymbolClick]);
+  
   // Effect to notify backend about selected symbol changes for masking
   useEffect(() => {
     const updateLiveTrackerSymbol = async () => {
@@ -868,15 +667,15 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     updateLiveTrackerSymbol();
   }, [selectedSymbol]); // Run whenever selectedSymbol changes
   
-  // Effect to automatically check for symbol changes after 2-minute periods
+  // Effect to automatically check for symbol changes after 30-second periods
   useEffect(() => {
     if (!selectedSymbol || !symbolTimestampsRef.current[selectedSymbol]) return;
     
     const timeElapsed = Date.now() - symbolTimestampsRef.current[selectedSymbol];
-    const timeRemaining = 2 * 60 * 1000 - timeElapsed;
+    const timeRemaining = 30 * 1000 - timeElapsed;
     
     if (timeRemaining > 0) {
-      // Set a timer to check for new symbols after the 2-minute period
+      // Set a timer to check for new symbols after the 30-second period
       const timer = setTimeout(() => {
         // Check if there are NEWLY SUBSCRIBED symbols (not existing ones)
         const allSymbols = getAllAvailableSymbols();
@@ -894,10 +693,10 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
             symbolTimestampsRef.current[symbol] > symbolTimestampsRef.current[newest] ? symbol : newest
           );
           
-          console.log('🔍 ⏰ 2 minutes elapsed. Switching to newly subscribed symbol:', newestSymbol);
+          console.log('🔍 ⏰ 30 seconds elapsed. Switching to newly subscribed symbol:', newestSymbol);
           setSelectedSymbol(newestSymbol);
         } else {
-          console.log('🔍 ⏰ 2 minutes elapsed but no newly subscribed symbols found. Staying with current symbol:', selectedSymbol);
+          console.log('🔍 ⏰ 30 seconds elapsed but no newly subscribed symbols found. Staying with current symbol:', selectedSymbol);
         }
       }, timeRemaining);
       
@@ -925,6 +724,9 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
             console.log(`🚨 NEW TRADING OPPORTUNITY DETECTED: ${symbol}`);
             console.log(`📈 AUTO-OPENING CHART for: ${symbol}`);
             
+            // Set as selected symbol for highlighting and live tracker update
+            setSelectedSymbol(symbol);
+            
             // Mark as auto-opened to prevent duplicates
             autoOpenedChartsRef.current.add(symbol);
             
@@ -941,9 +743,6 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
               console.log(`🎯 SST panel opened automatically for: ${symbol}`);
             }
             
-            // Set as selected symbol for highlighting
-            setSelectedSymbol(symbol);
-            
             // Clear the auto-opened flag after 2 minutes to allow re-opening if conditions re-emerge
             setTimeout(() => {
               autoOpenedChartsRef.current.delete(symbol);
@@ -955,7 +754,7 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
         });
       }
     }
-  }, [tickData, getAllAvailableSymbols]); // Re-analyze when tick data updates
+  }, [tickData, getAllAvailableSymbols, getSubscribedStocks, getKiteChartUrl, onSymbolClick]); // Re-analyze when tick data updates
   
   // Effect to update current time every second for countdown display
   useEffect(() => {
@@ -1012,7 +811,7 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     if (!selectedSymbol || !symbolTimestampsRef.current[selectedSymbol]) return null;
     
     const timeElapsed = currentTime - symbolTimestampsRef.current[selectedSymbol];
-    const timeRemaining = 2 * 60 * 1000 - timeElapsed; // 2 minutes in milliseconds
+    const timeRemaining = 30 * 1000 - timeElapsed; // 30 seconds in milliseconds
     
     return timeRemaining > 0 ? Math.ceil(timeRemaining / 1000) : 0; // Return seconds
   };
@@ -1133,416 +932,473 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
 
   return (
     <TrackerContainer>
-      <TrackerHeader>
-        🏛️ Live Stock Tracker - {currentSymbol ? currentSymbol.replace('NSE:', '') : 'No Stock'}
-        {selectedSymbol && (
-          <MaskingBadge>
-            🎯 MASKING ACTIVE
-          </MaskingBadge>
-        )}
-        
-        {/* Market Impact Calculations Display */}
-        {selectedSymbol && stockData?.depth?.marketImpact && (
-          <div style={{ 
-            marginLeft: '15px',
-            padding: '6px 12px',
-            background: 'rgba(255, 215, 0, 0.15)',
-            border: '1px solid rgba(255, 215, 0, 0.4)',
-            borderRadius: '8px',
-            fontSize: '10px',
-            color: '#ffd700',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '10px'
-          }}>
-            <span>📊 Qty: {stockData.depth.marketImpact.quantity?.toLocaleString()}</span>
-            <span>🎯 Levels: {stockData.depth.marketImpact.impactedLevels}</span>
-            <span>📈 Slippage: {stockData.depth.marketImpact.totalSlippage?.toFixed(3)}%</span>
-            <span>💰 Avg Price: ₹{stockData.depth.marketImpact.avgExecutionPrice?.toFixed(2)}</span>
-            <span>📋 L5: {(() => {
-              const analytics = calculateOrderBookAnalytics();
-              return `B:${analytics.l5.bidQtySum.toLocaleString()} | A:${analytics.l5.askQtySum.toLocaleString()}`;
-            })()}</span>
+      {/* Live Tracker Header Section */}
+      <AccordionSection>
+        <AccordionHeader 
+          primary={true}
+          isExpanded={expandedSections.liveTracker}
+          onClick={() => toggleSection('liveTracker')}
+        >
+          <AccordionTitle primary={true}>
+            🏛️ Live Stock Tracker - {selectedSymbol ? selectedSymbol.replace('NSE:', '') : 'No Stock'}
+            {selectedSymbol && (
+              <MaskingBadge>
+                🎯 MASKING ACTIVE
+              </MaskingBadge>
+            )}
+          </AccordionTitle>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+            {(() => {
+              const timeRemaining = getTimeRemaining();
+              return timeRemaining !== null && timeRemaining > 0 ? (
+                <span style={{ 
+                  color: timeRemaining > 60 ? '#ffd700' : timeRemaining > 30 ? '#ff9500' : '#ff6b6b',
+                  fontWeight: '600',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  fontSize: '12px'
+                }}>
+                  ⏰ {Math.floor(timeRemaining / 60)}:{(timeRemaining % 60).toString().padStart(2, '0')}
+                </span>
+              ) : null;
+            })()}
+            {stockData ? (
+              <span style={{ color: '#00ff00', fontSize: '12px' }}>🟢 LIVE</span>
+            ) : (
+              <span style={{ color: '#ff6b6b', fontSize: '12px' }}>🔴 NO DATA</span>
+            )}
+            <AccordionIcon primary={true} isExpanded={expandedSections.liveTracker}>
+              ▶
+            </AccordionIcon>
           </div>
-        )}
-        
-        <span style={{ marginLeft: 'auto', fontSize: '12px', opacity: 0.8, display: 'flex', alignItems: 'center', gap: '15px' }}>
-          {(() => {
-            const timeRemaining = getTimeRemaining();
-            return timeRemaining !== null && timeRemaining > 0 ? (
-              <span style={{ 
-                color: timeRemaining > 60 ? '#ffd700' : timeRemaining > 30 ? '#ff9500' : '#ff6b6b',
-                fontWeight: '600',
-                display: 'flex',
-                alignItems: 'center',
-                gap: '5px'
-              }}>
-                ⏰ {Math.floor(timeRemaining / 60)}:{(timeRemaining % 60).toString().padStart(2, '0')}
-              </span>
-            ) : null;
-          })()}
-          {stockData ? (
-            <span style={{ color: '#00ff00' }}>🟢 LIVE</span>
-          ) : (
-            <span style={{ color: '#ff6b6b' }}>🔴 NO DATA</span>
-          )}
-        </span>
-      </TrackerHeader>
-
-      {stockData || isWaitingForData ? (
-        <TrackerBody>
-          {/* Show waiting message when symbol is subscribed but no data yet */}
-          {isWaitingForData && !stockData ? (
-            <div style={{
-              gridColumn: '1 / -1',
-              textAlign: 'center',
-              padding: '40px 20px',
-              background: 'rgba(255, 215, 0, 0.1)',
-              border: '1px solid rgba(255, 215, 0, 0.3)', 
-              borderRadius: '12px',
-              margin: '20px',
-              color: '#ffd700'
+        </AccordionHeader>
+        <AccordionContent isExpanded={expandedSections.liveTracker}>
+          {/* Market Impact Info */}
+          {selectedSymbol && stockData?.depth?.marketImpact && (
+            <div style={{ 
+              padding: '10px',
+              background: 'rgba(255, 215, 0, 0.05)',
+              border: '1px solid rgba(255, 215, 0, 0.2)',
+              borderRadius: '8px',
+              fontSize: '11px',
+              color: '#ffd700',
+              display: 'grid',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+              gap: '8px',
+              marginBottom: '15px'
             }}>
-              <div style={{ fontSize: '24px', marginBottom: '10px' }}>⏳</div>
-              <div style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>
-                Loading live data for {currentSymbol}...
-              </div>
-              <div style={{ fontSize: '12px', opacity: 0.8 }}>
-                Symbol subscribed successfully - waiting for first tick data from exchange
-              </div>
+              <span>📊 Qty: {stockData.depth.marketImpact.quantity?.toLocaleString()}</span>
+              <span>🎯 Levels: {stockData.depth.marketImpact.impactedLevels}</span>
+              <span>📈 Slippage: {stockData.depth.marketImpact.totalSlippage?.toFixed(3)}%</span>
+              <span>💰 Avg Price: ₹{stockData.depth.marketImpact.avgExecutionPrice?.toFixed(2)}</span>
+              <span>📋 L5: {(() => {
+                const analytics = calculateOrderBookAnalytics();
+                return `B:${analytics.l5.bidQtySum.toLocaleString()} | A:${analytics.l5.askQtySum.toLocaleString()}`;
+              })()}</span>
             </div>
-          ) : null}
-        </TrackerBody>
-      ) : (
-        <NoDataMessage>
-          {hasSymbol ? (
-            <>
-              ⏳ Waiting for live data for {currentSymbol}... <br />
-              <small style={{ color: '#ffd700' }}>Symbol subscribed - first tick data loading...</small>
-            </>
-          ) : (
-            <>
-              📡 Waiting for subscribed stock data... <br />
-              <small>Start scanner to begin receiving tick updates</small>
-            </>
           )}
-          {(() => {
-            const allSymbols = getAllAvailableSymbols();
-            const queuedSymbols = allSymbols.filter(symbol => symbol !== selectedSymbol);
-            
-            if (queuedSymbols.length > 0) {
-              return (
-                <div style={{ marginTop: '10px', fontSize: '11px', color: '#ffd700' }}>
-                  🔄 Available symbols: {queuedSymbols.join(', ')}
+        </AccordionContent>
+      </AccordionSection>
+
+      {/* Order Book Section */}
+      {(stockData || isWaitingForData) && (
+        <AccordionSection>
+          <AccordionHeader 
+            isExpanded={expandedSections.orderBook}
+            onClick={() => toggleSection('orderBook')}
+          >
+            <AccordionTitle>
+              📈 Order Book - {selectedSymbol ? selectedSymbol.replace('NSE:', '') : 'Loading...'}
+            </AccordionTitle>
+            <AccordionIcon isExpanded={expandedSections.orderBook}>
+              ▶
+            </AccordionIcon>
+          </AccordionHeader>
+          <AccordionContent isExpanded={expandedSections.orderBook}>
+            {isWaitingForData && !stockData ? (
+              <div style={{
+                textAlign: 'center',
+                padding: '40px 20px',
+                background: 'rgba(255, 215, 0, 0.1)',
+                border: '1px solid rgba(255, 215, 0, 0.3)', 
+                borderRadius: '12px',
+                color: '#ffd700'
+              }}>
+                <div style={{ fontSize: '24px', marginBottom: '10px' }}>⏳</div>
+                <div style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>
+                  Loading live data for {currentSymbol}...
                 </div>
-              );
-            }
-            return null;
-          })()}
-        </NoDataMessage>
+                <div style={{ fontSize: '12px', opacity: 0.8 }}>
+                  Symbol subscribed successfully - waiting for first tick data from exchange
+                </div>
+              </div>
+            ) : stockData ? (
+              <TrackerBody>
+                <div style={{ padding: '20px', textAlign: 'center', color: '#ffd700' }}>
+                  Order book data for {selectedSymbol} would be displayed here
+                </div>
+              </TrackerBody>
+            ) : null}
+          </AccordionContent>
+        </AccordionSection>
       )}
-      
-      {/* All Subscribed Stocks Market Impact Table */}
-      <div style={{
-        marginTop: '20px',
-        background: 'rgba(0, 0, 0, 0.8)',
-        border: '1px solid rgba(255, 215, 0, 0.3)',
-        borderRadius: '12px',
-        padding: '15px',
-        maxHeight: '400px',
-        overflowY: 'auto'
-      }}>
-        <div style={{
-          fontSize: '16px',
-          fontWeight: '600',
-          color: '#ffd700',
-          marginBottom: '15px',
-          textAlign: 'center',
-          borderBottom: '1px solid rgba(255, 215, 0, 0.3)',
-          paddingBottom: '10px'
-        }}>
-          📊 Current Subscribed Stocks ({getSubscribedStocks().length})
-        </div>
+
+      {/* All Subscribed Stocks Section */}
+      <AccordionSection>
+        <AccordionHeader 
+          isExpanded={expandedSections.allStocks}
+          onClick={() => toggleSection('allStocks')}
+        >
+          <AccordionTitle>
+            📊 All Subscribed Stocks ({getSubscribedStocks().length})
+          </AccordionTitle>
+          <AccordionIcon isExpanded={expandedSections.allStocks}>
+            ▶
+          </AccordionIcon>
+        </AccordionHeader>
+        <AccordionContent isExpanded={expandedSections.allStocks}>
+          {/* Table Header */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: gridTemplate,
+            gap: '8px',
+            padding: '8px',
+            fontSize: '11px',
+            fontWeight: '600',
+            color: '#ffd700',
+            background: 'rgba(255, 215, 0, 0.1)',
+            borderRadius: '6px',
+            marginBottom: '8px'
+          }}>
+            <div>📈 Symbol</div>
+            <div>🔄 Type</div>
+            <div>📊 Qty</div>
+            <div>🎯 Levels</div>
+            <div>🛡️ L3-7 Support</div>
+            {window.innerWidth > 1024 && <div>📈 Slippage</div>}
+            {window.innerWidth > 768 && <div>💰 Avg Price</div>}
+            {window.innerWidth > 1024 && <div>⚖️ L3-7: Imbal</div>}
+            {window.innerWidth > 1024 && <div>🎯 Trade Ready</div>}
+          </div>
         
-        {/* Table Header */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: '100px 60px 80px 80px 100px 120px 140px 120px',
-          gap: '8px',
-          padding: '8px',
-          fontSize: '11px',
-          fontWeight: '600',
-          color: '#ffd700',
-          background: 'rgba(255, 215, 0, 0.1)',
-          borderRadius: '6px',
-          marginBottom: '8px'
-        }}>
-          <div>📈 Symbol</div>
-          <div>🔄 Type</div>
-          <div>📊 Qty</div>
-          <div>🎯 Levels</div>
-          <div>📈 Slippage</div>
-          <div>💰 Avg Price</div>
-          <div>📋 L5: Levels</div>
-          <div>🎯 Trade Ready</div>
-        </div>
-        
-        {/* Table Data - Only Currently Subscribed Symbols with Active Live Data */}
-        {getSubscribedStocks().map(symbol => {
-          console.log('🔍 TABLE RENDER - Processing symbol:', symbol, 'Type:', typeof symbol);
-          
-          // Extract symbol name for tickData lookup (in case it has exchange prefix)
-          const symbolKey = extractSymbolName(symbol);
-          console.log('🔍 TABLE RENDER - Symbol key for lookup:', symbolKey);
-          
-          const symbolData = tickData?.[symbolKey];
-          console.log('🔍 TABLE RENDER - Found symbolData:', !!symbolData, 'Length:', symbolData?.length);
-          
-          const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-          console.log('🔍 TABLE RENDER - Latest tick exists:', !!latestTick);
-          
-          if (latestTick) {
-            console.log('🔍 TABLE RENDER - Tick keys:', Object.keys(latestTick));
-            console.log('🔍 TABLE RENDER - scan_type value:', latestTick.scan_type);
-          }
-          
-          const marketImpact = latestTick?.depth?.marketImpact;
-          const scanType = latestTick?.scan_type || 'UNKNOWN';
-          
-          // Check auto-trade conditions using the new checker
-          const tradeConditions = latestTick ? checkAutoTradeConditions(latestTick) : null;
-          
-          // Log trade conditions for debugging
-          if (tradeConditions && symbol === symbolKey) {
-            console.log(`🎯 TRADE CONDITIONS for ${symbol}:`, {
-              canTrade: tradeConditions.canTrade,
-              reason: tradeConditions.reason,
-              conditions: tradeConditions.conditions,
-              scanType: scanType
-            });
-          }
-          
-          // Debug the data extraction
-          console.log(`🔍 DATA EXTRACTION for ${symbol}:`, {
-            symbolKey: symbolKey,
-            hasSymbolData: !!symbolData,
-            dataLength: symbolData?.length,
-            hasLatestTick: !!latestTick,
-            scanType: scanType,
-            hasMarketImpact: !!marketImpact
-          });
-          
-          // Debug: Log tick data structure
-          if (latestTick && symbol === 'ABFRL') {
-            console.log('🔍 DEBUG TICK DATA for', symbol, ':', {
-              hasTickData: !!latestTick,
-              tickKeys: latestTick ? Object.keys(latestTick) : [],
-              scanType: latestTick?.scan_type,
-              hasDepth: !!latestTick?.depth,
-              depthKeys: latestTick?.depth ? Object.keys(latestTick.depth) : [],
-              hasMarketImpact: !!latestTick?.depth?.marketImpact,
-              marketImpact: latestTick?.depth?.marketImpact
-            });
-          }
-          
-          // Calculate L5 data for this specific symbol
-          const l5Data = latestTick?.depth ? (() => {
-            const { buy = [], sell = [] } = latestTick.depth;
-            const bidQtySum5 = buy.slice(0, 5).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-            const askQtySum5 = sell.slice(0, 5).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-            return { bidQtySum5, askQtySum5 };
-          })() : { bidQtySum5: 0, askQtySum5: 0 };
-          
-          // Color scheme based on scan type
-          const scanColors = {
-            BUY_SCAN: {
-              bg: 'rgba(0, 255, 0, 0.1)',
-              border: 'rgba(0, 255, 0, 0.3)',
-              text: '#00ff00',
-              bidColor: '#00ff00',
-              askColor: '#ffaa00'
-            },
-            SELL_SCAN: {
-              bg: 'rgba(255, 107, 107, 0.1)',
-              border: 'rgba(255, 107, 107, 0.3)',
-              text: '#ff6b6b',
-              bidColor: '#ffaa00',
-              askColor: '#ff6b6b'
-            },
-            UNKNOWN: {
-              bg: 'rgba(255, 255, 255, 0.02)',
-              border: 'transparent',
-              text: '#888',
-              bidColor: '#888',
-              askColor: '#888'
+          {/* Table Data */}
+          {getSubscribedStocks().map(symbol => {
+            console.log('🔍 TABLE RENDER - Processing symbol:', symbol, 'Type:', typeof symbol);
+            
+            const symbolKey = extractSymbolName(symbol);
+            console.log('🔍 TABLE RENDER - Symbol key for lookup:', symbolKey);
+            
+            const symbolData = tickData?.[symbolKey];
+            console.log('🔍 TABLE RENDER - Found symbolData:', !!symbolData, 'Length:', symbolData?.length);
+            
+            const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
+            console.log('🔍 TABLE RENDER - Latest tick exists:', !!latestTick);
+            
+            if (latestTick) {
+              console.log('🔍 TABLE RENDER - Market impact:', !!latestTick.depth?.marketImpact);
             }
-          };
-          
-          const colors = scanColors[scanType] || scanColors.UNKNOWN;
-          
-          return (
-            <div
-              key={symbol}
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '100px 60px 80px 80px 100px 120px 140px 120px',
-                gap: '8px',
-                padding: '8px',
-                fontSize: '10px',
-                background: symbol === selectedSymbol ? 
-                  'rgba(255, 215, 0, 0.2)' : colors.bg,
-                borderRadius: '4px',
-                marginBottom: '4px',
-                border: symbol === selectedSymbol ? 
-                  '1px solid rgba(255, 215, 0, 0.5)' : 
-                  `1px solid ${colors.border}`,
-                cursor: 'pointer'
-              }}
-              onClick={() => {
-                setSelectedSymbol(symbol);
-                const chartUrl = getKiteChartUrl(symbol);
-                if (chartUrl) {
-                  window.open(chartUrl, 'kite-chart-tab');
-                  console.log('🔍 Chart opened for:', symbol);
-                }
-                // Also open the SST side panel (OrderBookPanel) if callback is provided
-                if (onSymbolClick) {
-                  onSymbolClick(symbol);
-                  console.log('🎯 SST side panel opened for:', symbol);
-                }
-              }}
-            >
-              <div style={{ 
-                color: symbol === selectedSymbol ? '#ffd700' : '#79c0ff',
-                fontWeight: symbol === selectedSymbol ? '600' : '400',
-                fontSize: '11px'
-              }}>
-                {symbol.replace('NSE:', '')}
-                {symbol === selectedSymbol && <span style={{ marginLeft: '4px' }}>🎯</span>}
-              </div>
+            
+            const marketImpact = latestTick?.depth?.marketImpact;
+            const scanType = latestTick?.scan_type || 'UNKNOWN';
+            
+            const tradeConditions = latestTick ? checkAutoTradeConditions(latestTick) : null;
+            
+            console.log(`🔍 DATA EXTRACTION for ${symbol}:`, {
+              symbolKey: symbolKey,
+              hasSymbolData: !!symbolData,
+              dataLength: symbolData?.length,
+              hasLatestTick: !!latestTick,
+              scanType: scanType,
+              hasMarketImpact: !!marketImpact
+            });
+            
+            const l5Data = latestTick?.depth ? (() => {
+              const { buy = [], sell = [] } = latestTick.depth;
+              const bidQtySum5 = buy.slice(0, 5).reduce((sum, level) => sum + (level?.quantity || 0), 0);
+              const askQtySum5 = sell.slice(0, 5).reduce((sum, level) => sum + (level?.quantity || 0), 0);
+              return { bidQtySum5, askQtySum5 };
+            })() : { bidQtySum5: 0, askQtySum5: 0 };
+            
+            const l37Data = latestTick?.depth ? (() => {
+              const { buy = [], sell = [] } = latestTick.depth;
+              const bidQtySum37 = buy.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0);
+              const askQtySum37 = sell.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0);
               
-              <div style={{ 
-                color: colors.text,
-                fontSize: '9px',
-                fontWeight: '600'
-              }}>
-                {scanType === 'BUY_SCAN' ? '🟢 BUY' : 
-                 scanType === 'SELL_SCAN' ? '🔴 SELL' : '⚪ UNK'}
-              </div>
+              let imbalance37 = 0;
+              if (scanType === 'BUY_SCAN' && askQtySum37 > 0) {
+                imbalance37 = bidQtySum37 / askQtySum37;
+              } else if (scanType === 'SELL_SCAN' && bidQtySum37 > 0) {
+                imbalance37 = askQtySum37 / bidQtySum37;
+              }
               
-              <div style={{ color: marketImpact ? '#00ff00' : '#888' }}>
-                {marketImpact?.quantity ? marketImpact.quantity.toLocaleString() : '-'}
-              </div>
+              return { bidQtySum37, askQtySum37, imbalance37 };
+            })() : { bidQtySum37: 0, askQtySum37: 0, imbalance37: 0 };
+            
+            const supportData = latestTick?.depth ? (() => {
+              const { buy = [], sell = [] } = latestTick.depth;
               
-              <div style={{ color: marketImpact ? '#00ff00' : '#888' }}>
-                {marketImpact ? (
-                  scanType === 'BUY_SCAN' ? (
-                    // For BUY stocks, show ask-side levels (levels we need to consume)
-                    <span style={{ color: colors.askColor }}>Ask: {marketImpact?.impactedLevels || '-'}</span>
-                  ) : scanType === 'SELL_SCAN' ? (
-                    // For SELL stocks, show bid-side levels (levels that will consume us)
-                    <span style={{ color: colors.bidColor }}>Bid: {marketImpact?.impactedLevels || '-'}</span>
-                  ) : (
-                    // Unknown scan type
-                    marketImpact?.impactedLevels || '-'
-                  )
-                ) : '-'}
-              </div>
+              const currentPrice = latestTick.last_price || 1;
+              const calculatedQuantity = Math.floor(500000 / currentPrice);
               
-              <div style={{ color: marketImpact?.totalSlippage ? 
-                (marketImpact.totalSlippage > 0.5 ? '#ff6b6b' : '#00ff00') : '#888' }}>
-                {marketImpact?.totalSlippage ? 
-                  `${marketImpact.totalSlippage.toFixed(3)}%` : '-'}
-              </div>
+              const askSupport = sell.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0);
+              const askSupportRatio = calculatedQuantity > 0 ? askSupport / calculatedQuantity : 0;
               
-              <div style={{ color: marketImpact ? '#ffd700' : '#888' }}>
-                {marketImpact?.avgExecutionPrice ? 
-                  `₹${marketImpact.avgExecutionPrice.toFixed(2)}` : '-'}
-              </div>
+              const bidSupport = buy.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0);
+              const bidSupportRatio = calculatedQuantity > 0 ? bidSupport / calculatedQuantity : 0;
               
-              <div style={{ color: latestTick ? '#79c0ff' : '#888', fontSize: '9px' }}>
-                {latestTick ? (
-                  <span>
-                    {scanType === 'BUY_SCAN' ? (
-                      // For BUY stocks, show Ask levels (what we need to pay)
-                      <span style={{ color: colors.askColor }}>Ask: {l5Data.askQtySum5}</span>
+              return { askSupport, bidSupport, askSupportRatio, bidSupportRatio, calculatedQuantity };
+            })() : { askSupport: 0, bidSupport: 0, askSupportRatio: 0, bidSupportRatio: 0, calculatedQuantity: 0 };
+            
+            const scanColors = {
+              BUY_SCAN: {
+                bg: 'rgba(0, 255, 0, 0.1)',
+                border: 'rgba(0, 255, 0, 0.3)',
+                text: '#00ff00',
+                bidColor: '#00ff00',
+                askColor: '#ffaa00'
+              },
+              SELL_SCAN: {
+                bg: 'rgba(255, 107, 107, 0.1)',
+                border: 'rgba(255, 107, 107, 0.3)',
+                text: '#ff6b6b',
+                bidColor: '#ffaa00',
+                askColor: '#ff6b6b'
+              },
+              UNKNOWN: {
+                bg: 'rgba(255, 255, 255, 0.02)',
+                border: 'transparent',
+                text: '#888',
+                bidColor: '#888',
+                askColor: '#888'
+              }
+            };
+            
+            const colors = scanColors[scanType] || scanColors.UNKNOWN;
+            
+            return (
+              <div
+                key={symbol}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: gridTemplate,
+                  gap: '8px',
+                  padding: '8px',
+                  fontSize: '10px',
+                  background: symbol === selectedSymbol ? 
+                    'rgba(255, 215, 0, 0.2)' : colors.bg,
+                  borderRadius: '4px',
+                  marginBottom: '4px',
+                  border: symbol === selectedSymbol ? 
+                    '1px solid rgba(255, 215, 0, 0.5)' : 
+                    `1px solid ${colors.border}`,
+                  cursor: 'pointer'
+                }}
+                onClick={() => {
+                  setSelectedSymbol(symbol);
+                  const chartUrl = getKiteChartUrl(symbol);
+                  if (chartUrl) {
+                    window.open(chartUrl, 'kite-chart-tab');
+                    console.log('🔍 Chart opened for:', symbol);
+                  }
+                  if (onSymbolClick) {
+                    onSymbolClick(symbol);
+                    console.log('🎯 SST side panel opened for:', symbol);
+                  }
+                }}
+              >
+                <div style={{ 
+                  color: symbol === selectedSymbol ? '#ffd700' : '#79c0ff',
+                  fontWeight: symbol === selectedSymbol ? '600' : '400',
+                  fontSize: '11px'
+                }}>
+                  {symbol.replace('NSE:', '')}
+                  {symbol === selectedSymbol && <span style={{ marginLeft: '4px' }}>🎯</span>}
+                </div>
+                
+                <div style={{ 
+                  color: colors.text,
+                  fontSize: '9px',
+                  fontWeight: '600'
+                }}>
+                  {scanType === 'BUY_SCAN' ? '🟢 BUY' : 
+                   scanType === 'SELL_SCAN' ? '🔴 SELL' : '⚪ UNK'}
+                </div>
+                
+                <div style={{ color: marketImpact ? '#00ff00' : '#888' }}>
+                  {marketImpact?.quantity ? marketImpact.quantity.toLocaleString() : '-'}
+                </div>
+                
+                <div style={{ color: marketImpact ? '#00ff00' : '#888' }}>
+                  {marketImpact ? (
+                    scanType === 'BUY_SCAN' ? (
+                      <span style={{ color: colors.askColor }}>Ask: {marketImpact?.impactedLevels || '-'}</span>
                     ) : scanType === 'SELL_SCAN' ? (
-                      // For SELL stocks, show Bid levels (what buyers will pay us)
-                      <span style={{ color: colors.bidColor }}>Bid: {l5Data.bidQtySum5}</span>
+                      <span style={{ color: colors.bidColor }}>Bid: {marketImpact?.impactedLevels || '-'}</span>
                     ) : (
-                      // Unknown scan type, show both
-                      <span>
-                        <span style={{ color: colors.bidColor }}>Bid:{l5Data.bidQtySum5}</span>
-                        {' | '}
-                        <span style={{ color: colors.askColor }}>Ask:{l5Data.askQtySum5}</span>
+                      marketImpact?.impactedLevels || '-'
+                    )
+                  ) : '-'}
+                </div>
+                
+                <div style={{ 
+                  color: latestTick ? '#79c0ff' : '#888',
+                  fontSize: '9px',
+                  fontWeight: '600'
+                }}>
+                  {latestTick ? (
+                    scanType === 'BUY_SCAN' ? (
+                      <span style={{ color: colors.askColor }} title="ASK L3-7 support : ratio vs ₹5L quantity">
+                        {supportData.askSupport.toLocaleString()} : {supportData.askSupportRatio.toFixed(1)}
                       </span>
+                    ) : scanType === 'SELL_SCAN' ? (
+                      <span style={{ color: colors.bidColor }} title="BID L3-7 support : ratio vs ₹5L quantity">
+                        {supportData.bidSupport.toLocaleString()} : {supportData.bidSupportRatio.toFixed(1)}
+                      </span>
+                    ) : (
+                      <span>{Math.max(supportData.askSupport, supportData.bidSupport).toLocaleString()} : -</span>
+                    )
+                  ) : '-'}
+                </div>
+                
+                {window.innerWidth > 1024 && (
+                  <div style={{ color: marketImpact?.totalSlippage ? 
+                    (marketImpact.totalSlippage <= 0.05 ? '#00ff00' : 
+                     marketImpact.totalSlippage <= 0.1 ? '#ffa500' : '#ff6b6b') : '#888' }}>
+                    {marketImpact?.totalSlippage ? 
+                      `${marketImpact.totalSlippage.toFixed(3)}%` : '-'}
+                  </div>
+                )}
+                
+                {window.innerWidth > 768 && (
+                  <div style={{ color: marketImpact ? '#ffd700' : '#888' }}>
+                    {marketImpact?.avgExecutionPrice ? 
+                      `₹${marketImpact.avgExecutionPrice.toFixed(2)}` : '-'}
+                  </div>
+                )}
+                
+                {window.innerWidth > 1024 && (
+                  <div style={{ 
+                    color: latestTick ? (
+                      l37Data.imbalance37 >= 1.4 ? '#00ff00' : 
+                      l37Data.imbalance37 >= 1.2 ? '#ffaa00' : '#ff6b6b'
+                    ) : '#888',
+                    fontSize: '9px',
+                    fontWeight: '600'
+                  }}>
+                    {latestTick ? (
+                      l37Data.imbalance37 > 0 ? (
+                        <span title={`${scanType === 'BUY_SCAN' ? 'Bid/Ask' : 'Ask/Bid'} L3-7 ratio`}>
+                          {l37Data.imbalance37.toFixed(2)} ({
+                            scanType === 'BUY_SCAN' 
+                              ? `${l37Data.bidQtySum37.toLocaleString()}, ${l37Data.askQtySum37.toLocaleString()}`
+                              : scanType === 'SELL_SCAN'
+                              ? `${l37Data.askQtySum37.toLocaleString()}, ${l37Data.bidQtySum37.toLocaleString()}`
+                              : `${l37Data.bidQtySum37.toLocaleString()}, ${l37Data.askQtySum37.toLocaleString()}`
+                          })
+                        </span>
+                      ) : '-'
+                    ) : '-'}
+                  </div>
+                )}
+                
+                {window.innerWidth > 1024 && (
+                  <div style={{ 
+                    color: tradeConditions?.canTrade ? '#00ff00' : '#ff6b6b',
+                    fontSize: '9px',
+                    fontWeight: '600'
+                  }}>
+                    {tradeConditions ? (
+                      tradeConditions.canTrade ? (
+                        <span>✅ Ready</span>
+                      ) : (
+                        <span title={tradeConditions.reason}>❌ Wait</span>
+                      )
+                    ) : (
+                      <span>⏳ Loading</span>
                     )}
-                  </span>
-                ) : '-'}
-              </div>
-              
-              {/* Trade Condition Status */}
-              <div style={{ 
-                color: tradeConditions?.canTrade ? '#00ff00' : '#ff6b6b',
-                fontSize: '9px',
-                fontWeight: '600'
-              }}>
-                {tradeConditions ? (
-                  tradeConditions.canTrade ? (
-                    <span>✅ Ready</span>
-                  ) : (
-                    <span title={tradeConditions.reason}>❌ Wait</span>
-                  )
-                ) : (
-                  <span>⏳ Loading</span>
+                  </div>
                 )}
               </div>
-            </div>
-          );
-        })}
-        
-        {/* Summary Stats */}
-        <div style={{
-          marginTop: '15px',
-          padding: '10px',
-          background: 'rgba(255, 215, 0, 0.1)',
-          borderRadius: '6px',
-          borderTop: '1px solid rgba(255, 215, 0, 0.3)'
-        }}>
-          <div style={{ 
-            fontSize: '11px', 
-            color: '#ffd700', 
-            fontWeight: '600',
-            textAlign: 'center',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center'
+            );
+          })}
+          
+          {/* Summary Footer */}
+          <div style={{
+            marginTop: '15px',
+            padding: '10px',
+            background: 'rgba(255, 215, 0, 0.1)',
+            borderRadius: '6px',
+            borderTop: '1px solid rgba(255, 215, 0, 0.3)'
           }}>
-            <div>
-              📈 Total: {getSubscribedStocks().length} symbols
-            </div>
-            <div style={{ display: 'flex', gap: '15px' }}>
-              <span style={{ color: '#00ff00' }}>
-                🟢 Buy: {getSubscribedStocks().filter(symbol => {
-                  const symbolData = tickData?.[symbol];
-                  const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-                  return latestTick?.scan_type === 'BUY_SCAN';
-                }).length}
-              </span>
-              <span style={{ color: '#ff6b6b' }}>
-                🔴 Sell: {getSubscribedStocks().filter(symbol => {
-                  const symbolData = tickData?.[symbol];
-                  const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-                  return latestTick?.scan_type === 'SELL_SCAN';
-                }).length}
-              </span>
-            </div>
-            <div>
-              {selectedSymbol ? ` Live: ${selectedSymbol.replace('NSE:', '')}` : ' No selection'} ⚡
+            <div style={{ 
+              fontSize: '11px', 
+              color: '#ffd700', 
+              fontWeight: '600',
+              textAlign: 'center',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}>
+              <div>
+                📈 Total: {getSubscribedStocks().length} symbols
+              </div>
+              <div style={{ display: 'flex', gap: '15px' }}>
+                <span style={{ color: '#00ff00' }}>
+                  🟢 Buy: {getSubscribedStocks().filter(symbol => {
+                    const symbolData = tickData?.[symbol];
+                    const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
+                    return latestTick?.scan_type === 'BUY_SCAN';
+                  }).length}
+                </span>
+                <span style={{ color: '#ff6b6b' }}>
+                  🔴 Sell: {getSubscribedStocks().filter(symbol => {
+                    const symbolData = tickData?.[symbol];
+                    const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
+                    return latestTick?.scan_type === 'SELL_SCAN';
+                  }).length}
+                </span>
+              </div>
+              <div>
+                {selectedSymbol ? ` Live: ${selectedSymbol.replace('NSE:', '')}` : ' No selection'} ⚡
+              </div>
             </div>
           </div>
-        </div>
-      </div>
+        </AccordionContent>
+      </AccordionSection>
+      
+      {!stockData && !isWaitingForData && (
+        <AccordionSection>
+          <AccordionContent isExpanded={true}>
+            <NoDataMessage>
+              {hasSymbol ? (
+                <>
+                  ⏳ Waiting for live data for {currentSymbol}... <br />
+                  <small style={{ color: '#ffd700' }}>Symbol subscribed - first tick data loading...</small>
+                </>
+              ) : (
+                <>
+                  📡 Waiting for subscribed stock data... <br />
+                  <small>Start scanner to begin receiving tick updates</small>
+                </>
+              )}
+              {(() => {
+                const allSymbols = getAllAvailableSymbols();
+                const queuedSymbols = allSymbols.filter(symbol => symbol !== selectedSymbol);
+                
+                if (queuedSymbols.length > 0) {
+                  return (
+                    <div style={{ marginTop: '10px', fontSize: '11px', color: '#ffd700' }}>
+                      🔄 Available symbols: {queuedSymbols.join(', ')}
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+            </NoDataMessage>
+          </AccordionContent>
+        </AccordionSection>
+      )}
     </TrackerContainer>
   );
 };

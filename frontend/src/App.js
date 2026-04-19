@@ -5,6 +5,7 @@ import WebSocketManager from './utils/WebSocketManager';
 import TradingControlPanel from './components/TradingControlPanel';
 // import TickAnalysisTable from './components/TickAnalysisTable';
 import OrderBookPanel from './components/OrderBookPanel';
+import OrderExecutionPanel from './components/OrderExecutionPanel';
 import SubscribedStockTracker from './components/SubscribedStockTracker';
 // import AlgorithmTutorial from './components/AlgorithmTutorial';
 import './App.css';
@@ -135,6 +136,45 @@ const ScannerSection = styled.div`
   }
 `;
 
+const ScanBlockNotification = styled.div`
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  border: 2px solid #fbbf24;
+  color: white;
+  padding: 20px 24px;
+  border-radius: 16px;
+  margin: 20px;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(245, 158, 11, 0.3);
+  animation: pulse 2s infinite;
+  
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.85; transform: scale(1.02); }
+  }
+`;
+
+const ScanBlockHeader = styled.div`
+  font-size: 18px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+`;
+
+const ScanBlockDetails = styled.div`
+  font-size: 14px;
+  opacity: 0.9;
+  margin-bottom: 8px;
+`;
+
+const ScanBlockTiming = styled.div`
+  font-size: 12px;
+  opacity: 0.8;
+  font-style: italic;
+`;
+
 function App() {
   const [socketConnected, setSocketConnected] = useState(false);
   const [tickData, setTickData] = useState(null);
@@ -142,21 +182,46 @@ function App() {
   const [autoTradingEnabled, setAutoTradingEnabled] = useState(false);
   const [buySignals, setBuySignals] = useState([]);
   const [sellSignals, setSellSignals] = useState([]);
+  const [crossoverBuyStocks, setCrossoverBuyStocks] = useState([]);
+  const [crossbelowSellStocks, setCrossbelowSellStocks] = useState([]);
+  const [allStocks, setAllStocks] = useState([]); // All low-price stocks for frontend filtering
+  const [symbolMappings, setSymbolMappings] = useState({});
   const [lastUpdate, setLastUpdate] = useState('Never');
   const [orderNotification, setOrderNotification] = useState(null);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [kiteLoginStatus, setKiteLoginStatus] = useState('checking');
   const [accessToken, setAccessToken] = useState(null);
   const [isPolling, setIsPolling] = useState(false);
+  const [scanBlockInfo, setScanBlockInfo] = useState({
+    isBlocked: false,
+    reason: null,
+    message: null,
+    candlePosition: null,
+    nextScanAllowedAt: null
+  });
   const [pollCountdown, setPollCountdown] = useState(0);
   const [pollInterval, setPollInterval] = useState(15); // Default 15 seconds
   const [currentTick, setCurrentTick] = useState(null);
   const [symbolTickData, setSymbolTickData] = useState({}); // Group ticks by symbol
+  const [orderExecutions, setOrderExecutions] = useState([]); // Track order attempts and results
+  const [orderPanelOpen, setOrderPanelOpen] = useState(false); // Show/hide order panel
   const [orderBookOpen, setOrderBookOpen] = useState(false);
   const [selectedSymbol, setSelectedSymbol] = useState(null);
   const [lastSpokenMessage, setLastSpokenMessage] = useState('');
   const [lastSpeakTime, setLastSpeakTime] = useState(0);
   const [realSubscriptionCount, setRealSubscriptionCount] = useState(0);
+
+  // Debug state changes
+  useEffect(() => {
+    console.log('🚨 [STATE] orderPanelOpen changed to:', orderPanelOpen);
+  }, [orderPanelOpen]);
+
+  useEffect(() => {
+    console.log('🚨 [STATE] orderExecutions changed, count:', orderExecutions.length);
+    orderExecutions.forEach((order, index) => {
+      console.log(`  ${index + 1}. ${order.symbol} ${order.type} ${order.status}`);
+    });
+  }, [orderExecutions]);
 
   // Refs
   const pollIntervalRef = useRef(null);
@@ -199,6 +264,118 @@ function App() {
     setOrderBookOpen(false);
     setSelectedSymbol(null);
   }, []);
+
+  // Handle order execution panel
+  const handleClearOrderExecutions = useCallback(() => {
+    setOrderExecutions([]);
+    console.log('🗑️ [ORDER] Order executions cleared');
+    console.log('🎯 [PANEL] Order executions cleared, panel remains open');
+  }, []);
+
+  const handleCloseOrderPanel = useCallback(() => {
+    setOrderPanelOpen(false);
+    console.log('🎯 [PANEL] Order panel closed manually');
+  }, []);
+
+  // Handle updating order executions from external components
+  const handleUpdateOrderExecutions = useCallback((updateFn) => {
+    console.log('🔧 [STATE] handleUpdateOrderExecutions called');
+    setOrderExecutions(prev => {
+      const updated = updateFn(prev);
+      console.log('🔧 [STATE] Order executions updated:', prev.length, '→', updated.length);
+      return updated;
+    });
+  }, []);
+
+  // Load symbol mappings from backend API
+  useEffect(() => {
+    const loadSymbolMappings = async () => {
+      try {
+        console.log('🔍 Loading symbol mappings from backend...');
+        const response = await fetch('http://localhost:5000/api/symbol-mappings');
+        if (response.ok) {
+          const data = await response.json();
+          if (data.success && data.symbolMappings) {
+            setSymbolMappings(data.symbolMappings);
+            console.log('✅ Symbol mappings loaded:', Object.keys(data.symbolMappings).length, 'symbols');
+            console.log('📊 Sample symbols:', Object.keys(data.symbolMappings).slice(0, 10));
+          } else {
+            console.error('❌ Invalid response format from symbol mappings API');
+          }
+        } else {
+          console.error('❌ Failed to fetch symbol mappings, status:', response.status);
+        }
+      } catch (error) {
+        console.error('❌ Error loading symbol mappings:', error);
+      }
+    };
+
+    loadSymbolMappings();
+  }, []);
+
+  // Helper function to open named chart tabs
+  const openNamedChart = useCallback((symbol, chartType = 'main') => {
+    // Fallback mappings only if backend failed
+    const fallbackMappings = {
+      'RELIANCE': '738561',
+      'TCS': '2953217',
+      'INFY': '408065',
+      'HDFCBANK': '341249',
+      'ICICIBANK': '1270529'
+    };
+    
+    // Use loaded mappings or fallback
+    const mappingsToUse = Object.keys(symbolMappings).length > 0 ? symbolMappings : fallbackMappings;
+    const mappingCount = Object.keys(mappingsToUse).length;
+    
+    console.log(`🔍 Chart request for symbol: "${symbol}" using ${mappingCount} mappings`);
+    
+    const cleanSymbol = symbol.replace('NSE:', '').replace('BSE:', '');
+    const token = mappingsToUse[cleanSymbol];
+    
+    console.log(`   Clean symbol: "${cleanSymbol}" → Token: ${token || 'NOT FOUND'}`);
+    
+    if (token) {
+      const chartUrl = `https://kite.zerodha.com/markets/ext/chart/web/tvc/NSE/${cleanSymbol}/${token}`;
+      const tabName = 'kite-chart-tab'; // Use same simple tab name as StockResultsTable
+      
+      console.log(`🚀 Opening ${chartType} Kite chart for ${cleanSymbol}`);
+      
+      try {
+        const newTab = window.open(chartUrl, tabName);
+        if (newTab) {
+          newTab.focus();
+          console.log(`✅ Kite chart opened in tab: ${tabName}`);
+        } else {
+          console.error('❌ Kite chart blocked by popup blocker');
+          alert(`📊 Chart blocked!\nSymbol: ${cleanSymbol}\nEnable popups to open Kite charts.`);
+        }
+      } catch (error) {
+        console.error('❌ Error opening Kite chart:', error);
+      }
+    } else {
+      console.warn(`⚠️ Symbol "${cleanSymbol}" not found in ${mappingCount} mappings`);
+      
+      // TradingView fallback
+      const tradingViewUrl = `https://in.tradingview.com/chart/?symbol=NSE%3A${cleanSymbol}`;
+      const tabName = 'kite-chart-tab'; // Use same simple tab name for consistency
+      
+      console.log(`📈 Opening TradingView fallback for ${cleanSymbol}`);
+      
+      try {
+        const newTab = window.open(tradingViewUrl, tabName);
+        if (newTab) {
+          newTab.focus();
+          console.log(`✅ TradingView chart opened: ${tabName}`);
+        } else {
+          alert(`📊 Chart blocked!\nSymbol: ${cleanSymbol}\nTried TradingView fallback but popup was blocked.`);
+        }
+      } catch (error) {
+        console.error('❌ Error opening TradingView chart:', error);
+        alert(`📊 No chart available for ${cleanSymbol}\nBoth Kite and TradingView failed.\nSymbol mappings loaded: ${mappingCount}`);
+      }
+    }
+  }, [symbolMappings]);
 
   // Check Kite login status
   useEffect(() => {
@@ -253,7 +430,7 @@ function App() {
   }, []);
 
   // Kite login function
-  const openKiteLogin = () => {
+  const openKiteLogin = useCallback(() => {
     console.log('🔐 Opening Kite login...');
     
     // Open OAuth login in new window
@@ -327,7 +504,7 @@ function App() {
         window.removeEventListener('message', handleMessage);
       }
     }, 1000);
-  };
+  }, []); // No dependencies needed for openKiteLogin
 
   // Speech synthesis function with duplicate prevention
   const speak = useCallback((text) => {
@@ -376,6 +553,17 @@ function App() {
 
   // Auto trading via SEPARATE routes
   const executeAutoTradingViaSeparateRoutes = useCallback(async (buyStocks, sellStocks) => {
+    console.log('🎯 [AUTO-TRADE] === FUNCTION CALLED ===');
+    console.log('🎯 [AUTO-TRADE] autoTradingEnabled:', autoTradingEnabled);
+    console.log('🎯 [AUTO-TRADE] buyStocks:', buyStocks);
+    console.log('🎯 [AUTO-TRADE] sellStocks:', sellStocks);
+    
+    // Check if auto trading is enabled first
+    if (!autoTradingEnabled) {
+      console.log('⚠️ [AUTO-TRADE] Auto trading is DISABLED - skipping order attempts');
+      return;
+    }
+    
     const token = accessToken || localStorage.getItem('kite_access_token');
     if (!token || token === 'demo_token') {
       console.log('⚠️ No valid access token for auto trading');
@@ -392,7 +580,34 @@ function App() {
     // Process BUY orders first (prefer buy signals)
     if (buyStocks.length > 0) {
       const stock = buyStocks[0]; // Take first buy signal only
-      console.log(`📈 Making SEPARATE call to /api/buy-order for ${stock.s}`);
+      const symbol = stock.s || stock.symbol;
+      
+      // Add order attempt to tracking
+      const orderAttempt = {
+        id: Date.now(),
+        symbol: symbol,
+        type: 'BUY',
+        status: 'ATTEMPTING',
+        timestamp: new Date().toISOString(),
+        ltp: stock.d?.[0] || 0,
+        route: '/api/buy-order'
+      };
+      
+      console.log('🎯 [AUTO-TRADE] Creating BUY order attempt:', orderAttempt);
+      
+      setOrderExecutions(prev => {
+        const updated = [...prev, orderAttempt];
+        console.log('🎯 [AUTO-TRADE] Order executions updated:', prev.length, '→', updated.length);
+        return updated;
+      });
+      
+      setOrderPanelOpen(true); // Auto-open order panel
+      console.log('🎯 [PANEL] Order panel opened automatically for BUY attempt:', symbol);
+      console.log('🎯 [PANEL] Current orderPanelOpen state will be:', true);
+      
+      console.log(`🚀 [DEV] ROUTE CALL: POST /api/buy-order`);
+      console.log(`📈 [ORDER] Attempting BUY order for ${symbol} at ₹${orderAttempt.ltp}`);
+      console.log(`📊 [ORDER] Order ID: ${orderAttempt.id}`);
       
       try {
         const buyResponse = await fetch('http://localhost:5000/api/buy-order', {
@@ -417,9 +632,23 @@ function App() {
         });
 
         const buyResult = await buyResponse.json();
-        console.log('📈 BUY route response:', buyResult);
-        console.log('🔍 BUY RESPONSE QUANTITY DEBUG:', buyResult.quantity);
-        console.log('🔍 BUY RESPONSE FULL:', JSON.stringify(buyResult, null, 2));
+        console.log(`✅ [DEV] ROUTE RESPONSE: /api/buy-order - Status: ${buyResult.success ? 'SUCCESS' : 'FAILED'}`);
+        console.log('📈 [ORDER] BUY route response:', buyResult);
+        console.log('🔍 [ORDER] BUY RESPONSE QUANTITY DEBUG:', buyResult.quantity);
+        
+        // Update order tracking
+        setOrderExecutions(prev => prev.map(order => 
+          order.id === orderAttempt.id ? {
+            ...order,
+            status: buyResult.success ? 'SUCCESS' : 'FAILED',
+            orderId: buyResult.order_id,
+            price: buyResult.price,
+            quantity: buyResult.quantity,
+            message: buyResult.message,
+            error: buyResult.error,
+            completedAt: new Date().toISOString()
+          } : order
+        ));
 
         if (buyResult.success) {
           ordersPlaced++;
@@ -452,7 +681,19 @@ function App() {
         }
       } catch (error) {
         orderErrors++;
-        console.error('❌ BUY route call failed:', error);
+        console.error(`❌ [DEV] ROUTE ERROR: /api/buy-order - ${error.message}`);
+        console.error('❌ [ORDER] BUY route call failed:', error);
+        
+        // Update order tracking with error
+        setOrderExecutions(prev => prev.map(order => 
+          order.id === orderAttempt.id ? {
+            ...order,
+            status: 'ERROR',
+            error: error.message || 'Network error',
+            completedAt: new Date().toISOString()
+          } : order
+        ));
+        
         // Show network error notification
         setOrderNotification({
           type: 'buy',
@@ -470,7 +711,34 @@ function App() {
     // Process SELL orders if no buy signals
     else if (sellStocks.length > 0) {
       const stock = sellStocks[0]; // Take first sell signal only
-      console.log(`📉 Making SEPARATE call to /api/sell-order for ${stock.s}`);
+      const symbol = stock.s || stock.symbol;
+      
+      // Add order attempt to tracking
+      const orderAttempt = {
+        id: Date.now(),
+        symbol: symbol,
+        type: 'SELL',
+        status: 'ATTEMPTING',
+        timestamp: new Date().toISOString(),
+        ltp: stock.d?.[0] || 0,
+        route: '/api/sell-order'
+      };
+      
+      console.log('🎯 [AUTO-TRADE] Creating SELL order attempt:', orderAttempt);
+      
+      setOrderExecutions(prev => {
+        const updated = [...prev, orderAttempt];
+        console.log('🎯 [AUTO-TRADE] Order executions updated:', prev.length, '→', updated.length);
+        return updated;
+      });
+      
+      setOrderPanelOpen(true); // Auto-open order panel
+      console.log('🎯 [PANEL] Order panel opened automatically for SELL attempt:', symbol);
+      console.log('🎯 [PANEL] Current orderPanelOpen state will be:', true);
+      
+      console.log(`🚀 [DEV] ROUTE CALL: POST /api/sell-order`);
+      console.log(`📉 [ORDER] Attempting SELL order for ${symbol} at ₹${orderAttempt.ltp}`);
+      console.log(`📊 [ORDER] Order ID: ${orderAttempt.id}`);
       
       try {
         const sellResponse = await fetch('http://localhost:5000/api/sell-order', {
@@ -495,9 +763,23 @@ function App() {
         });
 
         const sellResult = await sellResponse.json();
-        console.log('📉 SELL route response:', sellResult);
-        console.log('🔍 SELL RESPONSE QUANTITY DEBUG:', sellResult.quantity);
-        console.log('🔍 SELL RESPONSE FULL:', JSON.stringify(sellResult, null, 2));
+        console.log(`✅ [DEV] ROUTE RESPONSE: /api/sell-order - Status: ${sellResult.success ? 'SUCCESS' : 'FAILED'}`);
+        console.log('📉 [ORDER] SELL route response:', sellResult);
+        console.log('🔍 [ORDER] SELL RESPONSE QUANTITY DEBUG:', sellResult.quantity);
+        
+        // Update order tracking
+        setOrderExecutions(prev => prev.map(order => 
+          order.id === orderAttempt.id ? {
+            ...order,
+            status: sellResult.success ? 'SUCCESS' : 'FAILED',
+            orderId: sellResult.order_id,
+            price: sellResult.price,
+            quantity: sellResult.quantity,
+            message: sellResult.message,
+            error: sellResult.error,
+            completedAt: new Date().toISOString()
+          } : order
+        ));
 
         if (sellResult.success) {
           ordersPlaced++;
@@ -530,7 +812,19 @@ function App() {
         }
       } catch (error) {
         orderErrors++;
-        console.error('❌ SELL route call failed:', error);
+        console.error(`❌ [DEV] ROUTE ERROR: /api/sell-order - ${error.message}`);
+        console.error('❌ [ORDER] SELL route call failed:', error);
+        
+        // Update order tracking with error
+        setOrderExecutions(prev => prev.map(order => 
+          order.id === orderAttempt.id ? {
+            ...order,
+            status: 'ERROR',
+            error: error.message || 'Network error',
+            completedAt: new Date().toISOString()
+          } : order
+        ));
+        
         // Show network error notification
         setOrderNotification({
           type: 'sell',
@@ -560,9 +854,10 @@ function App() {
   // Scanner data fetch function
   const fetchScannerData = useCallback(async () => {
     try {
-      // STEP 1: Call scanner endpoint for data ONLY (no auto trading)
-      console.log('🔍 Step 1: Fetching scanner data only...');
-      const response = await fetch('http://localhost:5000/api/all-scanners', {
+      // STEP 1: Call low-price-scanners route only (all-scanners route is commented out)
+      console.log('🔍 Step 1: Fetching low price scanner data with buy/sell classification...');
+      
+      const lowPriceResponse = await fetch('http://localhost:5000/api/low-price-scanners', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -573,40 +868,115 @@ function App() {
         })
       });
       
-      if (response.ok) {
-        const data = await response.json();
-        console.log('📊 Scanner response received:');
-        console.log('   - Full data:', data);
-        console.log('   - Data type:', typeof data);
-        console.log('   - Data keys:', Object.keys(data));
+      if (lowPriceResponse.ok) {
+        const lowPriceData = await lowPriceResponse.json();
         
-        // Extract buy and sell stocks from the consolidated response
-        const buyStocks = data.buyStocks || [];
-        const sellStocks = data.sellStocks || [];
+        console.log('📊 Low price scanner response received:');
+        console.log('   - Full data:', lowPriceData);
         
-        console.log('📊 Extracted signals:');
-        console.log(`   - buyStocks: ${buyStocks.length} items`);
-        console.log(`   - sellStocks: ${sellStocks.length} items`);
-        if (buyStocks.length > 0) console.log('   - First buy stock:', buyStocks[0]);
-        if (sellStocks.length > 0) console.log('   - First sell stock:', sellStocks[0]);
+        // Check if low price scanning was blocked due to timing constraints
+        if (lowPriceData.success === false && lowPriceData.reason === 'last_two_minutes_block') {
+          console.log('⏸️ LOW PRICE SCANNER BLOCKED:', lowPriceData.message);
+          setBuySignals([]);
+          setSellSignals([]);
+          
+          // Set scan blocking state for UI display
+          setScanBlockInfo({
+            isBlocked: true,
+            reason: lowPriceData.reason,
+            message: lowPriceData.message,
+            candlePosition: lowPriceData.candlePosition,
+            nextScanAllowedAt: lowPriceData.nextScanAllowedAt
+          });
+          
+          return; // Exit early, don't process signals
+        }
         
+        // Clear scan blocking state if scan was successful
+        setScanBlockInfo({
+          isBlocked: false,
+          reason: null,
+          message: null,
+          candlePosition: null,
+          nextScanAllowedAt: null
+        });
+        
+        // Store all stocks for frontend filtering
+        setAllStocks(lowPriceData.allStocks || []);
+        console.log(`📊 All stocks for filtering: ${lowPriceData.allStocks?.length || 0}`);
+        
+        // Extract buy/sell classified results from low price scanner
+        const buyStocks = lowPriceData.buyStocks || [];
+        const sellStocks = lowPriceData.sellStocks || [];
+        
+        console.log('📊 Low price scanner classification results:');
+        console.log(`   - Buy signals: ${buyStocks.length}`);
+        console.log(`   - Sell signals: ${sellStocks.length}`);
+        console.log(`   - Total stocks scanned: ${lowPriceData.totalStocks || 0}`);
+        
+        // Map buy stocks to TradingDashboard format
         setBuySignals(buyStocks.map(stock => ({
-          symbol: stock.s,
-          ltp: stock.d[0], // close price
-          volume: stock.d[1] || 0,
-          change_percent: ((stock.d[0] - stock.d[1]) / stock.d[1] * 100) || 0
+          symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
+          ltp: stock.ltp || stock.d?.[0] || 0, // close price
+          volume: stock.volume || stock.d?.[1] || 0,
+          change_percent: stock.change_percent || 0,
+          // Technical indicators for enhanced display
+          open15: stock.open15 || stock.d?.[4] || 0, // open|15
+          ema3_15: stock.ema3_15 || stock.d?.[30] || 0, // EMA3|15
+          macd5: stock.macd5 || stock.d?.[9] || 0, // MACD|5
+          signal5: stock.signal5 || stock.d?.[10] || 0, // Signal|5
+          adx5: stock.adx5 || stock.d?.[11] || 0, // ADX|5
+          signalStrength: stock.signalStrength || 75 // Default strength for buy signals
         })));
         
+        // Map sell stocks to TradingDashboard format  
         setSellSignals(sellStocks.map(stock => ({
-          symbol: stock.s,
-          ltp: stock.d[0], // close price  
-          volume: stock.d[1] || 0,
-          change_percent: ((stock.d[0] - stock.d[1]) / stock.d[1] * 100) || 0
+          symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
+          ltp: stock.ltp || stock.d?.[0] || 0, // close price
+          volume: stock.volume || stock.d?.[1] || 0,
+          change_percent: stock.change_percent || 0,
+          // Technical indicators for enhanced display
+          open15: stock.open15 || stock.d?.[4] || 0, // open|15
+          ema3_15: stock.ema3_15 || stock.d?.[30] || 0, // EMA3|15
+          macd5: stock.macd5 || stock.d?.[9] || 0, // MACD|5
+          signal5: stock.signal5 || stock.d?.[10] || 0, // Signal|5
+          adx5: stock.adx5 || stock.d?.[11] || 0, // ADX|5
+          signalStrength: stock.signalStrength || 75 // Default strength for sell signals
+        })));
+        
+        // Extract crossover data if available
+        const crossoverData = lowPriceData.crossover || {};
+        const rawCrossoverBuyStocks = crossoverData.buyResults?.rawCrossoverStocks || [];
+        const rawCrossbelowSellStocks = crossoverData.sellResults?.rawCrossbelowStocks || [];
+        
+        console.log('📊 Crossover scanner results:');
+        console.log(`   - Crossover buy stocks: ${rawCrossoverBuyStocks.length}`);
+        console.log(`   - Crossbelow sell stocks: ${rawCrossbelowSellStocks.length}`);
+        
+        // Map crossover stocks to display format
+        setCrossoverBuyStocks(rawCrossoverBuyStocks.map(stock => ({
+          symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
+          ltp: stock.ltp || stock.d?.[0] || 0,
+          volume: stock.volume || stock.d?.[1] || 0,
+          change_percent: stock.change_percent || 0,
+          ema3_1: stock.ema3_1 || stock.d?.[22] || 0, // EMA3|1
+          ema5_1: stock.ema5_1 || stock.d?.[23] || 0, // EMA5|1
+          signalStrength: 80 // Crossover strength
+        })));
+        
+        setCrossbelowSellStocks(rawCrossbelowSellStocks.map(stock => ({
+          symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
+          ltp: stock.ltp || stock.d?.[0] || 0,
+          volume: stock.volume || stock.d?.[1] || 0,
+          change_percent: stock.change_percent || 0,
+          ema3_1: stock.ema3_1 || stock.d?.[22] || 0, // EMA3|1
+          ema5_1: stock.ema5_1 || stock.d?.[23] || 0, // EMA5|1
+          signalStrength: 80 // Crossbelow strength
         })));
         
         setLastUpdate(new Date().toLocaleTimeString());
         
-        // STEP 2: If auto trading enabled, make SEPARATE route calls
+        // STEP 2: If auto trading enabled, make SEPARATE route calls with low-price results
         console.log(`📊 Debug Auto Trading Check:`);
         console.log(`   - autoTradingEnabled: ${autoTradingEnabled}`);
         console.log(`   - buyStocks.length: ${buyStocks.length}`);
@@ -615,8 +985,13 @@ function App() {
         console.log(`   - kiteLoginStatus: ${kiteLoginStatus}`);
         
         if (autoTradingEnabled && (buyStocks.length > 0 || sellStocks.length > 0) && kiteLoginStatus === 'logged-in') {
-          console.log('🚀 Step 2: Auto trading enabled - making SEPARATE route calls...');
+          console.log('🚀 Step 2: Auto trading enabled - making SEPARATE route calls with low-price results...');
+          console.log('🎯 [AUTO-TRADE] About to call executeAutoTradingViaSeparateRoutes with:', {
+            buyStocks: buyStocks.map(s => s.s || s.symbol),
+            sellStocks: sellStocks.map(s => s.s || s.symbol)
+          });
           await executeAutoTradingViaSeparateRoutes(buyStocks, sellStocks);
+          console.log('🎯 [AUTO-TRADE] executeAutoTradingViaSeparateRoutes completed');
         } else {
           console.log('⚠️ Auto trading not triggered because:');
           if (!autoTradingEnabled) console.log('   - Auto trading is DISABLED');
@@ -624,9 +999,9 @@ function App() {
           if (kiteLoginStatus !== 'logged-in') console.log(`   - Kite login status: ${kiteLoginStatus} (need logged-in)`);
         }
         
-        // Regular voice alert for scanner results
+        // Voice alert for low-price scanner results
         if (voiceEnabled && (buyStocks.length > 0 || sellStocks.length > 0)) {
-          speak(`Scanner found ${buyStocks.length} buy signals and ${sellStocks.length} sell signals`);
+          speak(`Low price scanner found ${buyStocks.length} buy signals and ${sellStocks.length} sell signals from stocks under ₹4000`);
         }
       }
     } catch (error) {
@@ -682,6 +1057,37 @@ function App() {
         setBuySignals(data.buySignals || []);
         setSellSignals(data.sellSignals || []);
         setLastUpdate(new Date().toLocaleTimeString());
+      } else if (data.type === 'order_charts') {
+        // Auto-open charts for successful orders
+        console.log('📊 Auto-opening charts for successful orders:', data.charts);
+        if (data.charts && Array.isArray(data.charts)) {
+          const chartCount = data.charts.length;
+          
+          // Voice notification about charts opening
+          if (voiceEnabled && chartCount > 0) {
+            speak(`Opening ${chartCount} chart${chartCount > 1 ? 's' : ''} for successful orders`);
+          }
+          
+          // Visual notification
+          setOrderNotification({
+            type: 'success',   
+            title: '📊 Charts Auto-Opening',
+            message: `Opening ${chartCount} chart${chartCount > 1 ? 's' : ''} for successful orders`,
+            details: data.charts.map(c => `${c.type} ${c.symbol}`).join(', '),
+            timestamp: new Date().toLocaleTimeString()
+          });
+          
+          // Clear notification after 5 seconds
+          setTimeout(() => setOrderNotification(null), 5000);
+          
+          data.charts.forEach((chart, index) => {
+            // Small delay between opening multiple tabs to avoid popup blocking
+            setTimeout(() => {
+              console.log(`🚀 Opening chart for ${chart.type} ${chart.symbol}: ${chart.chartUrl}`);
+              window.open(chart.chartUrl, '_blank');
+            }, index * 500); // 500ms delay between each tab
+          });
+        }
       } else if (data.type === 'subscription_update') {
         // Update real subscription count from backend
         console.log('📡 Subscription update received:', data.subscribed_count);
@@ -805,29 +1211,7 @@ function App() {
     }
   }, [pollInterval, fetchScannerData]); // Add fetchScannerData dependency to get latest version
 
-  const togglePolling = () => {
-    if (isPolling) {
-      console.log('⏹️ Stopping polling');
-      setIsPolling(false);
-      setPollCountdown(0);
-      
-      if (pollIntervalRef.current) {
-        clearInterval(pollIntervalRef.current);
-        pollIntervalRef.current = null;
-      }
-      if (countdownIntervalRef.current) {
-        clearInterval(countdownIntervalRef.current);
-        countdownIntervalRef.current = null;
-      }
-      speak('Polling stopped');
-    } else {
-      console.log('▶️ Starting polling');
-      startPolling();
-      speak('Polling started');
-    }
-  };
-
-  const startPolling = () => {
+  const startPolling = useCallback(() => {
     console.log(`🔄 Starting scanner polling with ${pollInterval}s interval...`);
     console.log('📊 Tick data should start flowing when symbols are scanned and subscribed via KiteTicker');
     
@@ -859,17 +1243,54 @@ function App() {
       fetchScannerData();
       setPollCountdown(pollInterval); // Reset countdown
     }, pollInterval * 1000);
-  };
+  }, [pollInterval, fetchScannerData]);
 
-  const toggleAutoTrading = () => {
+  const togglePolling = useCallback(() => {
+    if (isPolling) {
+      console.log('⏹️ Stopping polling');
+      setIsPolling(false);
+      setPollCountdown(0);
+      
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
+      }
+      speak('Polling stopped');
+    } else {
+      console.log('▶️ Starting polling');
+      startPolling();
+      speak('Polling started');
+    }
+  }, [isPolling, startPolling, speak]);
+
+  const toggleAutoTrading = useCallback(() => {
     setAutoTradingEnabled(!autoTradingEnabled);
     speak(autoTradingEnabled ? 'Auto trading disabled' : 'Auto trading enabled');
-  };
+  }, [autoTradingEnabled, speak]);
 
   // Clear order notification
-  const clearOrderNotification = () => {
+  const clearOrderNotification = useCallback(() => {
     setOrderNotification(null);
-  };
+  }, []);
+
+  // Memoize inline callback functions
+  const handleToggleVoice = useCallback(() => {
+    setVoiceEnabled(!voiceEnabled);
+  }, [voiceEnabled]);
+
+  const handleOpenOrderPanel = useCallback(() => {
+    console.log('🎯 [PANEL] onOpenOrderPanel called from TradingControlPanel');
+    setOrderPanelOpen(true);
+    console.log('🎯 [PANEL] orderPanelOpen state updated to:', true);
+  }, []);
+
+  const handleChangePollInterval = useCallback((interval) => {
+    setPollInterval(interval);
+  }, []);
 
   return (
     <AppContainer>
@@ -884,12 +1305,16 @@ function App() {
         onKiteLogin={openKiteLogin}
         lastUpdate={lastUpdate}
         voiceEnabled={voiceEnabled}
-        onToggleVoice={() => setVoiceEnabled(!voiceEnabled)}
+        onToggleVoice={handleToggleVoice}
         isPolling={isPolling}
         pollCountdown={pollCountdown}
         onTogglePolling={togglePolling}
+        orderExecutions={orderExecutions}
+        onUpdateOrderExecutions={handleUpdateOrderExecutions}
+        onOpenOrderPanel={handleOpenOrderPanel}
+        accessToken={accessToken}
         pollInterval={pollInterval}
-        onChangePollInterval={setPollInterval}
+        onChangePollInterval={handleChangePollInterval}
         subscribedStocksCount={realSubscriptionCount}
       />
       
@@ -926,30 +1351,57 @@ function App() {
         {/* Algorithm Tutorial - Commented out */}
         {/* <AlgorithmTutorial /> */}
         
-        {/* Live Stock Tracker */}
+        {/* Live Stock Tracker - HIDDEN FOR TESTING */}
+        {/*
         <SubscribedStockTracker 
           tickData={symbolTickData} 
           onSymbolClick={handleSymbolClick}
         />
+        */}
         
         {/* Trading Dashboard with Scan Stocks Table */}
         <ScannerSection>
+          {/* Scan Blocking Notification */}
+          {scanBlockInfo.isBlocked && (
+            <ScanBlockNotification>
+              <ScanBlockHeader>
+                ⏸️ Scanner Temporarily Blocked
+              </ScanBlockHeader>
+              <ScanBlockDetails>
+                {scanBlockInfo.message}
+              </ScanBlockDetails>
+              <ScanBlockTiming>
+                Current 15min candle position: minute {scanBlockInfo.candlePosition} • Next scan allowed: {scanBlockInfo.nextScanAllowedAt}
+              </ScanBlockTiming>
+            </ScanBlockNotification>
+          )}
+          
           <TradingDashboard 
-            tickData={symbolTickData}
-            analysisData={analysisData}
-            buySignals={buySignals}
-            sellSignals={sellSignals}
+            allStocks={allStocks}
             onSymbolClick={handleSymbolClick}
+            onOpenChart={openNamedChart}
+            crossoverBuyStocks={crossoverBuyStocks}
+            crossbelowSellStocks={crossbelowSellStocks}
           />
         </ScannerSection>
       </MainContent>
       
-      {/* Order Book Panel */}
+      {/* Order Book Panel - HIDDEN FOR TESTING */}
+      {/*
       <OrderBookPanel 
         isOpen={orderBookOpen}
         symbol={selectedSymbol}
         tickData={symbolTickData}
         onClose={handleCloseOrderBook}
+      />
+      */}
+      
+      {/* Order Execution Panel */}
+      <OrderExecutionPanel 
+        isOpen={orderPanelOpen}
+        orderExecutions={orderExecutions}
+        onClose={handleCloseOrderPanel}
+        onClear={handleClearOrderExecutions}
       />
       </ContentWrapper>
     </AppContainer>

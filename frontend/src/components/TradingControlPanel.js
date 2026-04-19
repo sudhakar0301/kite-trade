@@ -326,8 +326,23 @@ const TradingControlPanel = ({
   onTogglePolling,
   pollInterval = 15,
   onChangePollInterval,
-  subscribedStocksCount = 0
+  subscribedStocksCount = 0,
+  accessToken, // Add access token prop
+  orderExecutions = [], // Add order executions prop
+  onUpdateOrderExecutions, // Add order executions updater prop
+  onOpenOrderPanel // Add order panel opener prop
 }) => {
+  const [isTestingOrder, setIsTestingOrder] = useState(false);
+  
+  // Debug props on component render
+  console.log('🔧 [PROPS] TradingControlPanel rendered with:', {
+    orderExecutions: orderExecutions?.length || 0,
+    onUpdateOrderExecutions: !!onUpdateOrderExecutions,
+    onOpenOrderPanel: !!onOpenOrderPanel,
+    accessToken: !!accessToken,
+    kiteLoginStatus
+  });
+
   const handleToggleAutoTrading = () => {
     if (kiteLoginStatus !== 'logged-in') {
       onKiteLogin();
@@ -339,6 +354,120 @@ const TradingControlPanel = ({
   const handleViewOrder = () => {
     if (orderNotification?.orderId) {
       window.open(`https://kite.zerodha.com/orders`, '_blank');
+    }
+  };
+
+  const handleTestRelianceBuy = async () => {
+    if (!accessToken || kiteLoginStatus !== 'logged-in') {
+      alert('Please login to Kite Connect first');
+      return;
+    }
+
+    if (!autoTradingEnabled) {
+      alert('Please enable Auto Trading first to place test orders');
+      return;
+    }
+
+    // Add order attempt to tracking
+    const orderAttempt = {
+      id: Date.now(),
+      symbol: 'RELIANCE',
+      type: 'BUY (TEST)',
+      status: 'ATTEMPTING',
+      timestamp: new Date().toISOString(),
+      ltp: 0, // Will be updated from response
+      route: '/api/test-reliance-buy'
+    };
+    
+    console.log('🎯 [TEST] Creating order attempt:', orderAttempt);
+    
+    if (onUpdateOrderExecutions) {
+      onUpdateOrderExecutions(prev => {
+        console.log('🎯 [TEST] Adding order to executions, current count:', prev.length);
+        return [...prev, orderAttempt];
+      });
+    } else {
+      console.log('❌ [TEST] onUpdateOrderExecutions not available!');
+    }
+    
+    if (onOpenOrderPanel) {
+      onOpenOrderPanel(); // Auto-open order panel
+      console.log('🎯 [PANEL] Test order panel opened from TradingControlPanel');
+    } else {
+      console.log('❌ [TEST] onOpenOrderPanel not available!');
+    }
+
+    setIsTestingOrder(true);
+    
+    console.log(`🚀 [DEV] ROUTE CALL: POST /api/test-reliance-buy`);
+    console.log(`🦩 [ORDER] Attempting TEST BUY order for RELIANCE`);
+    console.log(`📊 [ORDER] Order ID: ${orderAttempt.id}`);
+    
+    try {
+      console.log('🦩 TEST: Calling test RELIANCE buy order...');
+      
+      const response = await fetch('http://localhost:5000/api/test-reliance-buy', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({})
+      });
+      
+      const result = await response.json();
+      console.log(`✅ [DEV] ROUTE RESPONSE: /api/test-reliance-buy - Status: ${result.success ? 'SUCCESS' : 'FAILED'}`);
+      console.log('✅ TEST: RELIANCE buy order result:', result);
+      
+      // Update order tracking
+      if (onUpdateOrderExecutions) {
+        onUpdateOrderExecutions(prev => prev.map(order => 
+          order.id === orderAttempt.id ? {
+            ...order,
+            status: result.success ? 'SUCCESS' : 'FAILED',
+            orderId: result.orderResult?.order_id,
+            price: result.currentPrice,
+            quantity: result.orderResult?.quantity || 'N/A',
+            message: result.success ? 'Test order completed' : result.error,
+            error: result.error,
+            ltp: result.currentPrice || 0,
+            completedAt: new Date().toISOString()
+          } : order
+        ));
+        
+        console.log('🎯 [TEST] Order tracking updated with result:', {
+          success: result.success,
+          orderId: result.orderResult?.order_id,
+          price: result.currentPrice
+        });
+      } else {
+        console.log('❌ [TEST] onUpdateOrderExecutions not available for result update!');
+      }
+      
+      if (result.success) {
+        alert(`🎉 Test Order Successful!\n\nRELIANCE Buy Order Placed\nPrice: ₹${result.currentPrice}\nResult: ${JSON.stringify(result.orderResult, null, 2)}`);
+      } else {
+        alert(`❌ Test Order Failed!\n\nError: ${result.error}`);
+      }
+    } catch (error) {
+      console.error(`❌ [DEV] ROUTE ERROR: /api/test-reliance-buy - ${error.message}`);
+      console.error('❌ TEST: Error placing test order:', error);
+      
+      // Update order tracking with error
+      if (onUpdateOrderExecutions) {
+        onUpdateOrderExecutions(prev => prev.map(order => 
+          order.id === orderAttempt.id ? {
+            ...order,
+            status: 'ERROR',
+            error: error.message || 'Network error',
+            completedAt: new Date().toISOString()
+          } : order
+        ));
+      }
+      
+      alert(`❌ Test Order Failed!\n\nNetwork Error: ${error.message}`);
+    } finally {
+      setIsTestingOrder(false);
     }
   };
 
@@ -460,6 +589,120 @@ const TradingControlPanel = ({
             disabled={!onToggleVoice}
           >
             {voiceEnabled ? '🔊' : '🔇'} Voice {voiceEnabled ? 'ON' : 'OFF'}
+          </QuickActionButton>
+          <QuickActionButton 
+            onClick={handleTestRelianceBuy}
+            style={{
+              background: isTestingOrder
+                ? 'linear-gradient(135deg, #f59e0b, #d97706)' 
+                : autoTradingEnabled 
+                  ? 'linear-gradient(135deg, #8b5cf6, #7c3aed)'
+                  : 'linear-gradient(135deg, #6b7280, #4b5563)',
+              fontSize: '11px',
+              opacity: autoTradingEnabled ? 1 : 0.6
+            }}
+            disabled={isTestingOrder || kiteLoginStatus !== 'logged-in' || !autoTradingEnabled}
+          >
+            {isTestingOrder ? '⏳ Testing...' : '🦩 Test RELIANCE'}
+          </QuickActionButton>
+          <QuickActionButton 
+            onClick={() => {
+              console.log('🎯 [TEST] Test Order Panel button clicked');
+              if (onOpenOrderPanel) {
+                onOpenOrderPanel();
+                console.log('🎯 [TEST] Order panel opened via test button');
+              }
+            }}
+            style={{
+              background: 'linear-gradient(135deg, #06b6d4, #0891b2)',
+              fontSize: '10px'
+            }}
+          >
+            📋 Test Panel
+          </QuickActionButton>
+          <QuickActionButton 
+            onClick={() => {
+              console.log('🧪 [TEST] Add Fake Order button clicked');
+              if (!autoTradingEnabled) {
+                alert('Please enable Auto Trading first to test order tracking');
+                return;
+              }
+              if (onUpdateOrderExecutions && onOpenOrderPanel) {
+                const fakeOrder = {
+                  id: Date.now(),
+                  symbol: 'TEST_STOCK',
+                  type: 'BUY (FAKE)',
+                  status: 'SUCCESS',
+                  timestamp: new Date().toISOString(),
+                  completedAt: new Date().toISOString(),
+                  ltp: 1234.56,
+                  price: 1234.56,
+                  quantity: 10,
+                  orderId: 'TEST_' + Date.now(),
+                  route: '/api/test-fake-order',
+                  message: 'Fake order for testing'
+                };
+                
+                onUpdateOrderExecutions(prev => [...prev, fakeOrder]);
+                onOpenOrderPanel();
+                console.log('🧪 [TEST] Fake order added and panel opened');
+              } else {
+                console.log('❌ [TEST] Missing required props for fake order test');
+              }
+            }}
+            style={{
+              background: autoTradingEnabled 
+                ? 'linear-gradient(135deg, #f59e0b, #d97706)'
+                : 'linear-gradient(135deg, #6b7280, #4b5563)',
+              fontSize: '10px',
+              opacity: autoTradingEnabled ? 1 : 0.6
+            }}
+            disabled={!autoTradingEnabled}
+          >
+            🧪 Add Order
+          </QuickActionButton>
+          <QuickActionButton 
+            onClick={() => {
+              console.log('⚡ [TEST] Force Auto-Trade Test clicked');
+              if (!autoTradingEnabled) {
+                alert('Please enable Auto Trading first to test auto-trade orders');
+                return;
+              }
+              // Simulate auto-trading call by calling parent's auto-trade function directly
+              // This bypasses scanner and directly tests order placement
+              const fakeStock = {
+                s: 'NSE:TESTSTOCK',
+                symbol: 'TESTSTOCK',
+                d: [999.99, 0, 0] // [price, change, change%]
+              };
+              
+              if (onUpdateOrderExecutions && onOpenOrderPanel) {
+                console.log('⚡ [TEST] Simulating auto-trade order attempt...');
+                const orderAttempt = {
+                  id: Date.now(),
+                  symbol: 'NSE:TESTSTOCK',
+                  type: 'BUY (AUTO-TEST)',
+                  status: 'ATTEMPTING',
+                  timestamp: new Date().toISOString(),
+                  ltp: 999.99,
+                  route: '/api/auto-trade-test'
+                };
+                
+                onUpdateOrderExecutions(prev => [...prev, orderAttempt]);
+                onOpenOrderPanel();
+                console.log('⚡ [TEST] Auto-trade test order added and panel opened');
+              }
+            }}
+            style={{
+              background: autoTradingEnabled 
+                ? 'linear-gradient(135deg, #8b5cf6, #7c3aed)'
+                : 'linear-gradient(135deg, #6b7280, #4b5563)',
+              fontSize: '9px',
+              opacity: autoTradingEnabled ? 1 : 0.6
+            }}
+            disabled={!autoTradingEnabled}
+          >
+            ⚡ Auto-Trade
           </QuickActionButton>
         </QuickActionsSection>
 

@@ -29,99 +29,81 @@ export const checkBuyConditions = (tickData) => {
     };
   }
 
-  // Get order quantity from market impact analysis
-  const orderQuantity = marketImpact?.quantity || 0;
+  // Calculate quantity for ₹500,000 investment
+  const currentPrice = last_price || 1;
+  const calculatedQuantity = Math.floor(500000 / currentPrice);
   
-  if (orderQuantity === 0) {
+  if (calculatedQuantity === 0) {
     return {
       canTrade: false,
-      reason: 'No order quantity available',
+      reason: 'Invalid price for quantity calculation',
       conditions: {}
     };
   }
 
-  // Layer 1: 2-Level Fill (Execution Feasibility)
-  // Rule: (Ask1_qty + Ask2_qty) ≥ 1.3 × q
+  // Condition 1: 2-Level Fill (≤2 levels)
   const ask1Qty = askLevels?.[0]?.quantity || 0;
   const ask2Qty = askLevels?.[1]?.quantity || 0;
   const twoLevelQty = ask1Qty + ask2Qty;
-  const twoLevelFillCondition = twoLevelQty >= (1.3 * orderQuantity);
+  const twoLevelFillCondition = twoLevelQty >= calculatedQuantity;
 
-  // Layer 2: Imbalance (Directional Pressure) 
-  // Rule: (Bid_5 / Ask_5) ≥ 1.3
-  const bid5TotalQty = bidLevels?.slice(0, 5)
-    .reduce((sum, level) => sum + (level.quantity || 0), 0) || 0;
-  const ask5TotalQty = askLevels?.slice(0, 5)
-    .reduce((sum, level) => sum + (level.quantity || 0), 0) || 0;
-  const imbalanceRatio = ask5TotalQty > 0 ? bid5TotalQty / ask5TotalQty : 0;
-  const imbalanceCondition = imbalanceRatio >= 1.3;
+  // Condition 2: Slippage ≤ 0.05%
+  const slippageCondition = marketImpact?.totalSlippage <= 0.05; // 0.05%
 
-  // Layer 3: Depth (Liquidity Buffer)
-  // Rule: Depth_5 = ∑(Ask_i_qty) ≥ 1.5 × q
-  const depthCondition = ask5TotalQty >= (1.5 * orderQuantity);
+  // Condition 3: L3-7 Support > 3x
+  const askSupport37 = askLevels?.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0) || 0;
+  const supportRatio = calculatedQuantity > 0 ? askSupport37 / calculatedQuantity : 0;
+  const supportCondition = supportRatio > 3.0;
 
-  // Layer 4: Slippage (Execution Cost Control)
-  // Rule: (VWAP_2L - Ask1) / Ask1 ≤ 0.0005 (0.05%)
-  const ask1Price = askLevels?.[0]?.price || 0;
-  const ask2Price = askLevels?.[1]?.price || 0;
-  
-  // Calculate VWAP for 2 levels
-  const level1Fill = Math.min(orderQuantity, ask1Qty);
-  const level2Fill = Math.min(orderQuantity - level1Fill, ask2Qty);
-  const totalFilled = level1Fill + level2Fill;
-  
-  const vwap2L = totalFilled > 0 ? 
-    ((level1Fill * ask1Price) + (level2Fill * ask2Price)) / totalFilled : ask1Price;
-    
-  const slippagePercent = ask1Price > 0 ? (vwap2L - ask1Price) / ask1Price : 1;
-  const slippageCondition = slippagePercent <= 0.0005; // 0.05%
+  // Condition 4: L3-7 Imbalance ≥ 2.0
+  const bid37 = bidLevels?.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0) || 0;
+  const ask37 = askLevels?.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0) || 0;
+  const imbalance37 = ask37 > 0 ? bid37 / ask37 : 0;
+  const imbalanceCondition = imbalance37 >= 1.4; // Adjusted to 1.4 for BUY conditions (Bid/Ask imbalance)
 
-  // Overall decision - all 4 layers must pass
-  const allConditionsMet = twoLevelFillCondition && imbalanceCondition && depthCondition && slippageCondition;
+  // Overall decision - all 4 conditions must pass
+  const allConditionsMet = twoLevelFillCondition && slippageCondition && supportCondition && imbalanceCondition;
 
   const analysis = {
     canTrade: allConditionsMet,
-    reason: allConditionsMet ? 'All BUY execution layers passed' : 'One or more execution layers failed',
+    reason: allConditionsMet ? 'All BUY conditions passed' : 'One or more conditions failed',
     conditions: {
-      layer1_twoLevelFill: {
+      condition1_twoLevelFill: {
         met: twoLevelFillCondition,
         ask1Qty: ask1Qty,
         ask2Qty: ask2Qty,
         twoLevelQty: twoLevelQty,
-        required: Math.round(1.3 * orderQuantity),
-        description: `2-Level Fill: ${twoLevelQty.toLocaleString()} >= ${Math.round(1.3 * orderQuantity).toLocaleString()} (1.3×q)`
+        required: calculatedQuantity,
+        description: `2-Level Fill: ${twoLevelQty.toLocaleString()} >= ${calculatedQuantity.toLocaleString()} (₹5L qty)`
       },
-      layer2_imbalance: {
-        met: imbalanceCondition,
-        currentRatio: imbalanceRatio,
-        minRequired: 1.3,
-        bid5Qty: bid5TotalQty,
-        ask5Qty: ask5TotalQty,
-        description: `Imbalance: ${imbalanceRatio.toFixed(2)} >= 1.3 (Bid5/Ask5)`
-      },
-      layer3_depth: {
-        met: depthCondition,
-        ask5TotalQty: ask5TotalQty,
-        required: Math.round(1.5 * orderQuantity),
-        description: `Depth Buffer: ${ask5TotalQty.toLocaleString()} >= ${Math.round(1.5 * orderQuantity).toLocaleString()} (1.5×q)`
-      },
-      layer4_slippage: {
+      condition2_slippage: {
         met: slippageCondition,
-        currentSlippage: slippagePercent,
-        maxAllowed: 0.0005,
-        vwap2L: vwap2L,
-        ask1Price: ask1Price,
-        description: `Slippage: ${(slippagePercent * 100).toFixed(4)}% <= 0.05% (VWAP vs Ask1)`
+        currentSlippage: marketImpact?.totalSlippage || 0,
+        maxAllowed: 0.05,
+        description: `Slippage: ${(marketImpact?.totalSlippage || 0).toFixed(4)}% <= 0.05%`
+      },
+      condition3_support: {
+        met: supportCondition,
+        supportQty: askSupport37,
+        supportRatio: supportRatio,
+        minRequired: 3.0,
+        description: `L3-7 Support: ${supportRatio.toFixed(1)}x > 3.0x (${askSupport37.toLocaleString()} qty)`
+      },
+      condition4_imbalance: {
+        met: imbalanceCondition,
+        currentRatio: imbalance37,
+        minRequired: 2.0,
+        bid37: bid37,
+        ask37: ask37,
+        description: `L3-7 Imbalance: ${imbalance37.toFixed(2)} >= 2.0 (Bid/Ask)`
       }
     },
     executionMetrics: {
       symbol: tickData.symbol,
       scanType: scan_type,
-      orderQuantity: orderQuantity,
-      ask1Price: ask1Price,
-      ask2Price: ask2Price,
-      vwap2L: vwap2L,
-      estimatedSlippage: slippagePercent * 100
+      calculatedQuantity: calculatedQuantity,
+      currentPrice: currentPrice,
+      investmentAmount: 500000
     }
   };
 
@@ -155,99 +137,81 @@ export const checkSellConditions = (tickData) => {
     };
   }
 
-  // Get order quantity from market impact analysis
-  const orderQuantity = marketImpact?.quantity || 0;
+  // Calculate quantity for ₹500,000 investment
+  const currentPrice = last_price || 1;
+  const calculatedQuantity = Math.floor(500000 / currentPrice);
   
-  if (orderQuantity === 0) {
+  if (calculatedQuantity === 0) {
     return {
       canTrade: false,
-      reason: 'No order quantity available',
+      reason: 'Invalid price for quantity calculation',
       conditions: {}
     };
   }
 
-  // Layer 1: 2-Level Fill (Execution Feasibility)
-  // Rule: (Bid1_qty + Bid2_qty) ≥ 1.3 × q
+  // Condition 1: 2-Level Fill (≤2 levels)
   const bid1Qty = bidLevels?.[0]?.quantity || 0;
   const bid2Qty = bidLevels?.[1]?.quantity || 0;
   const twoLevelQty = bid1Qty + bid2Qty;
-  const twoLevelFillCondition = twoLevelQty >= (1.3 * orderQuantity);
+  const twoLevelFillCondition = twoLevelQty >= calculatedQuantity;
 
-  // Layer 2: Imbalance (Directional Pressure) 
-  // Rule: (Ask_5 / Bid_5) ≥ 1.3 (for SELL - ask dominance)
-  const bid5TotalQty = bidLevels?.slice(0, 5)
-    .reduce((sum, level) => sum + (level.quantity || 0), 0) || 0;
-  const ask5TotalQty = askLevels?.slice(0, 5)
-    .reduce((sum, level) => sum + (level.quantity || 0), 0) || 0;
-  const imbalanceRatio = bid5TotalQty > 0 ? ask5TotalQty / bid5TotalQty : 0;
-  const imbalanceCondition = imbalanceRatio >= 1.3;
+  // Condition 2: Slippage ≤ 0.05%
+  const slippageCondition = marketImpact?.totalSlippage <= 0.05; // 0.05%
 
-  // Layer 3: Depth (Liquidity Buffer)
-  // Rule: Depth_5 = ∑(Bid_i_qty) ≥ 1.5 × q
-  const depthCondition = bid5TotalQty >= (1.5 * orderQuantity);
+  // Condition 3: L3-7 Support > 3x
+  const bidSupport37 = bidLevels?.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0) || 0;
+  const supportRatio = calculatedQuantity > 0 ? bidSupport37 / calculatedQuantity : 0;
+  const supportCondition = supportRatio > 3.0;
 
-  // Layer 4: Slippage (Execution Cost Control)
-  // Rule: (Bid1 - VWAP_2L) / Bid1 ≤ 0.0005 (0.05%)
-  const bid1Price = bidLevels?.[0]?.price || 0;
-  const bid2Price = bidLevels?.[1]?.price || 0;
-  
-  // Calculate VWAP for 2 levels
-  const level1Fill = Math.min(orderQuantity, bid1Qty);
-  const level2Fill = Math.min(orderQuantity - level1Fill, bid2Qty);
-  const totalFilled = level1Fill + level2Fill;
-  
-  const vwap2L = totalFilled > 0 ? 
-    ((level1Fill * bid1Price) + (level2Fill * bid2Price)) / totalFilled : bid1Price;
-    
-  const slippagePercent = bid1Price > 0 ? (bid1Price - vwap2L) / bid1Price : 1;
-  const slippageCondition = slippagePercent <= 0.0005; // 0.05%
+  // Condition 4: L3-7 Imbalance ≥ 2.0
+  const bid37 = bidLevels?.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0) || 0;
+  const ask37 = askLevels?.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0) || 0;
+  const imbalance37 = bid37 > 0 ? ask37 / bid37 : 0;
+  const imbalanceCondition = imbalance37 >= 1.4; // Adjusted to 1.4 for SELL conditions (Ask/Bid imbalance)
 
-  // Overall decision - all 4 layers must pass
-  const allConditionsMet = twoLevelFillCondition && imbalanceCondition && depthCondition && slippageCondition;
+  // Overall decision - all 4 conditions must pass
+  const allConditionsMet = twoLevelFillCondition && slippageCondition && supportCondition && imbalanceCondition;
 
   const analysis = {
     canTrade: allConditionsMet,
-    reason: allConditionsMet ? 'All SELL execution layers passed' : 'One or more execution layers failed',
+    reason: allConditionsMet ? 'All SELL conditions passed' : 'One or more conditions failed',
     conditions: {
-      layer1_twoLevelFill: {
+      condition1_twoLevelFill: {
         met: twoLevelFillCondition,
         bid1Qty: bid1Qty,
         bid2Qty: bid2Qty,
         twoLevelQty: twoLevelQty,
-        required: Math.round(1.3 * orderQuantity),
-        description: `2-Level Fill: ${twoLevelQty.toLocaleString()} >= ${Math.round(1.3 * orderQuantity).toLocaleString()} (1.3×q)`
+        required: calculatedQuantity,
+        description: `2-Level Fill: ${twoLevelQty.toLocaleString()} >= ${calculatedQuantity.toLocaleString()} (₹5L qty)`
       },
-      layer2_imbalance: {
-        met: imbalanceCondition,
-        currentRatio: imbalanceRatio,
-        minRequired: 1.3,
-        bid5Qty: bid5TotalQty,
-        ask5Qty: ask5TotalQty,
-        description: `Imbalance: ${imbalanceRatio.toFixed(2)} >= 1.3 (Ask5/Bid5)`
-      },
-      layer3_depth: {
-        met: depthCondition,
-        bid5TotalQty: bid5TotalQty,
-        required: Math.round(1.5 * orderQuantity),
-        description: `Depth Buffer: ${bid5TotalQty.toLocaleString()} >= ${Math.round(1.5 * orderQuantity).toLocaleString()} (1.5×q)`
-      },
-      layer4_slippage: {
+      condition2_slippage: {
         met: slippageCondition,
-        currentSlippage: slippagePercent,
-        maxAllowed: 0.0005,
-        vwap2L: vwap2L,
-        bid1Price: bid1Price,
-        description: `Slippage: ${(slippagePercent * 100).toFixed(4)}% <= 0.05% (Bid1 vs VWAP)`
+        currentSlippage: marketImpact?.totalSlippage || 0,
+        maxAllowed: 0.05,
+        description: `Slippage: ${(marketImpact?.totalSlippage || 0).toFixed(4)}% <= 0.05%`
+      },
+      condition3_support: {
+        met: supportCondition,
+        supportQty: bidSupport37,
+        supportRatio: supportRatio,
+        minRequired: 3.0,
+        description: `L3-7 Support: ${supportRatio.toFixed(1)}x > 3.0x (${bidSupport37.toLocaleString()} qty)`
+      },
+      condition4_imbalance: {
+        met: imbalanceCondition,
+        currentRatio: imbalance37,
+        minRequired: 2.0,
+        bid37: bid37,
+        ask37: ask37,
+        description: `L3-7 Imbalance: ${imbalance37.toFixed(2)} >= 2.0 (Ask/Bid)`
       }
     },
     executionMetrics: {
       symbol: tickData.symbol,
       scanType: scan_type,
-      orderQuantity: orderQuantity,
-      bid1Price: bid1Price,
-      bid2Price: bid2Price,
-      vwap2L: vwap2L,
-      estimatedSlippage: slippagePercent * 100
+      calculatedQuantity: calculatedQuantity,
+      currentPrice: currentPrice,
+      investmentAmount: 500000
     }
   };
 
