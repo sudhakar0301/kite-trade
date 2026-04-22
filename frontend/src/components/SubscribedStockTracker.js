@@ -38,6 +38,22 @@ const pulse = keyframes`
   100% { opacity: 0.6; transform: scale(1); }
 `;
 
+// Terminal glow animation
+const terminalGlow = keyframes`
+  0%, 100% { 
+    text-shadow: 0 0 8px rgba(0, 255, 65, 0.6), 0 0 16px rgba(0, 255, 65, 0.3);
+  }
+  50% { 
+    text-shadow: 0 0 12px rgba(0, 255, 65, 0.8), 0 0 24px rgba(0, 255, 65, 0.4);
+  }
+`;
+
+// Matrix-style data stream animation  
+const dataStream = keyframes`
+  0% { transform: translateY(0px); opacity: 1; }
+  100% { transform: translateY(-2px); opacity: 0.9; }
+`;
+
 // Styled component for masking badge
 const MaskingBadge = styled.span`
   margin-left: 10px;
@@ -58,7 +74,27 @@ const TrackerContainer = styled.div`
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin: 20px;
+  width: 100%;
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Monaco', 'Cascadia Code', 'Roboto Mono', monospace;
+  font-feature-settings: "liga", "tnum", "zero", "ss01", "locl";
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  
+  /* Tablet adjustments */
+  @media (max-width: 1024px) {
+    gap: 6px;
+  }
+  
+  /* Mobile adjustments */
+  @media (max-width: 768px) {
+    gap: 4px;
+  }
+  
+  /* Small mobile */
+  @media (max-width: 480px) {
+    font-size: 12px;
+  }
 `;
 
 const AccordionSection = styled.div`
@@ -105,10 +141,11 @@ const AccordionIcon = styled.div`
 `;
 
 const AccordionContent = styled.div`
-  max-height: ${props => props.isExpanded ? '1000px' : '0'};
-  overflow: hidden;
-  transition: max-height 0.3s ease;
+  max-height: ${props => props.isExpanded ? 'none' : '0'};
+  overflow: ${props => props.isExpanded ? 'visible' : 'hidden'};
+  transition: ${props => props.isExpanded ? 'opacity 0.3s ease' : 'max-height 0.3s ease'};
   padding: ${props => props.isExpanded ? '20px' : '0 20px'};
+  opacity: ${props => props.isExpanded ? '1' : '0'};
 `;
 
 const TrackerHeader = styled.div`
@@ -128,6 +165,33 @@ const TrackerBody = styled.div`
   grid-template-columns: 2fr 1fr 1fr 1fr 1fr;
   gap: 20px;
   align-items: start;
+  
+  /* Large tablet - adjust layout */
+  @media (max-width: 1200px) {
+    grid-template-columns: 2fr 1fr 1fr 1fr;
+    gap: 16px;
+    padding: 16px;
+  }
+  
+  /* Tablet - stack some columns */
+  @media (max-width: 1024px) {
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 12px;
+    padding: 14px;
+  }
+  
+  /* Mobile - single column layout */
+  @media (max-width: 768px) {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    padding: 12px;
+  }
+  
+  /* Small mobile */
+  @media (max-width: 480px) {
+    gap: 12px;
+    padding: 10px;
+  }
 `;
 
 
@@ -154,6 +218,21 @@ const OrderLevel = styled.div.withConfig({
     background: ${props => props.isBest ? 
       `rgba(${props.side === 'buy' ? '0, 255, 0' : '255, 107, 107'}, 0.25)` : 
       'rgba(255, 255, 255, 0.1)'};
+  }
+  
+  /* Mobile adjustments */
+  @media (max-width: 768px) {
+    padding: ${props => props.isBest ? '10px 12px' : '8px 12px'};
+    font-size: ${props => props.isBest ? '13px' : '12px'};
+    min-height: 36px;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  
+  @media (max-width: 480px) {
+    padding: 8px 10px;
+    font-size: 11px;
+    min-height: 32px;
   }
 `;
 
@@ -201,17 +280,27 @@ const LevelQuantity = styled.div`
 const NoDataMessage = styled.div`
   text-align: center;
   color: #ff6b6b;
-  font-size: 14px;
+  font-size: 15px;
   padding: 20px;
   background: rgba(255, 107, 107, 0.1);
   border: 1px solid rgba(255, 107, 107, 0.3);
   border-radius: 8px;
   margin: 10px;
+  font-family: "Segoe UI", "Roboto", "Inter", system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+  font-weight: 500;
 `;
 
 
 
-const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
+const SubscribedStockTracker = ({ 
+  tickData, 
+  onOpenChart, // Add onOpenChart prop
+  subscribedCount = 0,
+  buySignalsCount = 0,
+  sellSignalsCount = 0,
+  pollCountdown = 0
+}) => {
   // State to track currently selected stock symbol
   const [selectedSymbol, setSelectedSymbol] = useState(null);
   
@@ -221,19 +310,48 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
   // State to trigger re-renders for countdown timer
   const [currentTime, setCurrentTime] = useState(Date.now());
   
-  // Accordion state
+  // State to track buy/sell stocks for smart Reliance unsubscription
+  const [buyStocks, setBuyStocks] = useState([]);
+  const [sellStocks, setSellStocks] = useState([]);
+  
+  // State to force re-render for live market impact data based on tick updates
+  const [lastTickUpdate, setLastTickUpdate] = useState(0);
+  
+  // State to manage accordion sections (for Order Book only)
   const [expandedSections, setExpandedSections] = useState({
-    liveTracker: true,
-    orderBook: true,
-    allStocks: true
+    orderBook: true // Order Book accordion starts expanded
   });
   
-  const toggleSection = (sectionKey) => {
+  // State to track if we're in RELIANCE fallback mode
+  const [isRelianceFallback, setIsRelianceFallback] = useState(false);
+  const [relianceScanType, setRelianceScanType] = useState('FALLBACK');
+  
+  // Add ref to track manual symbol selections to prevent auto-override
+  const manualSelectionRef = useRef(null);
+  const MANUAL_SELECTION_LOCK_TIME = 5000; // 5 seconds protection from auto-override
+  
+  // Function to toggle accordion sections
+  const toggleSection = (section) => {
     setExpandedSections(prev => ({
       ...prev,
-      [sectionKey]: !prev[sectionKey]
+      [section]: !prev[section]
     }));
   };
+  
+  // Function to check fallback status
+  const checkFallbackStatus = useCallback(async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/fallback-status');
+      if (response.ok) {
+        const result = await response.json();
+        setIsRelianceFallback(result.isRelianceFallback);
+        setRelianceScanType(result.relianceScanType || 'FALLBACK');
+        console.log('📊 Fallback status:', result);
+      }
+    } catch (error) {
+      console.error('❌ Error checking fallback status:', error);
+    }
+  }, []);
   
   // Refs to avoid infinite loops
   const symbolTimestampsRef = useRef({});
@@ -245,15 +363,18 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
   const getResponsiveGridTemplate = () => {
     const screenWidth = window.innerWidth;
     
-    if (screenWidth <= 768) {
-      // Mobile: Show only essential columns
-      return '80px 50px 60px 80px 90px';
+    if (screenWidth <= 480) {
+      // Very small mobile: All 10 columns in ~400px (added action column)
+      return '55px 30px 45px 35px 35px 40px 40px 45px 50px 50px';
+    } else if (screenWidth <= 768) {
+      // Mobile: All 10 columns in ~550px (added action column)
+      return '70px 35px 55px 45px 40px 50px 50px 55px 60px 60px';
     } else if (screenWidth <= 1024) {
-      // Tablet: Reduced widths
-      return '90px 55px 70px 70px 90px 90px 100px';
+      // Tablet: All 10 columns in ~700px (added action column)
+      return '90px 45px 70px 60px 50px 65px 65px 70px 80px 80px';
     } else {
-      // Desktop: Full width
-      return '100px 60px 80px 80px 100px 100px 120px 100px 120px';
+      // Desktop: All 10 columns in ~800px (added action column)
+      return '110px 50px 80px 70px 60px 75px 75px 80px 90px 90px';
     }
   };
   
@@ -270,6 +391,105 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
   
+  // Function to handle unsubscribing a stock
+  const handleUnsubscribe = async (symbol) => {
+    try {
+      console.log(`🔄 Unsubscribing from ${symbol}...`);
+      
+      // Extract clean symbol name
+      const cleanSymbol = extractSymbolName(symbol);
+      
+      // Call backend unsubscribe API
+      const response = await fetch('http://localhost:5000/api/unsubscribe', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          symbols: [cleanSymbol]
+        })
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`✅ Successfully unsubscribed from ${symbol}:`, result);
+        
+        // Remove from local state
+        setRealSubscribedSymbols(prev => prev.filter(s => s !== cleanSymbol));
+        
+        // If this was the selected symbol, clear selection
+        if (selectedSymbol === symbol || selectedSymbol === cleanSymbol) {
+          setSelectedSymbol(null);
+        }
+        
+      } else {
+        console.error(`❌ Failed to unsubscribe from ${symbol}:`, response.statusText);
+        alert(`Failed to unsubscribe from ${symbol}`);
+      }
+    } catch (error) {
+      console.error(`❌ Error unsubscribing from ${symbol}:`, error);
+      alert(`Error unsubscribing from ${symbol}`);
+    }
+  };
+
+  // Function to handle buy scan button (RELIANCE only in fallback mode)
+  const handleBuyScan = async () => {
+    try {
+      console.log('🏛️ Triggering RELIANCE Buy Scan...');
+      
+      const response = await fetch('http://localhost:5000/api/reliance-buy-scan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('✅ RELIANCE buy scan completed:', result);
+        setRelianceScanType('BUY_SCAN');
+        alert(`RELIANCE set as Buy Scan symbol\nOrders will only execute if ALL 13 buy conditions are met`);
+      } else {
+        const error = await response.json();
+        console.error('❌ RELIANCE buy scan failed:', error);
+        alert('RELIANCE buy scan failed: ' + error.error);
+      }
+    } catch (error) {
+      console.error('❌ Error in RELIANCE buy scan:', error);
+      alert('Error in RELIANCE buy scan');
+    }
+  };
+
+  // Function to handle sell scan button (RELIANCE only in fallback mode)
+  const handleSellScan = async () => {
+    try {
+      console.log('🏛️ Triggering RELIANCE Sell Scan...');
+      
+      const response = await fetch('http://localhost:5000/api/reliance-sell-scan', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({})
+      });
+      
+      if (response.ok) {
+        const result = await response.json();
+        console.log('✅ RELIANCE sell scan completed:', result);
+        setRelianceScanType('SELL_SCAN');
+        alert(`RELIANCE set as Sell Scan symbol\nOrders will only execute if ALL 13 sell conditions are met`);
+      } else {
+        const error = await response.json();
+        console.error('❌ RELIANCE sell scan failed:', error);
+        alert('RELIANCE sell scan failed: ' + error.error);
+      }
+    } catch (error) {
+      console.error('❌ Error in RELIANCE sell scan:', error);
+      alert('Error in RELIANCE sell scan');
+    }
+  };
+
   // Get dynamic symbol mappings with fallback
   const getSymbolToTokenMap = useCallback(() => {
     // Merge backend mappings with fallback mappings
@@ -298,13 +518,31 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     console.log('🔍 DEBUG - realSubscribedSymbols:', realSubscribedSymbols);
     console.log('🔍 DEBUG - tickData keys:', tickData ? Object.keys(tickData) : 'no tickData');
     
-    // Use real subscribed symbols if available
+    // Always prioritize real subscribed symbols from backend, regardless of tick data
     if (realSubscribedSymbols.length > 0) {
-      console.log('🔍 Using real subscribed symbols from backend:', realSubscribedSymbols);
-      return realSubscribedSymbols;
+      console.log('🔍 Using all real subscribed symbols from backend (including those without tick data):', realSubscribedSymbols);
+      
+      // Sort subscribed symbols: those with tick data first, then by name
+      return realSubscribedSymbols.sort((a, b) => {
+        const hasTickDataA = tickData && tickData[a] && tickData[a].length > 0;
+        const hasTickDataB = tickData && tickData[b] && tickData[b].length > 0;
+        
+        // Symbols with tick data come first
+        if (hasTickDataA && !hasTickDataB) return -1;
+        if (!hasTickDataA && hasTickDataB) return 1;
+        
+        // If both have or don't have tick data, sort by most recent activity, then by name
+        if (hasTickDataA && hasTickDataB) {
+          const aLatestTime = new Date(tickData[a][tickData[a].length - 1]?.timestamp || 0).getTime();
+          const bLatestTime = new Date(tickData[b][tickData[b].length - 1]?.timestamp || 0).getTime();
+          if (aLatestTime !== bLatestTime) return bLatestTime - aLatestTime; // Most recent first
+        }
+        
+        return a.localeCompare(b); // Alphabetical fallback
+      });
     }
     
-    // Show all stocks but sort by most recent activity (newest on top)
+    // Fallback: Show all stocks from tickData but sort by most recent activity (newest on top)
     if (tickData) {
       const stocks = Object.keys(tickData).sort((a, b) => {
         const aHistory = tickData[a];
@@ -318,7 +556,7 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
         return bLatestTime - aLatestTime; // Newest first
       });
       
-      console.log('🔍 Stocks sorted by recent activity (newest first):', stocks.slice(0, 5));
+      console.log('🔍 Fallback: Stocks sorted by recent activity (newest first):', stocks.slice(0, 5));
       return stocks;
     }
     
@@ -414,7 +652,57 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     return () => clearInterval(interval);
   }, []);
 
+  // Check fallback status periodically
   useEffect(() => {
+    // Check initially
+    checkFallbackStatus();
+
+    // Check every 5 seconds to keep in sync
+    const interval = setInterval(checkFallbackStatus, 5000);
+
+    return () => clearInterval(interval);
+  }, [checkFallbackStatus]);
+
+  // Effect to fetch buy/sell stocks for smart Reliance management
+  useEffect(() => {
+    const fetchBuySellStocks = async () => {
+      try {
+        const [buyResponse, sellResponse] = await Promise.all([
+          fetch('http://localhost:5000/api/buy-stocks'),
+          fetch('http://localhost:5000/api/sell-stocks')
+        ]);
+        
+        if (buyResponse.ok) {
+          const buyData = await buyResponse.json();
+          setBuyStocks(buyData.stocks || []);
+        }
+        
+        if (sellResponse.ok) {
+          const sellData = await sellResponse.json();
+          setSellStocks(sellData.stocks || []);
+        }
+      } catch (error) {
+        console.error('❌ Error fetching buy/sell stocks:', error);
+      }
+    };
+    
+    fetchBuySellStocks();
+    const interval = setInterval(fetchBuySellStocks, 15000); // Check every 15 seconds
+    
+    return () => clearInterval(interval);
+  }, []);
+  
+  // Effect to trigger live updates when tick data changes
+  useEffect(() => {
+    if (tickData) {
+      const newUpdate = Date.now();
+      setLastTickUpdate(newUpdate);
+      console.log('📊 LIVE TICK UPDATE: Market impact updated at', new Date(newUpdate).toLocaleTimeString());
+    }
+  }, [tickData]);
+
+  useEffect(() => {
+    console.log('🔍 📊 SYMBOL DETECTION EFFECT TRIGGERED');
     const subscribedStocks = getSubscribedStocks();
     const allAvailableSymbols = getAllAvailableSymbols();
     console.log('🔍 Currently subscribed stocks:', subscribedStocks);
@@ -433,82 +721,32 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
       console.log('🔍 Current selectedSymbol:', selectedSymbol);
       console.log('🔍 Current symbolTimestampsRef:', symbolTimestampsRef.current);
       
-      // Check if current symbol can be changed (30 seconds elapsed or no current symbol)
+      // Check for manual selection protection
       const currentTime = Date.now();
+      const isManualSelectionActive = manualSelectionRef.current && 
+        (currentTime - manualSelectionRef.current.timestamp) < MANUAL_SELECTION_LOCK_TIME;
+      
+      if (isManualSelectionActive) {
+        console.log('🔍 🔒 MANUAL SELECTION PROTECTED - Skipping auto-selection for:', manualSelectionRef.current.symbol, 'Time remaining:', Math.ceil((MANUAL_SELECTION_LOCK_TIME - (currentTime - manualSelectionRef.current.timestamp)) / 1000), 'seconds');
+        // Update previous symbols to prevent this from running again
+        previousSymbolsRef.current = newSymbolsSet;
+        
+        // Ensure manually selected symbol stays selected
+        if (selectedSymbol !== manualSelectionRef.current.symbol) {
+          console.log('🔍 🔄 RESTORING MANUAL SELECTION:', manualSelectionRef.current.symbol);
+          setSelectedSymbol(manualSelectionRef.current.symbol);
+        }
+        return;
+      }
+      
+      // Check if current symbol can be changed (30 seconds elapsed or no current symbol)
       const canChangeSymbol = !selectedSymbol || 
         !symbolTimestampsRef.current[selectedSymbol] || 
         (currentTime - symbolTimestampsRef.current[selectedSymbol] >= 30 * 1000); // 30 seconds in milliseconds
       
       if (canChangeSymbol) {
-        // PRIORITY 1: Check for trade-ready symbols first
-        console.log('🎯 Checking for trade-ready symbols...');
-        let tradeReadySymbol = null;
-        
-        // Check all available symbols for trade readiness
-        for (const symbol of allAvailableSymbols) {
-          const tickSymbols = tickData ? Object.keys(tickData) : [];
-          const latestTick = tickSymbols.includes(symbol) ? tickData[symbol] : null;
-          
-          if (latestTick) {
-            const tradeConditions = checkAutoTradeConditions(latestTick);
-            if (tradeConditions?.canTrade) {
-              tradeReadySymbol = symbol;
-              console.log('🎯 ✅ TRADE-READY SYMBOL FOUND:', symbol, 'Conditions:', tradeConditions);
-              break; // Use the first trade-ready symbol found
-            }
-          }
-        }
-        
-        // PRIORITY 2: Use trade-ready symbol if found, otherwise use new symbol
-        const symbolToSelect = tradeReadySymbol || newSymbols[newSymbols.length - 1];
-        console.log('🔍 🔄 Switching to symbol:', symbolToSelect, tradeReadySymbol ? '(TRADE-READY)' : '(NEW)');
-        setSelectedSymbol(symbolToSelect);
-        
-        // Auto-open chart in reusable tab for selected symbol - Enhanced debugging
-        console.log('🚀 Attempting auto-chart open for:', symbolToSelect);
-        console.log('🔍 Symbol format check - Original:', symbolToSelect, 'Type:', typeof symbolToSelect);
-        
-        const chartUrl = getKiteChartUrl(symbolToSelect);
-        console.log('🔍 Chart URL result:', chartUrl);
-        
-        if (chartUrl) {
-          console.log('🚀 AUTO-OPENING CHART NOW for:', symbolToSelect, 'URL:', chartUrl);
-          
-          // Try to open chart with popup blocker detection
-          try {
-            const newTab = window.open(chartUrl, 'kite-chart-tab'); // Named tab - reuses same tab
-            if (newTab) {
-              console.log('✅ Chart opened in reusable tab for:', symbolToSelect.replace('NSE:', ''));
-              // Focus the chart tab to bring it to front
-              newTab.focus();
-              
-              // Also open the order book panel for the same symbol
-              if (onSymbolClick) {
-                onSymbolClick(symbolToSelect);
-                console.log('🎯 Order book panel opened for:', symbolToSelect.replace('NSE:', ''));
-              }
-            } else {
-              console.error('❌ Popup blocked! Enable popups for automatic chart opening');
-              // Show alert as fallback
-              alert(`📊 Chart blocked by popup blocker!\nClick OK to open chart for ${symbolToSelect.replace('NSE:', '')}\n\nURL: ${chartUrl}`);
-            }
-          } catch (error) {
-            console.error('❌ Error opening chart:', error);
-          }
-        } else {
-          console.log('⚠️ No chart URL available for:', symbolToSelect);
-          console.log('🔍 Debug: Checking token mapping for symbol:', symbolToSelect.replace('NSE:', ''));
-        }
-        
-        // Update timestamp for the selected symbol
-        const newTimestamps = {
-          ...symbolTimestampsRef.current,
-          [symbolToSelect]: currentTime
-        };
-        symbolTimestampsRef.current = newTimestamps;
-        
-        // Record which symbols existed when this symbol was selected
-        symbolsAtSelectionRef.current[symbolToSelect] = new Set(allAvailableSymbols);
+        // ❌ DISABLED: Auto-selection of trade-ready symbols - only manual selection allowed
+        console.log('🎯 Auto-selection DISABLED - Trade-ready symbols detected but not auto-selected. Click to select manually.');
       } else {
         // Current symbol is still in its 30-second display period
         const timeRemaining = 30 * 1000 - (currentTime - symbolTimestampsRef.current[selectedSymbol]);
@@ -516,30 +754,9 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
       }
     }
     
-    // If no selectedSymbol yet, or if current selectedSymbol is no longer available
-    if (!selectedSymbol || !allAvailableSymbols.includes(selectedSymbol)) {
-      // Prefer symbols with actual data, but show any available symbol
-      const symbolToSelect = subscribedStocks.length > 0 ? subscribedStocks[0] : 
-                            allAvailableSymbols.length > 0 ? allAvailableSymbols[0] : null;
-      
-      if (symbolToSelect) {
-        console.log('🔍 🔄 Switching to available stock:', symbolToSelect);
-        setSelectedSymbol(symbolToSelect);
-        
-        // Set timestamp for this symbol
-        const currentTime = Date.now();
-        const newTimestamps = {
-          ...symbolTimestampsRef.current,
-          [symbolToSelect]: currentTime
-        };
-        symbolTimestampsRef.current = newTimestamps;
-        
-        // Record which symbols existed when this symbol was selected
-        symbolsAtSelectionRef.current[symbolToSelect] = new Set(allAvailableSymbols);
-      } else {
-        console.log('🔍 ❌ No available stocks');
-        setSelectedSymbol(null);
-      }
+    // ❌ DISABLED: Auto-fallback symbol selection - order book stays empty until manual click
+    if (!selectedSymbol) {
+      console.log('🔍 ❌ No selected symbol - Order book will remain empty until manual selection');
     }
     
     // Update previous symbols set
@@ -557,7 +774,7 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     });
     symbolTimestampsRef.current = cleanedTimestamps;
     
-  }, [tickData, selectedSymbol, getAllAvailableSymbols, getSubscribedStocks, getKiteChartUrl]);
+  }, [tickData, getAllAvailableSymbols, getSubscribedStocks, getKiteChartUrl]); // Removed selectedSymbol to prevent manual selection override
   
   // Continuous trade-ready monitoring - runs independently of new symbol detection
   useEffect(() => {
@@ -566,6 +783,15 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
       const currentTime = Date.now();
       
       console.log('🎯 CONTINUOUS CHECK: Monitoring trade-ready symbols...');
+      
+      // Check for manual selection protection
+      const isManualSelectionActive = manualSelectionRef.current && 
+        (currentTime - manualSelectionRef.current.timestamp) < MANUAL_SELECTION_LOCK_TIME;
+      
+      if (isManualSelectionActive) {
+        console.log('🎯 🔒 CONTINUOUS CHECK: Manual selection protected - Skipping auto-selection for:', manualSelectionRef.current.symbol, 'Time remaining:', Math.ceil((MANUAL_SELECTION_LOCK_TIME - (currentTime - manualSelectionRef.current.timestamp)) / 1000), 'seconds');
+        return;
+      }
       
       // Check if current symbol can be changed (30 seconds elapsed or no current symbol)
       const canChangeSymbol = !selectedSymbol || 
@@ -590,34 +816,9 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
           }
         }
         
-        // If we found a trade-ready symbol and it's different from current
+        // ❌ DISABLED: Auto-selection of trade-ready symbols - manual selection only
         if (tradeReadySymbol && tradeReadySymbol !== selectedSymbol) {
-          console.log('🎯 🔄 CONTINUOUS CHECK: Switching to trade-ready symbol:', tradeReadySymbol);
-          setSelectedSymbol(tradeReadySymbol);
-          
-          // Update timestamp
-          symbolTimestampsRef.current[tradeReadySymbol] = currentTime;
-          
-          // Auto-open chart and order panel
-          const chartUrl = getKiteChartUrl(tradeReadySymbol);
-          if (chartUrl) {
-            console.log('🚀 CONTINUOUS CHECK: Opening chart for trade-ready symbol:', tradeReadySymbol);
-            try {
-              const newTab = window.open(chartUrl, 'kite-chart-tab');
-              if (newTab) {
-                newTab.focus();
-                console.log('✅ Chart opened for trade-ready symbol:', tradeReadySymbol.replace('NSE:', ''));
-              }
-            } catch (error) {
-              console.error('❌ Error opening chart for trade-ready symbol:', error);
-            }
-          }
-          
-          // Open order panel
-          if (onSymbolClick) {
-            onSymbolClick(tradeReadySymbol);
-            console.log('🎯 Order panel opened for trade-ready symbol:', tradeReadySymbol.replace('NSE:', ''));
-          }
+          console.log('🎯 🔄 TRADE-READY SYMBOL DETECTED but auto-selection DISABLED:', tradeReadySymbol, '- Click to select manually');
         }
       } else if (selectedSymbol) {
         const timeRemaining = 30 * 1000 - (currentTime - symbolTimestampsRef.current[selectedSymbol]);
@@ -632,7 +833,7 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     const tradeReadyInterval = setInterval(checkTradeReadySymbols, 5000);
     
     return () => clearInterval(tradeReadyInterval);
-  }, [tickData, selectedSymbol, getAllAvailableSymbols, getKiteChartUrl, onSymbolClick]);
+  }, [tickData, selectedSymbol, getAllAvailableSymbols, getKiteChartUrl]);
   
   // Effect to notify backend about selected symbol changes for masking
   useEffect(() => {
@@ -689,12 +890,8 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
         );
         
         if (newlySubscribedSymbols.length > 0) {
-          const newestSymbol = newlySubscribedSymbols.reduce((newest, symbol) => 
-            symbolTimestampsRef.current[symbol] > symbolTimestampsRef.current[newest] ? symbol : newest
-          );
-          
-          console.log('🔍 ⏰ 30 seconds elapsed. Switching to newly subscribed symbol:', newestSymbol);
-          setSelectedSymbol(newestSymbol);
+          // ❌ DISABLED: Auto-selection after 30 seconds - manual selection only
+          console.log('🔍 ⏰ 30 seconds elapsed. New symbols available but auto-selection DISABLED. Click to select manually:', newlySubscribedSymbols);
         } else {
           console.log('🔍 ⏰ 30 seconds elapsed but no newly subscribed symbols found. Staying with current symbol:', selectedSymbol);
         }
@@ -722,26 +919,22 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
           
           if (analysis.canTrade && !autoOpenedChartsRef.current.has(symbol)) {
             console.log(`🚨 NEW TRADING OPPORTUNITY DETECTED: ${symbol}`);
-            console.log(`📈 AUTO-OPENING CHART for: ${symbol}`);
+            console.log(`ℹ️ Trading opportunity detected but NOT auto-opening chart for: ${symbol}`);
             
-            // Set as selected symbol for highlighting and live tracker update
-            setSelectedSymbol(symbol);
+            // Check for manual selection protection
+            const currentTime = Date.now();
+            const isManualSelectionActive = manualSelectionRef.current && 
+              (currentTime - manualSelectionRef.current.timestamp) < MANUAL_SELECTION_LOCK_TIME;
             
-            // Mark as auto-opened to prevent duplicates
+            // ❌ DISABLED: Auto-selection for trading opportunities - manual selection only
+            console.log('🚨 NEW TRADING OPPORTUNITY DETECTED but auto-selection DISABLED:', symbol, '- Click to select manually');
+            
+            // Mark as detected to prevent duplicates
             autoOpenedChartsRef.current.add(symbol);
             
-            // Get chart URL and open in new tab
-            const chartUrl = getKiteChartUrl(symbol);
-            if (chartUrl) {
-              window.open(chartUrl, `chart-${symbol.replace(':', '-')}`);
-              console.log(`✅ Chart opened automatically for: ${symbol}`);
-            }
-            
-            // Also trigger the SST panel if callback is available
-            if (onSymbolClick) {
-              onSymbolClick(symbol);
-              console.log(`🎯 SST panel opened automatically for: ${symbol}`);
-            }
+            // ❌ REMOVED: Auto-chart opening for trading opportunities
+            // Charts should only open when orders are placed or symbols are manually clicked
+            console.log('ℹ️ Trading opportunity detected but NOT auto-opening chart for:', symbol);
             
             // Clear the auto-opened flag after 2 minutes to allow re-opening if conditions re-emerge
             setTimeout(() => {
@@ -754,7 +947,7 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
         });
       }
     }
-  }, [tickData, getAllAvailableSymbols, getSubscribedStocks, getKiteChartUrl, onSymbolClick]); // Re-analyze when tick data updates
+  }, [tickData, getAllAvailableSymbols, getSubscribedStocks, getKiteChartUrl]); // Re-analyze when tick data updates
   
   // Effect to update current time every second for countdown display
   useEffect(() => {
@@ -772,6 +965,22 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
     }
     return fullSymbol;
   };
+
+  // Auto-select RELIANCE when it becomes available for order book display
+  useEffect(() => {
+    if (!selectedSymbol && tickData) {
+      const availableSymbols = Object.keys(tickData);
+      const relianceSymbol = availableSymbols.find(symbol => 
+        symbol.toUpperCase().includes('RELIANCE') || 
+        symbol === 'RELIANCE'
+      );
+      
+      if (relianceSymbol) {
+        console.log('🎯 Auto-selecting RELIANCE for order book display:', relianceSymbol);
+        setSelectedSymbol(`NSE:${relianceSymbol}`);
+      }
+    }
+  }, [tickData, selectedSymbol]);
 
   // Get stock data for the currently selected symbol
   const getAvailableStockData = () => {
@@ -932,472 +1141,1213 @@ const SubscribedStockTracker = ({ tickData, onSymbolClick }) => {
 
   return (
     <TrackerContainer>
-      {/* Live Tracker Header Section */}
-      <AccordionSection>
-        <AccordionHeader 
-          primary={true}
-          isExpanded={expandedSections.liveTracker}
-          onClick={() => toggleSection('liveTracker')}
-        >
-          <AccordionTitle primary={true}>
-            🏛️ Live Stock Tracker - {selectedSymbol ? selectedSymbol.replace('NSE:', '') : 'No Stock'}
-            {selectedSymbol && (
-              <MaskingBadge>
-                🎯 MASKING ACTIVE
-              </MaskingBadge>
-            )}
-          </AccordionTitle>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-            {(() => {
-              const timeRemaining = getTimeRemaining();
-              return timeRemaining !== null && timeRemaining > 0 ? (
-                <span style={{ 
-                  color: timeRemaining > 60 ? '#ffd700' : timeRemaining > 30 ? '#ff9500' : '#ff6b6b',
+      {/* Market Scanner Section */}
+      <div style={{
+        background: '#ffffff',
+        borderRadius: '8px', 
+        padding: '20px',
+        marginBottom: '20px',
+        boxShadow: '0 1px 3px rgba(0, 0, 0, 0.1)',
+        border: '1px solid #e5e7eb'
+      }}>
+        {/* Header */}
+        <div style={{
+          fontSize: '16px',
+          fontWeight: '600',
+          color: '#1f2937',
+          marginBottom: '16px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '12px',
+          fontFamily: 'system-ui, -apple-system, sans-serif'
+        }}>
+          � Subscribed Securities ({getSubscribedStocks().length})
+          <span style={{ 
+            color: '#00ff88', 
+            fontSize: '20px',
+            background: 'linear-gradient(45deg, rgba(0, 255, 136, 0.3), rgba(0, 255, 255, 0.2))',
+            padding: '16px 32px',
+            borderRadius: '20px',
+            fontWeight: '700',
+            letterSpacing: '0.8px',
+            border: '2px solid rgba(0, 255, 136, 0.8)',
+            boxShadow: '0 0 20px rgba(0, 255, 136, 0.4), inset 0 2px 0 rgba(255, 255, 255, 0.2)',
+            fontFamily: '"Inter", "Segoe UI", "Roboto", "Helvetica Neue", sans-serif',
+            textTransform: 'uppercase'
+          }}>
+            🤖 Scanner
+          </span>
+          
+          {/* Buy/Sell Scan Buttons - Show whenever RELIANCE is subscribed */}
+          {(() => {
+            const subscribedSymbols = getSubscribedStocks();
+            const hasReliance = subscribedSymbols.some(symbol => 
+              symbol.toLowerCase().includes('reliance') || 
+              symbol === 'NSE:RELIANCE' || 
+              symbol === 'RELIANCE'
+            );
+            return hasReliance;
+          })() && (
+            <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
+              <button
+                onClick={handleBuyScan}
+                disabled={relianceScanType === 'BUY_SCAN'}
+                style={{
+                  background: relianceScanType === 'BUY_SCAN' 
+                    ? 'linear-gradient(135deg, #16a34a, #15803d)' 
+                    : 'linear-gradient(135deg, #22c55e, #16a34a)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '8px 16px',
+                  fontSize: '12px',
                   fontWeight: '600',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                  fontSize: '12px'
-                }}>
-                  ⏰ {Math.floor(timeRemaining / 60)}:{(timeRemaining % 60).toString().padStart(2, '0')}
-                </span>
-              ) : null;
-            })()}
-            {stockData ? (
-              <span style={{ color: '#00ff00', fontSize: '12px' }}>🟢 LIVE</span>
-            ) : (
-              <span style={{ color: '#ff6b6b', fontSize: '12px' }}>🔴 NO DATA</span>
-            )}
-            <AccordionIcon primary={true} isExpanded={expandedSections.liveTracker}>
-              ▶
-            </AccordionIcon>
-          </div>
-        </AccordionHeader>
-        <AccordionContent isExpanded={expandedSections.liveTracker}>
-          {/* Market Impact Info */}
-          {selectedSymbol && stockData?.depth?.marketImpact && (
-            <div style={{ 
-              padding: '10px',
-              background: 'rgba(255, 215, 0, 0.05)',
-              border: '1px solid rgba(255, 215, 0, 0.2)',
-              borderRadius: '8px',
-              fontSize: '11px',
-              color: '#ffd700',
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
-              gap: '8px',
-              marginBottom: '15px'
-            }}>
-              <span>📊 Qty: {stockData.depth.marketImpact.quantity?.toLocaleString()}</span>
-              <span>🎯 Levels: {stockData.depth.marketImpact.impactedLevels}</span>
-              <span>📈 Slippage: {stockData.depth.marketImpact.totalSlippage?.toFixed(3)}%</span>
-              <span>💰 Avg Price: ₹{stockData.depth.marketImpact.avgExecutionPrice?.toFixed(2)}</span>
-              <span>📋 L5: {(() => {
-                const analytics = calculateOrderBookAnalytics();
-                return `B:${analytics.l5.bidQtySum.toLocaleString()} | A:${analytics.l5.askQtySum.toLocaleString()}`;
-              })()}</span>
+                  cursor: relianceScanType === 'BUY_SCAN' ? 'default' : 'pointer',
+                  transition: 'all 0.2s ease',
+                  boxShadow: relianceScanType === 'BUY_SCAN' 
+                    ? '0 2px 4px rgba(22, 163, 74, 0.4)' 
+                    : '0 2px 4px rgba(34, 197, 94, 0.2)',
+                  fontFamily: 'system-ui, -apple-system, sans-serif',
+                  opacity: relianceScanType === 'BUY_SCAN' ? '0.8' : '1'
+                }}
+                title={relianceScanType === 'BUY_SCAN' ? 'RELIANCE is set as Buy Scan symbol' : 'Set RELIANCE as Buy Scan symbol - Orders only execute if ALL 13 buy conditions are met'}
+              >
+                {relianceScanType === 'BUY_SCAN' ? '✓ Buy Active' : '📈 Buy Scan'}
+              </button>
+              
+              <button
+                onClick={handleSellScan}
+                disabled={relianceScanType === 'SELL_SCAN'}
+                style={{
+                  background: relianceScanType === 'SELL_SCAN' 
+                    ? 'linear-gradient(135deg, #dc2626, #b91c1c)' 
+                    : 'linear-gradient(135deg, #ef4444, #dc2626)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  padding: '8px 16px',
+                  fontSize: '12px',
+                  fontWeight: '600',
+                  cursor: relianceScanType === 'SELL_SCAN' ? 'default' : 'pointer',
+                  transition: 'all 0.2s ease',
+                  boxShadow: relianceScanType === 'SELL_SCAN' 
+                    ? '0 2px 4px rgba(220, 38, 38, 0.4)' 
+                    : '0 2px 4px rgba(239, 68, 68, 0.2)',
+                  fontFamily: 'system-ui, -apple-system, sans-serif',
+                  opacity: relianceScanType === 'SELL_SCAN' ? '0.8' : '1'
+                }}
+                title={relianceScanType === 'SELL_SCAN' ? 'RELIANCE is set as Sell Scan symbol' : 'Set RELIANCE as Sell Scan symbol - Orders only execute if ALL 13 sell conditions are met'}
+              >
+                {relianceScanType === 'SELL_SCAN' ? '✓ Sell Active' : '📉 Sell Scan'}
+              </button>
+              
+              {/* RELIANCE Mode Indicator - Show whenever RELIANCE is subscribed */}
+              <span style={{ 
+                color: '#fbbf24', 
+                fontSize: '12px',
+                background: 'rgba(251, 191, 36, 0.1)',
+                padding: '4px 8px',
+                borderRadius: '12px',
+                fontWeight: '600',
+                border: '1px solid rgba(251, 191, 36, 0.3)',
+                fontFamily: 'system-ui, -apple-system, sans-serif',
+                display: 'flex',
+                alignItems: 'center'
+              }}>
+                🏛️ RELIANCE ({relianceScanType})
+              </span>
             </div>
           )}
-        </AccordionContent>
-      </AccordionSection>
+        </div>
 
-      {/* Order Book Section */}
-      {(stockData || isWaitingForData) && (
-        <AccordionSection>
-          <AccordionHeader 
-            isExpanded={expandedSections.orderBook}
-            onClick={() => toggleSection('orderBook')}
-          >
-            <AccordionTitle>
-              📈 Order Book - {selectedSymbol ? selectedSymbol.replace('NSE:', '') : 'Loading...'}
-            </AccordionTitle>
-            <AccordionIcon isExpanded={expandedSections.orderBook}>
-              ▶
-            </AccordionIcon>
-          </AccordionHeader>
-          <AccordionContent isExpanded={expandedSections.orderBook}>
-            {isWaitingForData && !stockData ? (
+        {/* Scanner Status */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(4, 1fr)',
+          gap: '8px',
+          padding: '12px 16px',
+          background: 'linear-gradient(135deg, rgba(30, 60, 114, 0.1), rgba(42, 82, 152, 0.05))',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
+          borderRadius: '8px',
+          marginBottom: '8px',
+          fontSize: '12px',
+          fontFamily: 'system-ui, -apple-system, sans-serif'
+        }}>
+          <div style={{ textAlign: 'center', color: '#10b981' }}>
+            <div style={{ fontWeight: '600', fontSize: '16px' }}>{subscribedCount || 0}</div>
+            <div style={{ opacity: '0.8' }}>Subscribed</div>
+          </div>
+          <div style={{ textAlign: 'center', color: '#3b82f6' }}>
+            <div style={{ fontWeight: '600', fontSize: '16px' }}>{buySignalsCount || 0}</div>
+            <div style={{ opacity: '0.8' }}>Buy Signals</div>
+          </div>
+          <div style={{ textAlign: 'center', color: '#ef4444' }}>
+            <div style={{ fontWeight: '600', fontSize: '16px' }}>{sellSignalsCount || 0}</div>
+            <div style={{ opacity: '0.8' }}>Sell Signals</div>
+          </div>
+          <div style={{ textAlign: 'center', color: '#f59e0b' }}>
+            <div style={{ fontWeight: '600', fontSize: '16px' }}>{pollCountdown || 0}s</div>
+            <div style={{ opacity: '0.8' }}>Next Poll</div>
+          </div>
+        </div>
+        
+        {/* Table Header */}
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: gridTemplate,
+          gap: '8px',
+          padding: '8px 12px',
+          fontSize: '11px',
+          fontWeight: '500',
+          color: '#374151',
+          background: '#f9fafb',
+          borderRadius: '4px',
+          marginBottom: '4px',
+          fontFamily: 'system-ui, -apple-system, sans-serif',
+          letterSpacing: '0.025em',
+          textTransform: 'uppercase',
+          border: '1px solid #e5e7eb',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden'
+        }}>          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SYM</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>TYP</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>LTP</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>QTY</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>LEV</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }} title="Near Support - Next 5 levels after concentration">SUP5</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }} title="Deep Support - 5 levels deeper than SUP5">DEEP</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SLP</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>AVG</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>ACTION</div>
+        </div>
+      
+        {/* Table Data */}
+        {(() => {
+          const subscribedStocks = getSubscribedStocks();
+          console.log('🔍 RENDER CHECK - subscribedStocks length:', subscribedStocks.length);
+          console.log('🔍 RENDER CHECK - subscribedStocks:', subscribedStocks);
+          
+          // Only show real subscribed stocks, no test data
+          if (subscribedStocks.length === 0) {
+            return (
               <div style={{
                 textAlign: 'center',
-                padding: '40px 20px',
-                background: 'rgba(255, 215, 0, 0.1)',
-                border: '1px solid rgba(255, 215, 0, 0.3)', 
-                borderRadius: '12px',
-                color: '#ffd700'
+                padding: '40px',
+                color: '#ff6b6b',
+                background: 'rgba(255, 107, 107, 0.1)',
+                border: '1px solid rgba(255, 107, 107, 0.3)',
+                borderRadius: '8px',
+                fontSize: '16px',
+                fontFamily: '"Segoe UI", "Roboto", "Inter", system-ui, -apple-system, sans-serif',
+                lineHeight: '1.6'
               }}>
-                <div style={{ fontSize: '24px', marginBottom: '10px' }}>⏳</div>
-                <div style={{ fontSize: '16px', fontWeight: '600', marginBottom: '8px' }}>
-                  Loading live data for {currentSymbol}...
-                </div>
-                <div style={{ fontSize: '12px', opacity: 0.8 }}>
-                  Symbol subscribed successfully - waiting for first tick data from exchange
-                </div>
-              </div>
-            ) : stockData ? (
-              <TrackerBody>
-                <div style={{ padding: '20px', textAlign: 'center', color: '#ffd700' }}>
-                  Order book data for {selectedSymbol} would be displayed here
-                </div>
-              </TrackerBody>
-            ) : null}
-          </AccordionContent>
-        </AccordionSection>
-      )}
-
-      {/* All Subscribed Stocks Section */}
-      <AccordionSection>
-        <AccordionHeader 
-          isExpanded={expandedSections.allStocks}
-          onClick={() => toggleSection('allStocks')}
-        >
-          <AccordionTitle>
-            📊 All Subscribed Stocks ({getSubscribedStocks().length})
-          </AccordionTitle>
-          <AccordionIcon isExpanded={expandedSections.allStocks}>
-            ▶
-          </AccordionIcon>
-        </AccordionHeader>
-        <AccordionContent isExpanded={expandedSections.allStocks}>
-          {/* Table Header */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: gridTemplate,
-            gap: '8px',
-            padding: '8px',
-            fontSize: '11px',
-            fontWeight: '600',
-            color: '#ffd700',
-            background: 'rgba(255, 215, 0, 0.1)',
-            borderRadius: '6px',
-            marginBottom: '8px'
-          }}>
-            <div>📈 Symbol</div>
-            <div>🔄 Type</div>
-            <div>📊 Qty</div>
-            <div>🎯 Levels</div>
-            <div>🛡️ L3-7 Support</div>
-            {window.innerWidth > 1024 && <div>📈 Slippage</div>}
-            {window.innerWidth > 768 && <div>💰 Avg Price</div>}
-            {window.innerWidth > 1024 && <div>⚖️ L3-7: Imbal</div>}
-            {window.innerWidth > 1024 && <div>🎯 Trade Ready</div>}
-          </div>
-        
-          {/* Table Data */}
-          {getSubscribedStocks().map(symbol => {
-            console.log('🔍 TABLE RENDER - Processing symbol:', symbol, 'Type:', typeof symbol);
-            
-            const symbolKey = extractSymbolName(symbol);
-            console.log('🔍 TABLE RENDER - Symbol key for lookup:', symbolKey);
-            
-            const symbolData = tickData?.[symbolKey];
-            console.log('🔍 TABLE RENDER - Found symbolData:', !!symbolData, 'Length:', symbolData?.length);
-            
-            const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-            console.log('🔍 TABLE RENDER - Latest tick exists:', !!latestTick);
-            
-            if (latestTick) {
-              console.log('🔍 TABLE RENDER - Market impact:', !!latestTick.depth?.marketImpact);
-            }
-            
-            const marketImpact = latestTick?.depth?.marketImpact;
-            const scanType = latestTick?.scan_type || 'UNKNOWN';
-            
-            const tradeConditions = latestTick ? checkAutoTradeConditions(latestTick) : null;
-            
-            console.log(`🔍 DATA EXTRACTION for ${symbol}:`, {
-              symbolKey: symbolKey,
-              hasSymbolData: !!symbolData,
-              dataLength: symbolData?.length,
-              hasLatestTick: !!latestTick,
-              scanType: scanType,
-              hasMarketImpact: !!marketImpact
-            });
-            
-            const l5Data = latestTick?.depth ? (() => {
-              const { buy = [], sell = [] } = latestTick.depth;
-              const bidQtySum5 = buy.slice(0, 5).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-              const askQtySum5 = sell.slice(0, 5).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-              return { bidQtySum5, askQtySum5 };
-            })() : { bidQtySum5: 0, askQtySum5: 0 };
-            
-            const l37Data = latestTick?.depth ? (() => {
-              const { buy = [], sell = [] } = latestTick.depth;
-              const bidQtySum37 = buy.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-              const askQtySum37 = sell.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-              
-              let imbalance37 = 0;
-              if (scanType === 'BUY_SCAN' && askQtySum37 > 0) {
-                imbalance37 = bidQtySum37 / askQtySum37;
-              } else if (scanType === 'SELL_SCAN' && bidQtySum37 > 0) {
-                imbalance37 = askQtySum37 / bidQtySum37;
-              }
-              
-              return { bidQtySum37, askQtySum37, imbalance37 };
-            })() : { bidQtySum37: 0, askQtySum37: 0, imbalance37: 0 };
-            
-            const supportData = latestTick?.depth ? (() => {
-              const { buy = [], sell = [] } = latestTick.depth;
-              
-              const currentPrice = latestTick.last_price || 1;
-              const calculatedQuantity = Math.floor(500000 / currentPrice);
-              
-              const askSupport = sell.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-              const askSupportRatio = calculatedQuantity > 0 ? askSupport / calculatedQuantity : 0;
-              
-              const bidSupport = buy.slice(2, 7).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-              const bidSupportRatio = calculatedQuantity > 0 ? bidSupport / calculatedQuantity : 0;
-              
-              return { askSupport, bidSupport, askSupportRatio, bidSupportRatio, calculatedQuantity };
-            })() : { askSupport: 0, bidSupport: 0, askSupportRatio: 0, bidSupportRatio: 0, calculatedQuantity: 0 };
-            
-            const scanColors = {
-              BUY_SCAN: {
-                bg: 'rgba(0, 255, 0, 0.1)',
-                border: 'rgba(0, 255, 0, 0.3)',
-                text: '#00ff00',
-                bidColor: '#00ff00',
-                askColor: '#ffaa00'
-              },
-              SELL_SCAN: {
-                bg: 'rgba(255, 107, 107, 0.1)',
-                border: 'rgba(255, 107, 107, 0.3)',
-                text: '#ff6b6b',
-                bidColor: '#ffaa00',
-                askColor: '#ff6b6b'
-              },
-              UNKNOWN: {
-                bg: 'rgba(255, 255, 255, 0.02)',
-                border: 'transparent',
-                text: '#888',
-                bidColor: '#888',
-                askColor: '#888'
-              }
-            };
-            
-            const colors = scanColors[scanType] || scanColors.UNKNOWN;
-            
-            return (
-              <div
-                key={symbol}
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: gridTemplate,
-                  gap: '8px',
-                  padding: '8px',
-                  fontSize: '10px',
-                  background: symbol === selectedSymbol ? 
-                    'rgba(255, 215, 0, 0.2)' : colors.bg,
-                  borderRadius: '4px',
-                  marginBottom: '4px',
-                  border: symbol === selectedSymbol ? 
-                    '1px solid rgba(255, 215, 0, 0.5)' : 
-                    `1px solid ${colors.border}`,
-                  cursor: 'pointer'
-                }}
-                onClick={() => {
-                  setSelectedSymbol(symbol);
-                  const chartUrl = getKiteChartUrl(symbol);
-                  if (chartUrl) {
-                    window.open(chartUrl, 'kite-chart-tab');
-                    console.log('🔍 Chart opened for:', symbol);
-                  }
-                  if (onSymbolClick) {
-                    onSymbolClick(symbol);
-                    console.log('🎯 SST side panel opened for:', symbol);
-                  }
-                }}
-              >
-                <div style={{ 
-                  color: symbol === selectedSymbol ? '#ffd700' : '#79c0ff',
-                  fontWeight: symbol === selectedSymbol ? '600' : '400',
-                  fontSize: '11px'
-                }}>
-                  {symbol.replace('NSE:', '')}
-                  {symbol === selectedSymbol && <span style={{ marginLeft: '4px' }}>🎯</span>}
-                </div>
-                
-                <div style={{ 
-                  color: colors.text,
-                  fontSize: '9px',
-                  fontWeight: '600'
-                }}>
-                  {scanType === 'BUY_SCAN' ? '🟢 BUY' : 
-                   scanType === 'SELL_SCAN' ? '🔴 SELL' : '⚪ UNK'}
-                </div>
-                
-                <div style={{ color: marketImpact ? '#00ff00' : '#888' }}>
-                  {marketImpact?.quantity ? marketImpact.quantity.toLocaleString() : '-'}
-                </div>
-                
-                <div style={{ color: marketImpact ? '#00ff00' : '#888' }}>
-                  {marketImpact ? (
-                    scanType === 'BUY_SCAN' ? (
-                      <span style={{ color: colors.askColor }}>Ask: {marketImpact?.impactedLevels || '-'}</span>
-                    ) : scanType === 'SELL_SCAN' ? (
-                      <span style={{ color: colors.bidColor }}>Bid: {marketImpact?.impactedLevels || '-'}</span>
-                    ) : (
-                      marketImpact?.impactedLevels || '-'
-                    )
-                  ) : '-'}
-                </div>
-                
-                <div style={{ 
-                  color: latestTick ? '#79c0ff' : '#888',
-                  fontSize: '9px',
-                  fontWeight: '600'
-                }}>
-                  {latestTick ? (
-                    scanType === 'BUY_SCAN' ? (
-                      <span style={{ color: colors.askColor }} title="ASK L3-7 support : ratio vs ₹5L quantity">
-                        {supportData.askSupport.toLocaleString()} : {supportData.askSupportRatio.toFixed(1)}
-                      </span>
-                    ) : scanType === 'SELL_SCAN' ? (
-                      <span style={{ color: colors.bidColor }} title="BID L3-7 support : ratio vs ₹5L quantity">
-                        {supportData.bidSupport.toLocaleString()} : {supportData.bidSupportRatio.toFixed(1)}
-                      </span>
-                    ) : (
-                      <span>{Math.max(supportData.askSupport, supportData.bidSupport).toLocaleString()} : -</span>
-                    )
-                  ) : '-'}
-                </div>
-                
-                {window.innerWidth > 1024 && (
-                  <div style={{ color: marketImpact?.totalSlippage ? 
-                    (marketImpact.totalSlippage <= 0.05 ? '#00ff00' : 
-                     marketImpact.totalSlippage <= 0.1 ? '#ffa500' : '#ff6b6b') : '#888' }}>
-                    {marketImpact?.totalSlippage ? 
-                      `${marketImpact.totalSlippage.toFixed(3)}%` : '-'}
-                  </div>
-                )}
-                
-                {window.innerWidth > 768 && (
-                  <div style={{ color: marketImpact ? '#ffd700' : '#888' }}>
-                    {marketImpact?.avgExecutionPrice ? 
-                      `₹${marketImpact.avgExecutionPrice.toFixed(2)}` : '-'}
-                  </div>
-                )}
-                
-                {window.innerWidth > 1024 && (
-                  <div style={{ 
-                    color: latestTick ? (
-                      l37Data.imbalance37 >= 1.4 ? '#00ff00' : 
-                      l37Data.imbalance37 >= 1.2 ? '#ffaa00' : '#ff6b6b'
-                    ) : '#888',
-                    fontSize: '9px',
-                    fontWeight: '600'
-                  }}>
-                    {latestTick ? (
-                      l37Data.imbalance37 > 0 ? (
-                        <span title={`${scanType === 'BUY_SCAN' ? 'Bid/Ask' : 'Ask/Bid'} L3-7 ratio`}>
-                          {l37Data.imbalance37.toFixed(2)} ({
-                            scanType === 'BUY_SCAN' 
-                              ? `${l37Data.bidQtySum37.toLocaleString()}, ${l37Data.askQtySum37.toLocaleString()}`
-                              : scanType === 'SELL_SCAN'
-                              ? `${l37Data.askQtySum37.toLocaleString()}, ${l37Data.bidQtySum37.toLocaleString()}`
-                              : `${l37Data.bidQtySum37.toLocaleString()}, ${l37Data.askQtySum37.toLocaleString()}`
-                          })
-                        </span>
-                      ) : '-'
-                    ) : '-'}
-                  </div>
-                )}
-                
-                {window.innerWidth > 1024 && (
-                  <div style={{ 
-                    color: tradeConditions?.canTrade ? '#00ff00' : '#ff6b6b',
-                    fontSize: '9px',
-                    fontWeight: '600'
-                  }}>
-                    {tradeConditions ? (
-                      tradeConditions.canTrade ? (
-                        <span>✅ Ready</span>
-                      ) : (
-                        <span title={tradeConditions.reason}>❌ Wait</span>
-                      )
-                    ) : (
-                      <span>⏳ Loading</span>
-                    )}
-                  </div>
-                )}
+                📡 No subscribed stocks found.<br/>
+                Start scanner to see live market impact data.
               </div>
             );
-          })}
+          }
           
-          {/* Summary Footer */}
-          <div style={{
-            marginTop: '15px',
-            padding: '10px',
-            background: 'rgba(255, 215, 0, 0.1)',
-            borderRadius: '6px',
-            borderTop: '1px solid rgba(255, 215, 0, 0.3)'
+          return (
+            <div>
+              {/* Market Scanner Table */}
+              <div style={{
+                background: '#f9fafb',
+                border: '1px solid #e5e7eb',
+                padding: '12px',
+                borderRadius: '6px'
+              }}>
+          <div style={{ 
+            color: '#00ff88', 
+            fontWeight: '600', 
+            marginBottom: '16px',
+            fontSize: '14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px'
           }}>
-            <div style={{ 
-              fontSize: '11px', 
-              color: '#ffd700', 
-              fontWeight: '600',
-              textAlign: 'center',
-              display: 'flex',
-              justifyContent: 'space-between',
-              alignItems: 'center'
+            📊 LIVE Market Impact Data 
+            <span style={{ 
+              fontSize: '10px', 
+              color: '#10b981',
+              animation: 'pulse 1s ease-in-out infinite',
+              fontWeight: '400'
             }}>
-              <div>
-                📈 Total: {getSubscribedStocks().length} symbols
-              </div>
-              <div style={{ display: 'flex', gap: '15px' }}>
-                <span style={{ color: '#00ff00' }}>
-                  🟢 Buy: {getSubscribedStocks().filter(symbol => {
-                    const symbolData = tickData?.[symbol];
-                    const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-                    return latestTick?.scan_type === 'BUY_SCAN';
-                  }).length}
-                </span>
-                <span style={{ color: '#ff6b6b' }}>
-                  🔴 Sell: {getSubscribedStocks().filter(symbol => {
-                    const symbolData = tickData?.[symbol];
-                    const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-                    return latestTick?.scan_type === 'SELL_SCAN';
-                  }).length}
-                </span>
-              </div>
-              <div>
-                {selectedSymbol ? ` Live: ${selectedSymbol.replace('NSE:', '')}` : ' No selection'} ⚡
-              </div>
-            </div>
-          </div>
-        </AccordionContent>
-      </AccordionSection>
-      
-      {!stockData && !isWaitingForData && (
-        <AccordionSection>
-          <AccordionContent isExpanded={true}>
-            <NoDataMessage>
-              {hasSymbol ? (
-                <>
-                  ⏳ Waiting for live data for {currentSymbol}... <br />
-                  <small style={{ color: '#ffd700' }}>Symbol subscribed - first tick data loading...</small>
-                </>
-              ) : (
-                <>
-                  📡 Waiting for subscribed stock data... <br />
-                  <small>Start scanner to begin receiving tick updates</small>
-                </>
-              )}
-              {(() => {
-                const allSymbols = getAllAvailableSymbols();
-                const queuedSymbols = allSymbols.filter(symbol => symbol !== selectedSymbol);
+              • REAL-TIME
+            </span>
+          </div> 
+                <div style={{
+                  fontSize: '18px', 
+                  fontFamily: 'system-ui, -apple-system, sans-serif',
+                  letterSpacing: '0.025em'
+                }}>
+                  � Market Scanner [Active: {subscribedStocks.length}]
+                </div>
                 
-                if (queuedSymbols.length > 0) {
+                {subscribedStocks.map((symbol, index) => {
+                  console.log('🔍 TABLE RENDER - Processing symbol:', symbol, 'Index:', index);
+                  
+                  const symbolKey = extractSymbolName(symbol);
+                  const symbolData = tickData?.[symbolKey];
+                  const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
+                  
+                  // Create placeholder data for symbols without tick data
+                  const hasTickData = !!latestTick;
+                  
+                  // Use actual tick data if available, otherwise create placeholder
+                  const displayTick = latestTick || {
+                    last_price: 0,
+                    depth: { buy: [], sell: [] },
+                    marketImpact: { buy: {}, sell: {} },
+                    scan_type: 'PENDING',
+                    timestamp: new Date().toISOString()
+                  };
+                  
+                  const marketImpact = displayTick?.marketImpact;
+                  let scanType = displayTick?.scan_type || 'PENDING';
+                  
+                  // Mark symbols without tick data as PENDING
+                  if (!hasTickData) {
+                    scanType = 'PENDING';
+                  }
+                  
+                  // Override: Consider Reliance as sell signal for now (only if has tick data)
+                  if (hasTickData && symbol.includes('RELIANCE')) {
+                    scanType = 'SELL_SCAN';
+                  }
+                  
+                  // Force live update by including tick-based refresh
+                  const buyImpact = marketImpact?.buy || {};
+                  const sellImpact = marketImpact?.sell || {};
+                  
+                  // Calculate dynamic order book imbalance
+                  const calculateImbalance = (tickData) => {
+                    if (!tickData || !tickData.depth) {
+                      return { imbalance5: 0, imbalance10: 0 };
+                    }
+                    
+                    // Add extra safety check for depth structure
+                    const depth = tickData.depth || {};
+                    const { buy = [], sell = [] } = depth;
+                    
+                    // Debug logging
+                    console.log('🔍 ORDER BOOK DEPTH:', {
+                      buyLevels: buy.length,
+                      sellLevels: sell.length,
+                      buyFirst5: buy.slice(0, 5).map(l => l?.quantity || 0),
+                      sellFirst5: sell.slice(0, 5).map(l => l?.quantity || 0)
+                    });
+                    
+                    // Helper function to detect concentration end level
+                    const findConcentrationEnd = (levels, threshold = 0.7) => {
+                      if (!levels || levels.length === 0) return 0;
+                      
+                      const totalQty = levels.reduce((sum, level) => sum + (level?.quantity || 0), 0);
+                      if (totalQty === 0) return 0;
+                      
+                      let accumulatedQty = 0;
+                      for (let i = 0; i < levels.length; i++) {
+                        accumulatedQty += (levels[i]?.quantity || 0);
+                        // If 70% of quantity is within first i+1 levels, concentration ends here
+                        if (accumulatedQty >= (totalQty * threshold)) {
+                          return i + 1; // Return 1-based level number
+                        }
+                      }
+                      return Math.min(levels.length, 2); // Default to 2 levels if no clear concentration
+                    };
+                    
+                    // Find where quantity concentration ends for both sides
+                    const bidConcentrationEnd = findConcentrationEnd(buy);
+                    const askConcentrationEnd = findConcentrationEnd(sell);
+                    
+                    // Use the maximum concentration end point to ensure we look beyond all major activity
+                    const concentrationEnd = Math.max(bidConcentrationEnd, askConcentrationEnd, 2);
+                    
+                    console.log('🎯 CONCENTRATION:', {
+                      bidEnd: bidConcentrationEnd,
+                      askEnd: askConcentrationEnd,
+                      finalEnd: concentrationEnd
+                    });
+                    
+                    // Calculate support levels: separate 5 and 10 level ranges
+                    const supportStart = concentrationEnd; // 0-based index
+                    
+                    // SUP5: Next 5 levels after concentration (e.g., levels 3-7)
+                    const supportEnd5 = Math.min(supportStart + 5, Math.min(buy.length, sell.length));
+                    
+                    // Only calculate if we have enough levels
+                    if (supportEnd5 <= supportStart) {
+                      return { imbalance5: 0, imbalance10: 0 };
+                    }
+                    
+                    const bidSupportQty5 = buy.slice(supportStart, supportEnd5).reduce((sum, level) => sum + (level?.quantity || 0), 0);
+                    const askSupportQty5 = sell.slice(supportStart, supportEnd5).reduce((sum, level) => sum + (level?.quantity || 0), 0);
+                    
+                    // DEEP: Next 5 levels AFTER the SUP5 range (e.g., levels 8-12)
+                    const supportStart10 = supportEnd5; // Start where SUP5 ended
+                    const supportEnd10 = Math.min(supportStart10 + 5, Math.min(buy.length, sell.length));
+                    
+                    let bidSupportQty10 = 0;
+                    let askSupportQty10 = 0;
+                    
+                    // Only calculate DEEP if we have enough levels
+                    if (supportEnd10 > supportStart10) {
+                      bidSupportQty10 = buy.slice(supportStart10, supportEnd10).reduce((sum, level) => sum + (level?.quantity || 0), 0);
+                      askSupportQty10 = sell.slice(supportStart10, supportEnd10).reduce((sum, level) => sum + (level?.quantity || 0), 0);
+                    }
+                    
+                    console.log('📊 SUPPORT CALC:', {
+                      sup5Range: `${supportStart}-${supportEnd5}`,
+                      deepRange: `${supportStart10}-${supportEnd10}`,
+                      sup5Bid: bidSupportQty5,
+                      sup5Ask: askSupportQty5,
+                      deepBid: bidSupportQty10,
+                      deepAsk: askSupportQty10
+                    });
+                    
+                    // Calculate imbalance for 5-level support
+                    let imbalance5 = 0;
+                    if (bidSupportQty5 > 0 && askSupportQty5 > 0) {
+                      if (bidSupportQty5 > askSupportQty5) {
+                        imbalance5 = bidSupportQty5 / askSupportQty5;
+                      } else {
+                        imbalance5 = -(askSupportQty5 / bidSupportQty5);
+                      }
+                    } else if (bidSupportQty5 > 0) {
+                      imbalance5 = 999; // Only bid support
+                    } else if (askSupportQty5 > 0) {
+                      imbalance5 = -999; // Only ask support
+                    }
+                    
+                    // Calculate imbalance for 10-level support (actually deeper 5 levels)
+                    let imbalance10 = 0;
+                    if (bidSupportQty10 > 0 && askSupportQty10 > 0) {
+                      if (bidSupportQty10 > askSupportQty10) {
+                        imbalance10 = bidSupportQty10 / askSupportQty10;
+                      } else {
+                        imbalance10 = -(askSupportQty10 / bidSupportQty10);
+                      }
+                    } else if (bidSupportQty10 > 0) {
+                      imbalance10 = 999; // Only bid support
+                    } else if (askSupportQty10 > 0) {
+                      imbalance10 = -999; // Only ask support
+                    }
+                    
+                    return { imbalance5, imbalance10 };
+                  };
+                  
+                  const { imbalance5, imbalance10 } = calculateImbalance(displayTick);
+                  
+                  // Use actual tick timestamp for truly live updates
+                  
                   return (
-                    <div style={{ marginTop: '10px', fontSize: '11px', color: '#ffd700' }}>
-                      🔄 Available symbols: {queuedSymbols.join(', ')}
+                    <div
+                      key={`${symbol}-${index}-${displayTick?.timestamp || lastTickUpdate}`}
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: gridTemplate,
+                        gap: '8px',
+                        padding: '6px 12px',
+                        fontSize: '12px',
+                        fontFamily: 'system-ui, -apple-system, sans-serif',
+                        fontWeight: '400',
+                        letterSpacing: '0.025em',
+                        background: symbol === selectedSymbol ? 'rgba(0, 0, 0, 0.05)' : '#ffffff',
+                        color: symbol === selectedSymbol ? '#1f2937' : '#1f2937',
+                        borderRadius: '4px',
+                        marginBottom: '1px',
+                        border: '1px solid ' + (symbol === selectedSymbol ? '#9ca3af' : '#e5e7eb'),
+                        cursor: 'pointer',
+                        transition: 'all 0.15s ease',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden'
+                      }}
+                      title={`Click to open ${symbol.replace('NSE:', '')} chart in Kite`}
+                      onMouseEnter={(e) => {
+                        e.target.style.background = symbol === selectedSymbol ? 'rgba(59, 130, 246, 0.1)' : 'rgba(59, 130, 246, 0.05)';
+                        e.target.style.borderColor = '#3b82f6';
+                        e.target.style.transform = 'translateY(-1px)';
+                        e.target.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.target.style.background = symbol === selectedSymbol ? 'rgba(0, 0, 0, 0.05)' : '#ffffff';
+                        e.target.style.borderColor = symbol === selectedSymbol ? '#9ca3af' : '#e5e7eb';
+                        e.target.style.transform = 'translateY(0)';
+                        e.target.style.boxShadow = 'none';
+                      }}
+                      onClick={() => {
+                        // � SHOW ORDER BOOK: Click anywhere on row to show order book
+                        // Track manual selection to prevent auto-override
+                        const currentTime = Date.now();
+                        manualSelectionRef.current = {
+                          symbol: symbol,
+                          timestamp: currentTime
+                        };
+                        
+                        console.log('🔍 👆 MANUAL ROW SELECTION:', symbol, '- Protected until:', new Date(currentTime + MANUAL_SELECTION_LOCK_TIME).toLocaleTimeString());
+                        console.log('🔒 ROW MANUAL PROTECTION ACTIVE: Will block auto-selection for next', MANUAL_SELECTION_LOCK_TIME/1000, 'seconds');
+                        setSelectedSymbol(symbol);
+                      }}
+                    >
+                      {/* Symbol */}
+                      <div style={{ 
+                        fontWeight: '500',
+                        fontSize: window.innerWidth <= 480 ? '10px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        cursor: 'pointer'
+                      }}
+                      title={`Click to show ${symbol.replace('NSE:', '')} order book and open chart`}
+                      onClick={(e) => {
+                        e.stopPropagation(); // Prevent triggering row click
+                        
+                        // Track manual selection to prevent auto-override
+                        const currentTime = Date.now();
+                        manualSelectionRef.current = {
+                          symbol: symbol,
+                          timestamp: currentTime
+                        };
+                        
+                        console.log('🔍 👆 MANUAL SELECTION:', symbol, '- Protected until:', new Date(currentTime + MANUAL_SELECTION_LOCK_TIME).toLocaleTimeString());
+                        console.log('🔒 MANUAL PROTECTION ACTIVE: Will block auto-selection for next', MANUAL_SELECTION_LOCK_TIME/1000, 'seconds');
+                        
+                        setSelectedSymbol(symbol);
+                        
+                        //  OPEN NAMED CHART: Call onOpenChart if provided
+                        if (onOpenChart) {
+                          onOpenChart(symbol);
+                        }
+                        
+                        console.log('🔍 👆 MANUAL SELECTION:', symbol, '- Protected for', MANUAL_SELECTION_LOCK_TIME/1000, 'seconds');
+                      }}
+                      >
+                        {symbol.replace('NSE:', '').substring(0, window.innerWidth <= 480 ? 6 : 10)}
+                        {symbol === selectedSymbol && <span style={{ marginLeft: '2px' }}>●</span>}
+                        <span style={{ 
+                          fontSize: '10px', 
+                          opacity: 0.6,
+                          marginLeft: 'auto'
+                        }}>📊</span>
+                      </div>
+                      
+                      {/* Type */}
+                      <div style={{ 
+                        color: scanType === 'BUY_SCAN' ? '#059669' : 
+                               scanType === 'SELL_SCAN' ? '#dc2626' : 
+                               scanType === 'PENDING' ? '#6b7280' : '#d97706',
+                        fontWeight: '500',
+                        fontSize: window.innerWidth <= 480 ? '9px' : '11px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {scanType === 'BUY_SCAN' ? 'B' : 
+                         scanType === 'SELL_SCAN' ? 'S' : 
+                         scanType === 'PENDING' ? 'P' :
+                         'U'}
+                      </div>
+                      
+                      {/* LTP */}
+                      <div style={{ 
+                        color: '#1f2937',
+                        fontWeight: '500',
+                        fontSize: window.innerWidth <= 480 ? '10px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {hasTickData && displayTick?.last_price ? (window.innerWidth <= 480 ? displayTick.last_price.toFixed(0) : `₹${displayTick.last_price.toFixed(2)}`) : (hasTickData ? '-' : 'Pending')}
+                      </div>
+                      
+                      {/* Quantity (consolidated from buy/sell based on scan type) */}
+                      <div style={{ 
+                        color: scanType === 'BUY_SCAN' ? '#059669' : 
+                               scanType === 'SELL_SCAN' ? '#dc2626' : 
+                               scanType === 'PENDING' ? '#6b7280' : '#dc2626',
+                        fontWeight: '500',
+                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {(() => {
+                          if (!hasTickData) return 'Pending';
+                          const quantity = scanType === 'BUY_SCAN' ? buyImpact.quantity : sellImpact.quantity;
+                          if (!quantity) return '-';
+                          const formatted = formatQuantity(quantity);
+                          return window.innerWidth <= 480 ? formatted.substring(0, 4) : formatted;
+                        })()}
+                      </div>
+                      
+                      {/* Levels (consolidated from buy/sell based on scan type) */}
+                      <div style={{ 
+                        color: scanType === 'BUY_SCAN' ? '#059669' : 
+                               scanType === 'SELL_SCAN' ? '#dc2626' : 
+                               scanType === 'PENDING' ? '#6b7280' : '#dc2626',
+                        fontWeight: '500',
+                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {(() => {
+                          if (!hasTickData) return '-';
+                          const levels = scanType === 'BUY_SCAN' ? buyImpact.levels : sellImpact.levels;
+                          return levels || '-';
+                        })()}
+                      </div>
+                      
+                      {/* SUP5 - Near Support (Next 5 levels) */}
+                      <div style={{ 
+                        color: !hasTickData ? '#6b7280' : 
+                               imbalance5 > 1.2 ? '#059669' : 
+                               imbalance5 < -1.2 ? '#dc2626' : '#6b7280',
+                        fontWeight: '500',
+                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {(() => {
+                          if (!hasTickData) return '-';
+                          if (imbalance5 === 0) return '-';
+                          if (Math.abs(imbalance5) >= 999) return imbalance5 > 0 ? '∞' : '-∞';
+                          const absRatio = Math.abs(imbalance5);
+                          const formatted = window.innerWidth <= 480 ? 
+                            absRatio.toFixed(1) : 
+                            `${absRatio.toFixed(1)}x`;
+                          return imbalance5 < 0 ? `-${formatted}` : formatted;
+                        })()}
+                      </div>
+                      
+                      {/* DEEP - Deep Support (5 levels deeper) */}
+                      <div style={{ 
+                        color: !hasTickData ? '#6b7280' : 
+                               imbalance10 > 1.2 ? '#059669' : 
+                               imbalance10 < -1.2 ? '#dc2626' : '#6b7280',
+                        fontWeight: '500',
+                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {(() => {
+                          if (!hasTickData) return '-';
+                          if (imbalance10 === 0) return '-';
+                          if (Math.abs(imbalance10) >= 999) return imbalance10 > 0 ? '∞' : '-∞';
+                          const absRatio = Math.abs(imbalance10);
+                          const formatted = window.innerWidth <= 480 ? 
+                            absRatio.toFixed(1) : 
+                            `${absRatio.toFixed(1)}x`;
+                          return imbalance10 < 0 ? `-${formatted}` : formatted;
+                        })()}
+                      </div>
+                      
+                      {/* Slippage (consolidated from buy/sell based on scan type) */}
+                      <div style={{ 
+                        color: scanType === 'BUY_SCAN' ? '#059669' : 
+                               scanType === 'SELL_SCAN' ? '#dc2626' : 
+                               scanType === 'PENDING' ? '#6b7280' : '#dc2626',
+                        fontWeight: '500',
+                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {(() => {
+                          if (!hasTickData) return '-';
+                          const slippage = scanType === 'BUY_SCAN' ? buyImpact.slippage : sellImpact.slippage;
+                          if (slippage === null || slippage === undefined) return '-';
+                          return window.innerWidth <= 480 ? slippage.toFixed(1) : `${slippage.toFixed(3)}%`;
+                        })()}
+                      </div>
+                      
+                      {/* Avg Price (consolidated from buy/sell based on scan type) */}
+                      <div style={{ 
+                        color: scanType === 'BUY_SCAN' ? '#059669' : 
+                               scanType === 'SELL_SCAN' ? '#dc2626' : 
+                               scanType === 'PENDING' ? '#6b7280' : '#dc2626',
+                        fontWeight: '500',
+                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {(() => {
+                          if (!hasTickData) return '-';
+                          const avgPrice = scanType === 'BUY_SCAN' ? buyImpact.avgPrice : sellImpact.avgPrice;
+                          if (!avgPrice) return '-';
+                          return window.innerWidth <= 480 ? avgPrice.toFixed(0) : `₹${avgPrice.toFixed(2)}`;
+                        })()}
+                      </div>
+                      
+                      {/* Unsubscribe Button */}
+                      <div style={{ 
+                        display: 'flex',
+                        justifyContent: 'center',
+                        alignItems: 'center'
+                      }}>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation(); // Prevent triggering row click
+                            handleUnsubscribe(symbol);
+                          }}
+                          style={{
+                            background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '4px',
+                            padding: window.innerWidth <= 480 ? '2px 4px' : '4px 6px',
+                            fontSize: window.innerWidth <= 480 ? '8px' : '10px',
+                            fontWeight: '600',
+                            cursor: 'pointer',
+                            transition: 'all 0.2s ease',
+                            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.1)',
+                            fontFamily: 'system-ui, -apple-system, sans-serif'
+                          }}
+                          onMouseEnter={(e) => {
+                            e.target.style.background = 'linear-gradient(135deg, #dc2626, #b91c1c)';
+                            e.target.style.transform = 'scale(1.05)';
+                            e.target.style.boxShadow = '0 2px 4px rgba(220, 38, 38, 0.3)';
+                          }}
+                          onMouseLeave={(e) => {
+                            e.target.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
+                            e.target.style.transform = 'scale(1)';
+                            e.target.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.1)';
+                          }}
+                          title={`Unsubscribe from ${symbol.replace('NSE:', '')}`}
+                        >
+                          {window.innerWidth <= 480 ? '✕' : 'Unsub'}
+                        </button>
+                      </div>
                     </div>
                   );
-                }
-                return null;
-              })()}
-            </NoDataMessage>
-          </AccordionContent>
-        </AccordionSection>
+                })}
+              </div>
+            </div>
+          );
+        })()}
+        
+        {/* Summary Footer */}
+        {(() => {
+          const subscribedStocks = getSubscribedStocks();
+          return (
+            <div style={{
+              marginTop: '15px',
+              padding: '10px',
+              background: 'rgba(255, 215, 0, 0.1)',
+              borderRadius: '6px',
+              borderTop: '1px solid rgba(255, 215, 0, 0.3)'
+            }}>
+              <div style={{ 
+                fontSize: '12px', 
+                color: '#ffd700', 
+                fontWeight: '600',
+                textAlign: 'center',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                fontFamily: '"Segoe UI", "Roboto", "Inter", system-ui, -apple-system, sans-serif',
+                letterSpacing: '0.2px'
+              }}>
+                <div>
+                  📈 Total: {subscribedStocks.length} symbols
+                </div>
+                <div style={{ display: 'flex', gap: '15px' }}>
+                  <span style={{ color: '#00ff00' }}>
+                    🟢 Buy: {subscribedStocks.filter(symbol => {
+                      const symbolKey = extractSymbolName(symbol);
+                      const symbolData = tickData?.[symbolKey];
+                      const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
+                      return latestTick?.scan_type === 'BUY_SCAN';
+                    }).length}
+                  </span>
+                  <span style={{ color: '#ff6b6b' }}>
+                    🔴 Sell: {subscribedStocks.filter(symbol => {
+                      const symbolKey = extractSymbolName(symbol);
+                      const symbolData = tickData?.[symbolKey];
+                      const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
+                      return latestTick?.scan_type === 'SELL_SCAN';
+                    }).length}
+                  </span>
+                </div>
+                <div>
+                  {selectedSymbol ? ` Live: ${selectedSymbol.replace('NSE:', '')}` : ' No selection'} ⚡
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+        
+        {/* Real-Time Order Book Display */}
+        {selectedSymbol && (() => {
+          const symbolKey = extractSymbolName(selectedSymbol);
+          const symbolData = tickData?.[symbolKey];
+          const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
+          const rawDepth = latestTick?.rawTick?.originalDepth || latestTick?.rawTick?.depth;
+          
+          // Define variables for Order Book section scope
+          const hasTickData = !!latestTick;
+          const displayTick = latestTick || {
+            last_price: 0,
+            depth: { buy: [], sell: [] },
+            marketImpact: { buy: {}, sell: {} },
+            scan_type: 'PENDING',
+            timestamp: new Date().toISOString()
+          };
+          
+          if (!rawDepth || !rawDepth.buy || !rawDepth.sell) {
+            return (
+              <div style={{
+                marginTop: '20px',
+                padding: '24px',
+                background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.05), rgba(139, 92, 246, 0.05))',
+                border: '1px solid rgba(99, 102, 241, 0.15)',
+                borderRadius: '12px',
+                textAlign: 'center'
+              }}>
+                <div style={{
+                  fontSize: '48px',
+                  marginBottom: '16px',
+                  opacity: '0.6'
+                }}>
+                  📊
+                </div>
+                <div style={{
+                  fontSize: '16px',
+                  fontWeight: '600',
+                  color: '#6366f1',
+                  marginBottom: '8px'
+                }}>
+                  Select a Symbol
+                </div>
+                <div style={{
+                  fontSize: '14px',
+                  color: '#64748b',
+                  lineHeight: '1.5'
+                }}>
+                  Click on any symbol in the table above<br />to view its real-time order book data
+                </div>
+              </div>
+            );
+          }
+          
+          return (
+            <div style={{
+              marginTop: '20px',
+              padding: '16px',
+              background: 'linear-gradient(135deg, rgba(0, 0, 0, 0.02), rgba(0, 0, 0, 0.05))',
+              border: '1px solid #e5e7eb',
+              borderRadius: '8px'
+            }}>
+              <div style={{
+                fontSize: '14px',
+                fontWeight: '600',
+                color: '#1f2937',
+                marginBottom: '12px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                📊 Real-Time Order Book - {selectedSymbol.replace('NSE:', '')}
+                <span style={{
+                  fontSize: '10px',
+                  padding: '2px 6px',
+                  background: 'rgba(16, 185, 129, 0.1)',
+                  border: '1px solid rgba(16, 185, 129, 0.3)',
+                  borderRadius: '4px',
+                  color: '#059669'
+                }}>
+                  L{rawDepth.buy?.length || 0} LIVE
+                </span>
+                <span style={{
+                  fontSize: '10px',
+                  color: '#6b7280',
+                  marginLeft: 'auto'
+                }}>
+                  {hasTickData && displayTick?.timestamp ? new Date(displayTick.timestamp).toLocaleTimeString() : (hasTickData ? 'No timestamp' : 'Waiting...')}
+                </span>
+              </div>
+              
+              <div style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr',
+                gap: '12px'
+              }}>
+                {/* Bid Side */}
+                <div>
+                  <div style={{
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    color: '#059669',
+                    marginBottom: '6px',
+                    padding: '4px 8px',
+                    background: 'rgba(16, 185, 129, 0.1)',
+                    borderRadius: '4px',
+                    textAlign: 'center'
+                  }}>
+                    📈 BID (Buy Orders)
+                  </div>
+                  {rawDepth.buy?.slice(0, 5).map((level, index) => (
+                    <div key={index} style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr 1fr',
+                      gap: '4px',
+                      padding: '4px 8px',
+                      fontSize: '11px',
+                      background: index === 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(0, 0, 0, 0.02)',
+                      borderRadius: '3px',
+                      marginBottom: '1px',
+                      border: index === 0 ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid #f3f4f6'
+                    }}>
+                      <div style={{ color: '#059669', fontWeight: index === 0 ? '600' : '500' }}>
+                        ₹{level.price?.toFixed(2)}
+                      </div>
+                      <div style={{ color: '#374151', textAlign: 'center' }}>
+                        {level.quantity?.toLocaleString()}
+                      </div>
+                      <div style={{ color: '#6b7280', textAlign: 'right', fontSize: '10px' }}>
+                        {level.orders} ord
+                      </div>
+                    </div>
+                  )) || <div style={{ textAlign: 'center', color: '#ef4444', fontSize: '11px' }}>No bid data</div>}
+                </div>
+                
+                {/* Ask Side */}
+                <div>
+                  <div style={{
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    color: '#dc2626',
+                    marginBottom: '6px',
+                    padding: '4px 8px',
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    borderRadius: '4px',
+                    textAlign: 'center'
+                  }}>
+                    📉 ASK (Sell Orders)
+                  </div>
+                  {rawDepth.sell?.slice(0, 5).map((level, index) => (
+                    <div key={index} style={{
+                      display: 'grid',
+                      gridTemplateColumns: '1fr 1fr 1fr',
+                      gap: '4px',
+                      padding: '4px 8px',
+                      fontSize: '11px',
+                      background: index === 0 ? 'rgba(239, 68, 68, 0.1)' : 'rgba(0, 0, 0, 0.02)',
+                      borderRadius: '3px',
+                      marginBottom: '1px',
+                      border: index === 0 ? '1px solid rgba(239, 68, 68, 0.3)' : '1px solid #f3f4f6'
+                    }}>
+                      <div style={{ color: '#dc2626', fontWeight: index === 0 ? '600' : '500' }}>
+                        ₹{level.price?.toFixed(2)}
+                      </div>
+                      <div style={{ color: '#374151', textAlign: 'center' }}>
+                        {level.quantity?.toLocaleString()}
+                      </div>
+                      <div style={{ color: '#6b7280', textAlign: 'right', fontSize: '10px' }}>
+                        {level.orders} ord
+                      </div>
+                    </div>
+                  )) || <div style={{ textAlign: 'center', color: '#ef4444', fontSize: '11px' }}>No ask data</div>}
+                </div>
+              </div>
+              
+              {/* Order Book Summary */}
+              <div style={{
+                marginTop: '12px',
+                padding: '8px',
+                background: 'rgba(0, 0, 0, 0.02)',
+                borderRadius: '4px',
+                fontSize: '11px',
+                display: 'grid',
+                gridTemplateColumns: 'repeat(7, 1fr)',
+                gap: '4px',
+                textAlign: 'center'
+              }}>
+                <div>
+                  <div style={{ color: '#6b7280', fontSize: '9px' }}>CALC QTY</div>
+                  <div style={{ color: '#374151', fontWeight: '600' }}>
+                    {(() => {
+                      // Debug: Log all latestTick data to see what we have
+                      console.log('CALC QTY Debug - latestTick:', latestTick);
+                      
+                      // Try multiple sources for calculated quantity (prioritize new backend fields)
+                      const calcQty = latestTick?.calculated_quantity || 
+                                     latestTick?.calculated_quantity_buy ||
+                                     latestTick?.calculated_quantity_sell ||
+                                     latestTick?.marketImpact?.buy?.quantity ||
+                                     latestTick?.marketImpact?.sell?.quantity ||
+                                     latestTick?.calculatedQuantity ||
+                                     latestTick?.quantity ||
+                                     latestTick?.target_quantity ||
+                                     latestTick?.targetQuantity || 0;
+                      
+                      console.log('CALC QTY Debug - Found quantity:', calcQty);
+                      return calcQty > 0 ? calcQty.toLocaleString() : 'N/A';
+                    })()}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: '#6b7280', fontSize: '9px' }}>BID QTY</div>
+                  <div style={{ color: '#059669', fontWeight: '600' }}>
+                    {rawDepth.buy?.reduce((sum, level) => sum + (level.quantity || 0), 0)?.toLocaleString() || '0'}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: '#6b7280', fontSize: '9px' }}>ASK QTY</div>
+                  <div style={{ color: '#dc2626', fontWeight: '600' }}>
+                    {rawDepth.sell?.reduce((sum, level) => sum + (level.quantity || 0), 0)?.toLocaleString() || '0'}
+                  </div>
+                </div>
+                <div>
+                  {(() => {
+                    const scanType = latestTick?.scan_type || displayTick?.scan_type;
+                    const calcQuantity = latestTick?.calculated_quantity_buy || 
+                                        latestTick?.calculated_quantity_sell ||
+                                        latestTick?.calculated_quantity || 
+                                        latestTick?.marketImpact?.buy?.quantity ||
+                                        latestTick?.marketImpact?.sell?.quantity ||
+                                        latestTick?.calculatedQuantity ||
+                                        latestTick?.quantity ||
+                                        latestTick?.target_quantity ||
+                                        latestTick?.targetQuantity || 0;
+                    
+                    if (scanType === 'BUY_SCAN' && calcQuantity > 0) {
+                      // Calculate how many ASK levels needed to fill calculated quantity
+                      let remainingQty = calcQuantity;
+                      let levelsConsumed = 0;
+                      let totalFilled = 0;
+                      
+                      for (const level of (rawDepth.sell || [])) {
+                        if (remainingQty <= 0) break;
+                        if (level && level.quantity > 0) {
+                          levelsConsumed++;
+                          const fillQty = Math.min(remainingQty, level.quantity);
+                          totalFilled += fillQty;
+                          remainingQty -= fillQty;
+                        }
+                      }
+                      
+                      const canFillCompletely = remainingQty <= 0;
+                      
+                      return (
+                        <>
+                          <div style={{ color: '#6b7280', fontSize: '9px' }}>ASK LEVELS</div>
+                          <div style={{ color: canFillCompletely ? '#dc2626' : '#f59e0b', fontWeight: '600' }}>
+                            {canFillCompletely ? `${levelsConsumed} lvls` : `>${levelsConsumed} lvls`}
+                          </div>
+                        </>
+                      );
+                    } else if (scanType === 'SELL_SCAN' && calcQuantity > 0) {
+                      // Calculate how many BID levels needed to fill calculated quantity
+                      let remainingQty = calcQuantity;
+                      let levelsConsumed = 0;
+                      let totalFilled = 0;
+                      
+                      for (const level of (rawDepth.buy || [])) {
+                        if (remainingQty <= 0) break;
+                        if (level && level.quantity > 0) {
+                          levelsConsumed++;
+                          const fillQty = Math.min(remainingQty, level.quantity);
+                          totalFilled += fillQty;
+                          remainingQty -= fillQty;
+                        }
+                      }
+                      
+                      const canFillCompletely = remainingQty <= 0;
+                      
+                      return (
+                        <>
+                          <div style={{ color: '#6b7280', fontSize: '9px' }}>BID LEVELS</div>
+                          <div style={{ color: canFillCompletely ? '#059669' : '#f59e0b', fontWeight: '600' }}>
+                            {canFillCompletely ? `${levelsConsumed} lvls` : `>${levelsConsumed} lvls`}
+                          </div>
+                        </>
+                      );
+                    } else {
+                      return (
+                        <>
+                          <div style={{ color: '#6b7280', fontSize: '9px' }}>SCAN TYPE</div>
+                          <div style={{ color: '#6b7280', fontWeight: '600' }}>
+                            {scanType || 'N/A'}
+                          </div>
+                        </>
+                      );
+                    }
+                  })()}
+                </div>
+                <div>
+                  <div style={{ color: '#6b7280', fontSize: '9px' }}>BUY SLIP</div>
+                  <div style={{ color: '#dc2626', fontWeight: '600' }}>
+                    {(() => {
+                      // Try multiple sources for calculated quantity (prioritize new backend fields)
+                      const calcQuantity = latestTick?.calculated_quantity_buy || // Specific buy quantity
+                                          latestTick?.calculated_quantity || 
+                                          latestTick?.marketImpact?.buy?.quantity ||
+                                          latestTick?.calculatedQuantity ||
+                                          latestTick?.quantity ||
+                                          latestTick?.target_quantity ||
+                                          latestTick?.targetQuantity || 0;
+                      const bestAsk = rawDepth.sell?.[0]?.price || 0;
+                      
+                      console.log('BUY SLIP Debug:', { calcQuantity, bestAsk, sellDepth: rawDepth.sell });
+                      
+                      if (calcQuantity > 0 && Array.isArray(rawDepth.sell) && rawDepth.sell.length > 0 && bestAsk > 0) {
+                        let remainingQty = calcQuantity;
+                        let totalCost = 0;
+                        let filledQty = 0;
+                        
+                        for (const level of rawDepth.sell) {
+                          if (remainingQty <= 0) break;
+                          const levelPrice = level.price || 0;
+                          const levelQty = level.quantity || 0;
+                          
+                          if (levelPrice > 0 && levelQty > 0) {
+                            const fillQty = Math.min(remainingQty, levelQty);
+                            totalCost += fillQty * levelPrice;
+                            filledQty += fillQty;
+                            remainingQty -= fillQty;
+                          }
+                        }
+                        
+                        if (filledQty > 0 && totalCost > 0) {
+                          const avgPrice = totalCost / filledQty;
+                          const slippage = ((avgPrice - bestAsk) / bestAsk) * 100;
+                          return `${slippage.toFixed(3)}%`;
+                        }
+                      }
+                      return 'N/A';
+                    })()}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: '#6b7280', fontSize: '9px' }}>SELL SLIP</div>
+                  <div style={{ color: '#059669', fontWeight: '600' }}>
+                    {(() => {
+                      // Try multiple sources for calculated quantity (prioritize new backend fields)
+                      const calcQuantity = latestTick?.calculated_quantity_sell || // Specific sell quantity
+                                          latestTick?.calculated_quantity || 
+                                          latestTick?.marketImpact?.sell?.quantity ||
+                                          latestTick?.calculatedQuantity ||
+                                          latestTick?.quantity ||
+                                          latestTick?.target_quantity ||
+                                          latestTick?.targetQuantity || 0;
+                      const bestBid = rawDepth.buy?.[0]?.price || 0;
+                      
+                      console.log('SELL SLIP Debug:', { calcQuantity, bestBid, buyDepth: rawDepth.buy });
+                      
+                      if (calcQuantity > 0 && Array.isArray(rawDepth.buy) && rawDepth.buy.length > 0 && bestBid > 0) {
+                        let remainingQty = calcQuantity;
+                        let totalValue = 0;
+                        let filledQty = 0;
+                        
+                        for (const level of rawDepth.buy) {
+                          if (remainingQty <= 0) break;
+                          const levelPrice = level.price || 0;
+                          const levelQty = level.quantity || 0;
+                          
+                          if (levelPrice > 0 && levelQty > 0) {
+                            const fillQty = Math.min(remainingQty, levelQty);
+                            totalValue += fillQty * levelPrice;
+                            filledQty += fillQty;
+                            remainingQty -= fillQty;
+                          }
+                        }
+                        
+                        if (filledQty > 0 && totalValue > 0) {
+                          const avgPrice = totalValue / filledQty;
+                          const slippage = ((bestBid - avgPrice) / bestBid) * 100;
+                          return `${slippage.toFixed(3)}%`;
+                        }
+                      }
+                      return 'N/A';
+                    })()}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ color: '#6b7280', fontSize: '9px' }}>LTP</div>
+                  <div style={{ color: '#374151', fontWeight: '600' }}>
+                    {(() => {
+                      const ltp = latestTick?.last_price || 
+                                 latestTick?.ltp || 
+                                 latestTick?.price || 
+                                 latestTick?.lastPrice || 0;
+                      console.log('LTP Debug:', { ltp, latestTick });
+                      return ltp > 0 ? `₹${ltp.toFixed(2)}` : 'N/A';
+                    })()}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+        
+        {/* Empty State - No Symbol Selected */}
+        {!selectedSymbol && (
+          <div style={{
+            marginTop: '20px',
+            padding: '24px',
+            background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.05), rgba(139, 92, 246, 0.05))',
+            border: '1px solid rgba(99, 102, 241, 0.15)',
+            borderRadius: '12px',
+            textAlign: 'center'
+          }}>
+            <div style={{
+              fontSize: '48px',
+              marginBottom: '16px',
+              opacity: '0.6'
+            }}>
+              📊
+            </div>
+            <div style={{
+              fontSize: '16px',
+              fontWeight: '600',
+              color: '#6366f1',
+              marginBottom: '8px'
+            }}>
+              Select a Symbol
+            </div>
+            <div style={{
+              fontSize: '14px',
+              color: '#64748b',
+              lineHeight: '1.5'
+            }}>
+              Click on any symbol in the table above<br />to view its real-time order book data
+            </div>
+          </div>
+        )}
+      </div>
+      
+      {!stockData && !isWaitingForData && (
+        <div style={{
+          background: 'rgba(255, 107, 107, 0.1)',
+          border: '1px solid rgba(255, 107, 107, 0.3)',
+          borderRadius: '8px',
+          padding: '20px'
+        }}>
+          <NoDataMessage>
+            {hasSymbol ? (
+              <>
+                ⏳ Waiting for live data for {currentSymbol}... <br />
+                <small style={{ color: '#ffd700' }}>Symbol subscribed - first tick data loading...</small>
+              </>
+            ) : (
+              <>
+                📡 Waiting for subscribed stock data... <br />
+                <small>Start scanner to begin receiving tick updates</small>
+              </>
+            )}
+            {(() => {
+              const allSymbols = getAllAvailableSymbols();
+              const queuedSymbols = allSymbols.filter(symbol => symbol !== selectedSymbol);
+              
+              if (queuedSymbols.length > 0) {
+                return (
+                  <div style={{ marginTop: '10px', fontSize: '11px', color: '#ffd700' }}>
+                    🔄 Available symbols: {queuedSymbols.join(', ')}
+                  </div>
+                );
+              }
+              return null;
+            })()}
+          </NoDataMessage>
+        </div>
       )}
     </TrackerContainer>
   );

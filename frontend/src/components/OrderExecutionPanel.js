@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { memo, useMemo } from 'react';
 import styled from 'styled-components';
 
 const PanelOverlay = styled.div`
@@ -14,6 +14,30 @@ const PanelOverlay = styled.div`
   transition: right 0.4s ease;
   z-index: 15000;
   overflow-y: auto;
+  
+  /* Large desktop */
+  @media (max-width: 1600px) {
+    width: 420px;
+    right: ${props => props.isOpen ? '0' : '-420px'};
+  }
+  
+  /* Standard laptop */
+  @media (max-width: 1400px) {
+    width: 390px;
+    right: ${props => props.isOpen ? '0' : '-390px'};
+  }
+  
+  /* Smaller laptop */
+  @media (max-width: 1200px) {
+    width: 360px;
+    right: ${props => props.isOpen ? '0' : '-360px'};
+  }
+  
+  /* Tablet landscape */
+  @media (max-width: 1024px) {
+    width: 340px;
+    right: ${props => props.isOpen ? '0' : '-340px'};
+  }
 `;
 
 const PanelHeader = styled.div`
@@ -29,6 +53,24 @@ const PanelHeader = styled.div`
   position: sticky;
   top: 0;
   z-index: 1;
+  
+  /* Laptop adjustments */
+  @media (max-width: 1400px) {
+    padding: 16px;
+    font-size: 15px;
+  }
+  
+  /* Smaller laptop */
+  @media (max-width: 1200px) {
+    padding: 14px;
+    font-size: 14px;
+  }
+  
+  /* Tablet landscape */
+  @media (max-width: 1024px) {
+    padding: 12px;
+    font-size: 13px;
+  }
 `;
 
 const CloseButton = styled.button`
@@ -56,6 +98,35 @@ const OrderContainer = styled.div`
     font-size: 14px;
     margin: 0 0 15px 0;
   }
+  
+  /* Laptop adjustments */
+  @media (max-width: 1400px) {
+    padding: 16px;
+    
+    h3 {
+      font-size: 13px;
+      margin: 0 0 12px 0;
+    }
+  }
+  
+  /* Smaller laptop */
+  @media (max-width: 1200px) {
+    padding: 14px;
+    
+    h3 {
+      font-size: 12px;
+      margin: 0 0 10px 0;
+    }
+  }
+  
+  /* Tablet landscape */
+  @media (max-width: 1024px) {
+    padding: 12px;
+    
+    h3 {
+      font-size: 11px;
+    }
+  }
 `;
 
 const OrderExecutionCard = styled.div`
@@ -76,6 +147,25 @@ const OrderExecutionCard = styled.div`
   &:hover {
     background: rgba(30, 60, 114, 0.2);
     transform: translateY(-1px);
+  }
+  
+  /* Laptop adjustments */
+  @media (max-width: 1400px) {
+    padding: 14px;
+    margin-bottom: 14px;
+    border-radius: 6px;
+  }
+  
+  /* Smaller laptop */
+  @media (max-width: 1200px) {
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+  
+  /* Tablet landscape */
+  @media (max-width: 1024px) {
+    padding: 10px;
+    margin-bottom: 10px;
   }
 `;
 
@@ -187,8 +277,14 @@ const ClearButton = styled.button`
   }
 `;
 
-const OrderExecutionPanel = ({ isOpen, onClose, orderExecutions = [], onClear }) => {
-  console.log('📋 [PANEL] OrderExecutionPanel render - isOpen:', isOpen, 'orderCount:', orderExecutions.length);
+const OrderExecutionPanel = memo(({ isOpen, onClose, orderExecutions = [], onClear }) => {
+  // Memoize log data to prevent unnecessary re-renders
+  const logData = useMemo(() => ({
+    isOpen,
+    orderCount: orderExecutions.length
+  }), [isOpen, orderExecutions.length]);
+  
+  console.log('📋 [PANEL] OrderExecutionPanel render - isOpen:', logData.isOpen, 'orderCount:', logData.orderCount);
   
   const formatTime = (timestamp) => {
     return new Date(timestamp).toLocaleTimeString();
@@ -315,6 +411,6 @@ const OrderExecutionPanel = ({ isOpen, onClose, orderExecutions = [], onClear })
       </OrderContainer>
     </PanelOverlay>
   );
-};
+});
 
 export default OrderExecutionPanel;

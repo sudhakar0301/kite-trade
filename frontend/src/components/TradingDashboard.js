@@ -1,72 +1,169 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback, memo } from 'react';
+import styled from 'styled-components';
 import FilterPanel from './FilterPanel';
-import StockResultsTable from './StockResultsTable';
 
-const TradingDashboard = ({ 
+const StocksTable = styled.div`
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  max-height: 600px;
+  overflow-y: auto;
+  
+  /* Laptop adjustments */
+  @media (max-width: 1400px) {
+    max-height: 500px;
+  }
+  
+  /* Smaller laptop screens */
+  @media (max-width: 1200px) {
+    max-height: 450px;
+  }
+  
+  /* Tablet landscape */
+  @media (max-width: 1024px) {
+    max-height: 400px;
+    border-radius: 10px;
+  }
+`;
+
+const StockSymbol = styled.div`
+  padding: 12px 15px;
+  font-weight: 600;
+  color: #79c0ff;
+  font-size: 16px;
+  font-family: 'Inter', 'System UI', -apple-system, sans-serif;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  
+  &:hover {
+    transform: translateX(4px);
+  }
+  
+  &:last-child {
+    border-bottom: none;
+  }
+  
+  /* Laptop adjustments */
+  @media (max-width: 1400px) {
+    padding: 10px 12px;
+    font-size: 15px;
+  }
+  
+  /* Smaller laptop */
+  @media (max-width: 1200px) {
+    padding: 8px 10px;
+    font-size: 14px;
+  }
+  
+  /* Tablet landscape */
+  @media (max-width: 1024px) {
+    padding: 10px 12px;
+    font-size: 15px;
+  }
+`;
+
+const FilteredStocksDisplay = ({ stocks, type }) => {
+  if (!stocks.length) {
+    return (
+      <div style={{
+        padding: '40px 20px',
+        textAlign: 'center',
+        color: '#94a3b8',
+        fontSize: '16px',
+        fontFamily: "'Inter', 'System UI', -apple-system, sans-serif"
+      }}>
+        📊 No matching stocks
+      </div>
+    );
+  }
+
+  return (
+    <StocksTable>
+      {stocks.slice(0, 50).map((stock, index) => (
+        <StockSymbol 
+          key={stock.symbol || stock.s || index}
+        >
+          {stock.symbol || stock.s}
+        </StockSymbol>
+      ))}
+      {stocks.length > 50 && (
+        <div style={{
+          padding: '15px',
+          textAlign: 'center',
+          color: '#94a3b8',
+          fontSize: '13px',
+          fontFamily: "'Inter', 'System UI', -apple-system, sans-serif"
+        }}>
+          +{stocks.length - 50} more
+        </div>
+      )}
+    </StocksTable>
+  );
+};
+
+const TradingDashboard = memo(({ 
   allStocks = [], 
-  onSymbolClick, 
-  onOpenChart,
-  crossoverBuyStocks = [], 
-  crossbelowSellStocks = [] 
+
+  onOpenChart
 }) => {
   const [buyResults, setBuyResults] = useState([]);
   const [sellResults, setSellResults] = useState([]);
-  const [crossoverBuySearch, setCrossoverBuySearch] = useState('');
-  const [crossbelowSellSearch, setCrossbelowSellSearch] = useState('');
 
-  const handleBuyResults = (results) => {
+  const handleBuyResults = useCallback((results) => {
     setBuyResults(results);
-  };
+  }, []);
 
-  const handleSellResults = (results) => {
+  const handleSellResults = useCallback((results) => {
     setSellResults(results);
-  };
+  }, []);
 
-  // Filter crossover stocks based on search
-  const filteredCrossoverBuyStocks = crossoverBuyStocks.filter(stock => 
-    stock.symbol?.toLowerCase().includes(crossoverBuySearch.toLowerCase())
-  );
-  
-  const filteredCrossbelowSellStocks = crossbelowSellStocks.filter(stock => 
-    stock.symbol?.toLowerCase().includes(crossbelowSellSearch.toLowerCase())
-  );
+  const handleSymbolClick = useCallback((symbol) => {
+    if (onOpenChart) {
+      onOpenChart(symbol);
+    }
+  }, [onOpenChart]);
 
-  console.log('📊 TradingDashboard rendered with:', {
+  // Only log when values actually change
+  const logData = useMemo(() => ({
     allStocks: allStocks.length,
     buyResults: buyResults.length,
-    sellResults: sellResults.length,
-    crossoverBuyStocks: crossoverBuyStocks.length,
-    filteredCrossoverBuyStocks: filteredCrossoverBuyStocks.length,
-    crossbelowSellStocks: crossbelowSellStocks.length,
-    filteredCrossbelowSellStocks: filteredCrossbelowSellStocks.length
-  });
+    sellResults: sellResults.length
+  }), [allStocks.length, buyResults.length, sellResults.length]);
+
+  console.log('📊 TradingDashboard rendered with:', logData);
 
   return (
-    <>
+    <div style={{ display: 'none' }}>
     <div style={{
       display: 'grid',
       gridTemplateColumns: '1fr 1fr 1fr 1fr',
-      gap: '20px',
-      padding: '20px',
+      gap: '25px',
+      padding: '30px',
       background: 'rgba(0, 0, 0, 0.1)',
-      borderRadius: '12px',
-      minHeight: '400px'
+      borderRadius: '16px',
+      minHeight: '800px',
+      width: '100%',
+      maxWidth: '1800px',
+      margin: '0 auto'
     }}>
       {/* Buy Filters Column */}
       <div style={{
         background: 'rgba(16, 185, 129, 0.1)',
-        border: '1px solid rgba(16, 185, 129, 0.3)',
-        borderRadius: '12px',
-        padding: '15px'
+        border: '2px solid rgba(16, 185, 129, 0.3)',
+        borderRadius: '16px',
+        padding: '20px',
+        minHeight: '700px'
       }}>
         <div style={{
-          fontSize: '16px',
-          fontWeight: '600',
+          fontSize: '18px',
+          fontWeight: '700',
           color: '#10b981',
-          marginBottom: '15px',
+          marginBottom: '20px',
           textAlign: 'center',
-          borderBottom: '1px solid rgba(16, 185, 129, 0.3)',
-          paddingBottom: '10px'
+          borderBottom: '2px solid rgba(16, 185, 129, 0.3)',
+          paddingBottom: '12px',
+          fontFamily: "'Inter', 'System UI', -apple-system, sans-serif"
         }}>
           📈 Buy Filters
         </div>
@@ -74,31 +171,7 @@ const TradingDashboard = ({
           type="buy"
           allStocks={allStocks}
           onFilteredResults={handleBuyResults}
-        />
-      </div>
-
-      {/* Sell Filters Column */}
-      <div style={{
-        background: 'rgba(239, 68, 68, 0.1)',
-        border: '1px solid rgba(239, 68, 68, 0.3)',
-        borderRadius: '12px',
-        padding: '15px'
-      }}>
-        <div style={{
-          fontSize: '16px',
-          fontWeight: '600',
-          color: '#ef4444',
-          marginBottom: '15px',
-          textAlign: 'center',
-          borderBottom: '1px solid rgba(239, 68, 68, 0.3)',
-          paddingBottom: '10px'
-        }}>
-          📉 Sell Filters
-        </div>
-        <FilterPanel 
-          type="sell"
-          allStocks={allStocks}
-          onFilteredResults={handleSellResults}
+          defaultAllSelected={true}
         />
       </div>
 
@@ -106,25 +179,50 @@ const TradingDashboard = ({
       <div style={{
         background: 'rgba(16, 185, 129, 0.05)',
         border: '1px solid rgba(16, 185, 129, 0.2)',
-        borderRadius: '12px',
-        padding: '15px'
+        borderRadius: '16px',
+        padding: '20px',
+        minHeight: '700px'
       }}>
         <div style={{
-          fontSize: '16px',
-          fontWeight: '600',
+          fontSize: '18px',
+          fontWeight: '700',
           color: '#10b981',
-          marginBottom: '15px',
+          marginBottom: '20px',
           textAlign: 'center',
-          borderBottom: '1px solid rgba(16, 185, 129, 0.3)',
-          paddingBottom: '10px'
+          borderBottom: '2px solid rgba(16, 185, 129, 0.3)',
+          paddingBottom: '12px',
+          fontFamily: "'Inter', 'System UI', -apple-system, sans-serif"
         }}>
-          📊 Buy Stocks ({buyResults.length})
+          📋 Buy Stocks ({buyResults.length})
         </div>
-        <StockResultsTable 
-          type="buy"
-          stocks={buyResults}
-          onSymbolClick={onSymbolClick}
-          onOpenChart={onOpenChart}
+        <FilteredStocksDisplay stocks={buyResults} type="buy" />
+      </div>
+
+      {/* Sell Filters Column */}
+      <div style={{
+        background: 'rgba(239, 68, 68, 0.1)',
+        border: '2px solid rgba(239, 68, 68, 0.3)',
+        borderRadius: '16px',
+        padding: '20px',
+        minHeight: '700px'
+      }}>
+        <div style={{
+          fontSize: '18px',
+          fontWeight: '700',
+          color: '#ef4444',
+          marginBottom: '20px',
+          textAlign: 'center',
+          borderBottom: '2px solid rgba(239, 68, 68, 0.3)',
+          paddingBottom: '12px',
+          fontFamily: "'Inter', 'System UI', -apple-system, sans-serif"
+        }}>
+          📉 Sell Filters
+        </div>
+        <FilterPanel 
+          type="sell"
+          allStocks={allStocks}
+          onFilteredResults={handleSellResults}
+          defaultAllSelected={true}
         />
       </div>
 
@@ -132,314 +230,45 @@ const TradingDashboard = ({
       <div style={{
         background: 'rgba(239, 68, 68, 0.05)',
         border: '1px solid rgba(239, 68, 68, 0.2)',
-        borderRadius: '12px',
-        padding: '15px'
+        borderRadius: '16px',
+        padding: '20px',
+        minHeight: '700px'
       }}>
         <div style={{
-          fontSize: '16px',
-          fontWeight: '600',
+          fontSize: '18px',
+          fontWeight: '700',
           color: '#ef4444',
-          marginBottom: '15px',
+          marginBottom: '20px',
           textAlign: 'center',
-          borderBottom: '1px solid rgba(239, 68, 68, 0.3)',
-          paddingBottom: '10px'
+          borderBottom: '2px solid rgba(239, 68, 68, 0.3)',
+          paddingBottom: '12px',
+          fontFamily: "'Inter', 'System UI', -apple-system, sans-serif"
         }}>
-          📈 Sell Stocks ({sellResults.length})
+          📋 Sell Stocks ({sellResults.length})
         </div>
-        <StockResultsTable 
-          type="sell"
-          stocks={sellResults}
-          onSymbolClick={onSymbolClick}
-          onOpenChart={onOpenChart}
-        />
+        <FilteredStocksDisplay stocks={sellResults} type="sell" />
       </div>
     </div>
 
-    {/* Crossover Stocks Section */}
-    {(crossoverBuyStocks.length > 0 || crossbelowSellStocks.length > 0 || crossoverBuySearch || crossbelowSellSearch) && (
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: '1fr 1fr',
-        gap: '20px',
-        padding: '20px',
-        background: 'rgba(255, 165, 0, 0.05)',
-        border: '1px solid rgba(255, 165, 0, 0.2)',
-        borderRadius: '12px',
-        marginTop: '20px'
-      }}>
-        {/* EMA Crossover Buy Stocks */}
-        <div style={{
-          background: 'rgba(0, 255, 0, 0.05)',
-          border: '1px solid rgba(0, 255, 0, 0.2)',
-          borderRadius: '12px',
-          padding: '15px'
-        }}>
-          <div style={{
-            fontSize: '16px',
-            fontWeight: '600',
-            color: '#22c55e',
-            marginBottom: '15px',
-            textAlign: 'center',
-            borderBottom: '1px solid rgba(0, 255, 0, 0.3)',
-            paddingBottom: '10px'
-          }}>
-            🔄 EMA Crossover Buy ({filteredCrossoverBuyStocks.length}/{crossoverBuyStocks.length})
-          </div>
-          <div style={{
-            fontSize: '12px',
-            color: '#888',
-            textAlign: 'center',
-            marginBottom: '10px',
-            fontStyle: 'italic'
-          }}>
-            EMA3(1min) crosses above EMA5(1min)
-          </div>
-          {/* Search Input */}
-          <div style={{ marginBottom: '15px' }}>
-            <input
-              type="text"
-              placeholder="🔍 Search crossover buy stocks..."
-              value={crossoverBuySearch}
-              onChange={(e) => setCrossoverBuySearch(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '8px 12px',
-                border: '1px solid rgba(0, 255, 0, 0.3)',
-                borderRadius: '6px',
-                background: 'rgba(0, 0, 0, 0.3)',
-                color: '#fff',
-                fontSize: '12px',
-                outline: 'none'
-              }}
-            />
-          </div>
-          {filteredCrossoverBuyStocks.length > 0 ? (
-            <div style={{
-              display: 'grid',
-              gap: '8px',
-              maxHeight: '300px',
-              overflowY: 'auto'
-            }}>
-              {filteredCrossoverBuyStocks.map((stock, index) => (
-                <div
-                  key={index}
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr auto auto auto',
-                    gap: '10px',
-                    padding: '8px 12px',
-                    background: 'rgba(0, 255, 0, 0.1)',
-                    borderRadius: '6px',
-                    border: '1px solid rgba(0, 255, 0, 0.2)',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s'
-                  }}
-                  onMouseOver={(e) => {
-                    e.currentTarget.style.background = 'rgba(0, 255, 0, 0.15)';
-                    e.currentTarget.style.transform = 'translateY(-1px)';
-                  }}
-                  onMouseOut={(e) => {
-                    e.currentTarget.style.background = 'rgba(0, 255, 0, 0.1)';
-                    e.currentTarget.style.transform = 'translateY(0)';
-                  }}
-                  onClick={() => {
-                    console.log('🔄 Crossover buy stock clicked:', stock.symbol, 'onOpenChart available:', !!onOpenChart);
-                    if (onOpenChart) {
-                      onOpenChart(stock.symbol, 'crossover-buy');
-                    } else {
-                      console.error('❌ onOpenChart function not available');
-                    }
-                  }}
-                >
-                  <div style={{
-                    fontWeight: '600',
-                    color: '#22c55e',
-                    fontSize: '14px'
-                  }}>
-                    {stock.symbol}
-                  </div>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#fff'
-                  }}>
-                    ₹{stock.ltp?.toFixed(2)}
-                  </div>
-                  <div style={{
-                    fontSize: '12px',
-                    color: stock.change_percent >= 0 ? '#22c55e' : '#ef4444'
-                  }}>
-                    {stock.change_percent?.toFixed(2)}%
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#888'
-                  }}>
-                    {stock.volume?.toLocaleString()}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{
-              textAlign: 'center',
-              color: '#888',
-              padding: '20px',
-              fontStyle: 'italic'
-            }}>
-              {crossoverBuyStocks.length === 0 
-                ? 'No crossover buy signals' 
-                : `No results for "${crossoverBuySearch}"`}
-            </div>
-          )}
-        </div>
-
-        {/* EMA Crossbelow Sell Stocks */}
-        <div style={{
-          background: 'rgba(255, 0, 0, 0.05)',
-          border: '1px solid rgba(255, 0, 0, 0.2)',
-          borderRadius: '12px',
-          padding: '15px'
-        }}>
-          <div style={{
-            fontSize: '16px',
-            fontWeight: '600',
-            color: '#ef4444',
-            marginBottom: '15px',
-            textAlign: 'center',
-            borderBottom: '1px solid rgba(255, 0, 0, 0.3)',
-            paddingBottom: '10px'
-          }}>
-            🔻 EMA Crossbelow Sell ({filteredCrossbelowSellStocks.length}/{crossbelowSellStocks.length})
-          </div>
-          <div style={{
-            fontSize: '12px',
-            color: '#888',
-            textAlign: 'center',
-            marginBottom: '10px',
-            fontStyle: 'italic'
-          }}>
-            EMA3(1min) crosses below EMA5(1min)
-          </div>
-          {/* Search Input */}
-          <div style={{ marginBottom: '15px' }}>
-            <input
-              type="text"
-              placeholder="🔍 Search crossbelow sell stocks..."
-              value={crossbelowSellSearch}
-              onChange={(e) => setCrossbelowSellSearch(e.target.value)}
-              style={{
-                width: '100%',
-                padding: '8px 12px',
-                border: '1px solid rgba(255, 0, 0, 0.3)',
-                borderRadius: '6px',
-                background: 'rgba(0, 0, 0, 0.3)',
-                color: '#fff',
-                fontSize: '12px',
-                outline: 'none'
-              }}
-            />
-          </div>
-          {filteredCrossbelowSellStocks.length > 0 ? (
-            <div style={{
-              display: 'grid',
-              gap: '8px',
-              maxHeight: '300px',
-              overflowY: 'auto'
-            }}>
-              {filteredCrossbelowSellStocks.map((stock, index) => (
-                <div
-                  key={index}
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr auto auto auto',
-                    gap: '10px',
-                    padding: '8px 12px',
-                    background: 'rgba(255, 0, 0, 0.1)',
-                    borderRadius: '6px',
-                    border: '1px solid rgba(255, 0, 0, 0.2)',
-                    cursor: 'pointer',
-                    transition: 'all 0.2s'
-                  }}
-                  onMouseOver={(e) => {
-                    e.currentTarget.style.background = 'rgba(255, 0, 0, 0.15)';
-                    e.currentTarget.style.transform = 'translateY(-1px)';
-                  }}
-                  onMouseOut={(e) => {
-                    e.currentTarget.style.background = 'rgba(255, 0, 0, 0.1)';
-                    e.currentTarget.style.transform = 'translateY(0)';
-                  }}
-                  onClick={() => {
-                    console.log('🔻 Crossbelow sell stock clicked:', stock.symbol, 'onOpenChart available:', !!onOpenChart);
-                    if (onOpenChart) {
-                      onOpenChart(stock.symbol, 'crossbelow-sell');
-                    } else {
-                      console.error('❌ onOpenChart function not available');
-                    }
-                  }}
-                >
-                  <div style={{
-                    fontWeight: '600',
-                    color: '#ef4444',
-                    fontSize: '14px'
-                  }}>
-                    {stock.symbol}
-                  </div>
-                  <div style={{
-                    fontSize: '12px',
-                    color: '#fff'
-                  }}>
-                    ₹{stock.ltp?.toFixed(2)}
-                  </div>
-                  <div style={{
-                    fontSize: '12px',
-                    color: stock.change_percent >= 0 ? '#22c55e' : '#ef4444'
-                  }}>
-                    {stock.change_percent?.toFixed(2)}%
-                  </div>
-                  <div style={{
-                    fontSize: '11px',
-                    color: '#888'
-                  }}>
-                    {stock.volume?.toLocaleString()}
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div style={{
-              textAlign: 'center',
-              color: '#888',
-              padding: '20px',
-              fontStyle: 'italic'
-            }}>
-              {crossbelowSellStocks.length === 0 
-                ? 'No crossbelow sell signals' 
-                : `No results for "${crossbelowSellSearch}"`}
-            </div>
-          )}
-        </div>
-      </div>
-    )}
-
     {/* Information Panel */}
-    {(crossoverBuyStocks.length > 0 || crossbelowSellStocks.length > 0 || crossoverBuySearch || crossbelowSellSearch) && (
-      <div style={{
-        marginTop: '10px',
-        padding: '15px',
-        background: 'rgba(59, 130, 246, 0.1)',
-        border: '1px solid rgba(59, 130, 246, 0.2)',
-        borderRadius: '8px',
-        color: '#60a5fa',
-        fontSize: '12px',
-        textAlign: 'center'
-      }}>
-        💡 <strong>Intersection Logic:</strong> Final buy/sell stocks above = Primary scan ∩ Crossover scan. 
-        Raw crossover stocks shown below for reference. Click any symbol to open chart in new tab.
-      </div>
-    )}
-    </>
+    <div style={{
+      marginTop: '30px',
+      padding: '20px',
+      background: 'rgba(59, 130, 246, 0.1)',
+      border: '2px solid rgba(59, 130, 246, 0.2)',
+      borderRadius: '12px',
+      color: '#60a5fa',
+      fontSize: '15px',
+      textAlign: 'center',
+      maxWidth: '1800px',
+      margin: '30px auto 0',
+      fontFamily: "'Inter', 'System UI', -apple-system, sans-serif"
+    }}>
+      💡 <strong>Trading Scanner:</strong> Click any stock symbol to open its chart. All filters applied by default for comprehensive analysis.
+    </div>
+    </div>
   );
-};
+});
 
 export default TradingDashboard;
 

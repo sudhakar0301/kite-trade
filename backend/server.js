@@ -5,6 +5,8 @@ const cors = require('cors');
 require('dotenv').config();
 
 const scannerRoutes = require('./routes/scanner-routes');
+// const positionsRoutes = require('./routes/positions-routes');
+// //const ordersRoutes = require('./routes/orders-routes');
 
 const app = express();
 const server = http.createServer(app);
@@ -17,6 +19,8 @@ app.use(express.static('public'));
 
 // Routes
 app.use('/api', scannerRoutes);
+// app.use('/api/positions', positionsRoutes);
+// app.use('/api/orders', ordersRoutes);
 
 // Health check endpoint for monitoring order logic
 app.get('/api/health', (req, res) => {
@@ -34,6 +38,71 @@ app.get('/api/health', (req, res) => {
   };
   
   res.status(200).json(health);
+});
+
+// API endpoints documentation (for network tab reference)
+app.get('/api/endpoints', (req, res) => {
+  const endpoints = {
+    success: true,
+    timestamp: new Date().toISOString(),
+    baseUrl: `http://localhost:${process.env.PORT || 5000}`,
+    endpoints: {
+      scanner: {
+        baseRoute: '/api',
+        routes: [
+          'GET /api/profile - Check Kite profile and token validity',
+          'POST /api/low-price-scanners - Run low price stock scanners',
+          'POST /api/ema-crossover - Run EMA crossover scanner',
+          'POST /api/ema-crossbelow - Run EMA crossbelow scanner',
+          'GET /api/symbol-mappings - Get symbol to token mappings',
+          'POST /api/set-live-tracker-symbol - Set live tracker for masking',
+          'GET /api/debug-live-tracker - Debug live tracker state'
+        ]
+      },
+      positions: {
+        baseRoute: '/api/positions',
+        routes: [
+          'GET /api/positions - Get all active positions',
+          'GET /api/positions/summary - Get positions summary with P&L',
+          'GET /api/positions/detailed - Get detailed positions with day/net breakdown',
+          'GET /api/positions/:symbol - Get position for specific symbol',
+          'POST /api/positions/check - Check if position exists for symbol'
+        ]
+      },
+      orders: {
+        baseRoute: '/api/orders',
+        routes: [
+          'GET /api/orders - Get all orders',
+          'GET /api/orders/summary - Get orders summary and analytics',
+          'GET /api/orders/today - Get todays orders only',
+          'GET /api/orders/status/:status - Get orders by status (OPEN, COMPLETE, etc)',
+          'GET /api/orders/history/:symbol - Get order history for specific symbol',
+          'GET /api/orders/:symbol - Get orders for specific symbol',
+          'POST /api/orders/place - Place new market order',
+          'POST /api/orders/target - Place target order with ₹1500 profit'
+        ]
+      },
+      oauth: {
+        baseRoute: '/',
+        routes: [
+          'GET /oauth/login - Initiate Kite OAuth login',
+          'GET /login/callback - Handle OAuth callback'
+        ]
+      },
+      websocket: {
+        endpoint: `ws://localhost:${process.env.PORT || 5000}`,
+        description: 'Real-time data streaming for live prices and order updates'
+      }
+    },
+    usage: {
+      authentication: 'All routes require access_token parameter (query or body)',
+      rateLimit: 'No rate limiting implemented - use responsibly',
+      cors: 'CORS enabled for all origins',
+      dataFormat: 'All responses in JSON format'
+    }
+  };
+  
+  res.json(endpoints);
 });
 
 // OAuth login redirect - at root level (not under /api/)

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, memo, useMemo, useCallback, useEffect } from 'react';
 import styled, { keyframes, css } from 'styled-components';
 
 const slideIn = keyframes`
@@ -17,32 +17,122 @@ const blinkAnimation = keyframes`
 `;
 
 const ControlPanel = styled.div`
-  position: fixed;
+  position: sticky;
   top: 20px;
-  right: 20px;
-  width: 320px;
+  width: 100%;
+  max-width: 320px;
+  min-height: 800px;
   background: rgba(0, 0, 0, 0.9);
   backdrop-filter: blur(20px);
   border-radius: 20px;
   border: 1px solid rgba(255, 255, 255, 0.15);
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
-  z-index: 10000;
+  z-index: 1000;
   overflow: hidden;
-  animation: ${slideIn} 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  margin: 20px 0 20px 0;
+  
+  /* Large laptop - adjust width and height */
+  @media (max-width: 1600px) {
+    max-width: 300px;
+    min-height: 700px;
+    margin: 15px 0 15px 0;
+  }
+  
+  /* Standard laptop */
+  @media (max-width: 1400px) {
+    max-width: 280px;
+    min-height: 650px;
+    border-radius: 16px;
+  }
+  
+  /* Smaller laptop */
+  @media (max-width: 1200px) {
+    max-width: 260px;
+    min-height: 600px;
+    margin: 10px 0 10px 0;
+    border-radius: 14px;
+  }
+  
+  /* Tablet landscape - smaller panel */
+  @media (min-width: 769px) and (max-width: 1024px) {
+    max-width: 240px;
+    min-height: 550px;
+    border-radius: 12px;
+  }
+  
+  /* Mobile and tablet portrait - full width, bottom position */
+  @media (max-width: 768px) {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    top: auto;
+    width: 100%;
+    max-width: none;
+    min-height: auto;
+    max-height: 70vh;
+    margin: 0;
+    border-radius: 20px 20px 0 0;
+    z-index: 10000;
+    animation: slideInFromBottom 0.5s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  }
+  
+  /* Small mobile adjustments */
+  @media (max-width: 480px) {
+    max-height: 75vh;
+    border-radius: 16px 16px 0 0;
+  }
+`;
+
+const slideInFromBottom = keyframes`
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
 `;
 
 const ControlHeader = styled.div`
   background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-  padding: 20px;
+  padding: 20px 16px;
   color: white;
   text-align: center;
   font-weight: 600;
-  font-size: 16px;
+  font-size: 18px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  
+  /* Mobile adjustments */
+  @media (max-width: 768px) {
+    padding: 16px 12px;
+    font-size: 16px;
+    position: relative;
+    
+    /* Add mobile handle bar */
+    &::before {
+      content: '';
+      position: absolute;
+      top: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 40px;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.3);
+      border-radius: 2px;
+    }
+  }
 `;
 
 const ControlBody = styled.div`
-  padding: 20px;
+  padding: 20px 16px;
+  overflow-y: auto;
+  
+  /* Mobile adjustments */
+  @media (max-width: 768px) {
+    padding: 16px 12px;
+    max-height: calc(70vh - 60px);
+  }
+  
+  @media (max-width: 480px) {
+    padding: 12px 10px;
+    max-height: calc(75vh - 60px);
+  }
 `;
 
 const AutoTradingSection = styled.div`
@@ -53,15 +143,17 @@ const AutoTradingToggle = styled.div`
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 15px;
+  padding: 16px;
   background: ${props => props.$enabled 
     ? 'linear-gradient(135deg, #10b981, #059669)'
     : 'linear-gradient(135deg, #ef4444, #dc2626)'};
-  border-radius: 15px;
+  border-radius: 12px;
   cursor: pointer;
   transition: all 0.3s ease;
   color: white;
-  margin-bottom: 10px;
+  margin-bottom: 16px;
+  font-size: 16px;
+  font-weight: 500;
   
   ${props => props.$enabled && css`
     animation: ${pulseAnimation} 3s infinite;
@@ -70,6 +162,22 @@ const AutoTradingToggle = styled.div`
   &:hover {
     transform: scale(1.02);
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+  }
+  
+  /* Mobile adjustments */
+  @media (max-width: 768px) {
+    padding: 14px 12px;
+    font-size: 15px;
+    border-radius: 10px;
+    
+    /* Larger touch target */
+    min-height: 60px;
+  }
+  
+  @media (max-width: 480px) {
+    padding: 12px 10px;
+    font-size: 14px;
+    min-height: 56px;
   }
 `;
 
@@ -85,63 +193,72 @@ const ToggleTitle = styled.div`
 `;
 
 const ToggleSubtext = styled.div`
-  font-size: 11px;
+  font-size: 12px;
   opacity: 0.9;
 `;
 
 const ToggleIcon = styled.div`
-  font-size: 24px;
+  font-size: 20px;
 `;
 
 const DevConsole = styled.div`
   background: #0a0a0a;
   border: 1px solid #333;
   border-radius: 8px;
-  font-family: 'Courier New', monospace;
+  font-family: 'Fira Code', 'SF Mono', 'Monaco', 'Consolas', monospace;
   font-size: 11px;
-  color: #00ff00;
-  height: 200px;
+  color: #e6edf3;
+  padding: 12px;
+  margin: 12px 0;
+  max-height: 200px;
   overflow-y: auto;
-  padding: 10px;
-  margin-bottom: 15px;
   
-  &::-webkit-scrollbar {
-    width: 6px;
+  /* Laptop adjustments */
+  @media (max-width: 1400px) {
+    font-size: 10px;
+    padding: 10px;
+    max-height: 180px;
   }
   
-  &::-webkit-scrollbar-track {
-    background: #1a1a1a;
+  /* Smaller laptop */
+  @media (max-width: 1200px) {
+    font-size: 9px;
+    padding: 8px;
+    max-height: 160px;
   }
   
-  &::-webkit-scrollbar-thumb {
-    background: #333;
-    border-radius: 3px;
+  /* Tablet landscape */
+  @media (max-width: 1024px) {
+    max-height: 140px;
+    border-radius: 6px;
   }
 `;
 
 const ConsoleHeader = styled.div`
   color: #ffff00;
   font-weight: bold;
-  margin-bottom: 8px;
-  padding-bottom: 5px;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
   border-bottom: 1px solid #333;
+  font-size: 14px;
 `;
 
 const TokenLine = styled.div`
-  margin-bottom: 3px;
+  margin-bottom: 2px;
   color: ${props => props.type === 'sell' ? '#ff6b6b' : props.type === 'buy' ? '#51cf66' : '#00ff00'};
-  font-size: 10px;
+  font-size: 11px;
+  line-height: 1.3;
 `;
 
 const StatusIndicator = styled.div`
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 15px;
+  padding: 8px 12px;
   background: rgba(255, 255, 255, 0.05);
-  border-radius: 10px;
+  border-radius: 8px;
   color: rgba(255, 255, 255, 0.8);
-  font-size: 12px;
+  font-size: 13px;
   border: 1px solid rgba(255, 255, 255, 0.1);
 `;
 
@@ -155,11 +272,11 @@ const StatusItem = styled.div`
 const StatusValue = styled.div`
   color: white;
   font-weight: 600;
-  font-size: 14px;
+  font-size: 16px;
 `;
 
 const StatusLabel = styled.div`
-  font-size: 10px;
+  font-size: 13px;
   opacity: 0.7;
 `;
 
@@ -198,7 +315,7 @@ const OrderHeader = styled.div`
 `;
 
 const OrderDetails = styled.div`
-  font-size: 12px;
+  font-size: 16px;
   opacity: 0.9;
 `;
 
@@ -214,7 +331,7 @@ const ViewOrderButton = styled.button`
   color: white;
   padding: 8px 15px;
   border-radius: 8px;
-  font-size: 11px;
+  font-size: 16px;
   font-weight: 500;
   cursor: pointer;
   transition: all 0.3s;
@@ -231,7 +348,7 @@ const CloseButton = styled.button`
   background: none;
   border: none;
   color: white;
-  font-size: 16px;
+  font-size: 20px;
   cursor: pointer;
   padding: 4px;
   border-radius: 50%;
@@ -256,7 +373,7 @@ const LoginButton = styled.button`
   cursor: pointer;
   transition: all 0.3s;
   width: 100%;
-  font-size: 13px;
+  font-size: 17px;
   animation: ${blinkAnimation} 2s infinite;
   
   &:hover {
@@ -274,7 +391,7 @@ const LoginStatus = styled.div`
   background: linear-gradient(135deg, #10b981, #059669);
   border-radius: 10px;
   color: white;
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 500;
 `;
 
@@ -294,7 +411,7 @@ const QuickActionButton = styled.button`
   cursor: pointer;
   transition: all 0.3s;
   flex: 1;
-  font-size: 12px;
+  font-size: 16px;
   
   &:hover:not(:disabled) {
     background: linear-gradient(135deg, #2563eb, #1e40af);
@@ -334,30 +451,35 @@ const TradingControlPanel = ({
 }) => {
   const [isTestingOrder, setIsTestingOrder] = useState(false);
   
-  // Debug props on component render
-  console.log('🔧 [PROPS] TradingControlPanel rendered with:', {
+  // Only log data when it actually changes, not on every render
+  const logData = useMemo(() => ({
     orderExecutions: orderExecutions?.length || 0,
     onUpdateOrderExecutions: !!onUpdateOrderExecutions,
     onOpenOrderPanel: !!onOpenOrderPanel,
     accessToken: !!accessToken,
     kiteLoginStatus
-  });
+  }), [orderExecutions?.length, onUpdateOrderExecutions, onOpenOrderPanel, accessToken, kiteLoginStatus]);
+  
+  // Reduced logging - only log when logData actually changes
+  useEffect(() => {
+    console.log('🔧 [PROPS] TradingControlPanel props changed:', logData);
+  }, [logData]);
 
-  const handleToggleAutoTrading = () => {
+  const handleToggleAutoTrading = useCallback(() => {
     if (kiteLoginStatus !== 'logged-in') {
       onKiteLogin();
     } else {
       onToggleAutoTrading();
     }
-  };
+  }, [kiteLoginStatus, onKiteLogin, onToggleAutoTrading]);
 
-  const handleViewOrder = () => {
+  const handleViewOrder = useCallback(() => {
     if (orderNotification?.orderId) {
       window.open(`https://kite.zerodha.com/orders`, '_blank');
     }
-  };
+  }, [orderNotification?.orderId]);
 
-  const handleTestRelianceBuy = async () => {
+  const handleTestRelianceBuy = useCallback(async () => {
     if (!accessToken || kiteLoginStatus !== 'logged-in') {
       alert('Please login to Kite Connect first');
       return;
@@ -469,7 +591,7 @@ const TradingControlPanel = ({
     } finally {
       setIsTestingOrder(false);
     }
-  };
+  }, [accessToken, kiteLoginStatus, autoTradingEnabled, onUpdateOrderExecutions, onOpenOrderPanel]);
 
   return (
     <ControlPanel>
@@ -771,4 +893,60 @@ const TradingControlPanel = ({
   );
 };
 
-export default TradingControlPanel;
+// Optimized comparison function to prevent unnecessary re-renders
+const areEqual = (prevProps, nextProps) => {
+  // Compare primitive props that actually matter for rendering
+  const primitiveKeys = [
+    'autoTradingEnabled', 'kiteLoginStatus', 'lastUpdate', 'voiceEnabled',
+    'isPolling', 'pollCountdown', 'pollInterval', 'subscribedStocksCount', 'accessToken'
+  ];
+  
+  for (const key of primitiveKeys) {
+    if (prevProps[key] !== nextProps[key]) {
+      // Only log significant changes, not every countdown tick
+      if (key !== 'pollCountdown' || Math.abs(prevProps[key] - nextProps[key]) > 1) {
+        console.log(`🔄 TradingControlPanel: ${key} changed from`, prevProps[key], 'to', nextProps[key]);
+      }
+      return false;
+    }
+  }
+  
+  // Compare arrays by length and first few items (shallow check)
+  const arrayKeys = ['buySignals', 'sellSignals', 'orderExecutions'];
+  for (const key of arrayKeys) {
+    const prevArray = prevProps[key] || [];
+    const nextArray = nextProps[key] || [];
+    
+    if (prevArray.length !== nextArray.length) {
+      console.log(`🔄 TradingControlPanel: ${key} length changed from ${prevArray.length} to ${nextArray.length}`);
+      return false;
+    }
+    
+    // For small arrays, do light comparison on first few items
+    if (prevArray.length > 0 && nextArray.length > 0) {
+      const compareCount = Math.min(3, prevArray.length);
+      for (let i = 0; i < compareCount; i++) {
+        if (prevArray[i]?.symbol !== nextArray[i]?.symbol) {
+          console.log(`🔄 TradingControlPanel: ${key}[${i}] symbol changed`);
+          return false;
+        }
+      }
+    }
+  }
+  
+  // Compare orderNotification object (lightweight comparison)
+  const prevOrderId = prevProps.orderNotification?.orderId;
+  const nextOrderId = nextProps.orderNotification?.orderId;
+  if (prevOrderId !== nextOrderId) {
+    console.log('🔄 TradingControlPanel: orderNotification orderId changed');
+    return false;
+  }
+  
+  // Skip function prop comparison - assume parent uses useCallback properly
+  // This prevents re-renders when functions are recreated but functionality is same
+  
+  // Props are essentially the same, prevent re-render
+  return true;
+};
+
+export default memo(TradingControlPanel, areEqual);

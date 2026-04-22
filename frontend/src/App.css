@@ -22,6 +22,39 @@ code {
     monospace;
 }
 
+/* Responsive font scaling */
+html {
+  font-size: 16px;
+}
+
+/* Large desktop */
+@media (max-width: 1600px) {
+  html {
+    font-size: 15px;
+  }
+}
+
+/* Standard laptop */
+@media (max-width: 1400px) {
+  html {
+    font-size: 14px;
+  }
+}
+
+/* Smaller laptop */
+@media (max-width: 1200px) {
+  html {
+    font-size: 13px;
+  }
+}
+
+/* Tablet landscape */
+@media (max-width: 1024px) {
+  html {
+    font-size: 14px;
+  }
+}
+
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

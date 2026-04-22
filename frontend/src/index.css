@@ -21,6 +21,46 @@ code {
     monospace;
 }
 
+/* Responsive container utilities */
+.container {
+  width: 100%;
+  max-width: 1800px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+/* Large desktop */
+@media (max-width: 1600px) {
+  .container {
+    max-width: 1600px;
+    padding: 0 18px;
+  }
+}
+
+/* Standard laptop */
+@media (max-width: 1400px) {
+  .container {
+    max-width: 1400px;
+    padding: 0 16px;
+  }
+}
+
+/* Smaller laptop */
+@media (max-width: 1200px) {
+  .container {
+    max-width: 1200px;
+    padding: 0 14px;
+  }
+}
+
+/* Tablet landscape */
+@media (max-width: 1024px) {
+  .container {
+    max-width: 1024px;
+    padding: 0 12px;
+  }
+}
+
 /* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 8px;

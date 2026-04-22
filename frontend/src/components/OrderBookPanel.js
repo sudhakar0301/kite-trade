@@ -31,6 +31,30 @@ const PanelOverlay = styled.div`
   transition: right 0.4s ease;
   z-index: 15000;
   overflow-y: auto;
+  
+  /* Large desktop */
+  @media (max-width: 1600px) {
+    width: 380px;
+    right: ${props => props.isOpen ? '0' : '-380px'};
+  }
+  
+  /* Standard laptop */
+  @media (max-width: 1400px) {
+    width: 360px;
+    right: ${props => props.isOpen ? '0' : '-360px'};
+  }
+  
+  /* Smaller laptop */
+  @media (max-width: 1200px) {
+    width: 340px;
+    right: ${props => props.isOpen ? '0' : '-340px'};
+  }
+  
+  /* Tablet landscape */
+  @media (max-width: 1024px) {
+    width: 320px;
+    right: ${props => props.isOpen ? '0' : '-320px'};
+  }
 `;
 
 const PanelHeader = styled.div`
@@ -43,6 +67,24 @@ const PanelHeader = styled.div`
   align-items: center;
   justify-content: space-between;
   border-bottom: 1px solid #333;
+  
+  /* Laptop adjustments */
+  @media (max-width: 1400px) {
+    padding: 16px;
+    font-size: 15px;
+  }
+  
+  /* Smaller laptop */
+  @media (max-width: 1200px) {
+    padding: 14px;
+    font-size: 14px;
+  }
+  
+  /* Tablet landscape */
+  @media (max-width: 1024px) {
+    padding: 12px;
+    font-size: 13px;
+  }
 `;
 
 const CloseButton = styled.button`
@@ -64,6 +106,21 @@ const CloseButton = styled.button`
 const OrderBookContainer = styled.div`
   padding: 20px;
   color: #e6edf3;
+  
+  /* Laptop adjustments */
+  @media (max-width: 1400px) {
+    padding: 16px;
+  }
+  
+  /* Smaller laptop */
+  @media (max-width: 1200px) {
+    padding: 14px;
+  }
+  
+  /* Tablet landscape */
+  @media (max-width: 1024px) {
+    padding: 12px;
+  }
 `;
 
 const OrderBookSection = styled.div`
@@ -83,6 +140,21 @@ const OrderTable = styled.table`
   border-collapse: collapse;
   font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
   font-size: 11px;
+  
+  /* Laptop adjustments */
+  @media (max-width: 1400px) {
+    font-size: 10px;
+  }
+  
+  /* Smaller laptop */
+  @media (max-width: 1200px) {
+    font-size: 9px;
+  }
+  
+  /* Tablet landscape */
+  @media (max-width: 1024px) {
+    font-size: 8px;
+  }
 `;
 
 const OrderHeader = styled.th`
