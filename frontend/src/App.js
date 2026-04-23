@@ -6,6 +6,9 @@ import TradingControlPanel from './components/TradingControlPanel';
 // import TickAnalysisTable from './components/TickAnalysisTable';
 import OrderExecutionPanel from './components/OrderExecutionPanel';
 import SubscribedStockTracker from './components/SubscribedStockTracker';
+import ScanResultsTables from './components/ScanResultsTables'; // NEW: Scan results tables
+import PositionsOrdersTable from './components/PositionsOrdersTable'; // NEW: Positions and Orders display
+import TargetOrderDetails from './components/TargetOrderDetails'; // NEW: Target order details display
 // import AlgorithmTutorial from './components/AlgorithmTutorial';
 import './App.css';
 
@@ -381,6 +384,26 @@ function App() {
   const [lastSpokenMessage, setLastSpokenMessage] = useState('');
   const [lastSpeakTime, setLastSpeakTime] = useState(0);
   const [realSubscriptionCount, setRealSubscriptionCount] = useState(0);
+  
+  // NEW: Scan results table data
+  const [scanResults, setScanResults] = useState({
+    buyTable: [],
+    sellTable: [],
+    executionMode: 'direct',
+    autoTrade: false,
+    lastScanTime: null
+  });
+
+  // NEW: Positions and Orders data
+  const [positionsData, setPositionsData] = useState([]);
+  const [ordersData, setOrdersData] = useState([]);
+  const [positionsOrdersLoading, setPositionsOrdersLoading] = useState(false);
+  const [positionsOrdersError, setPositionsOrdersError] = useState(null);
+  const [lastPositionsOrdersUpdate, setLastPositionsOrdersUpdate] = useState(null);
+
+  // NEW: Target Order Details
+  const [targetOrderDetails, setTargetOrderDetails] = useState([]);
+  const [showTargetOrderDetails, setShowTargetOrderDetails] = useState(false);
 
   // Debug state changes
   useEffect(() => {
@@ -393,6 +416,177 @@ function App() {
       console.log(`  ${index + 1}. ${order.symbol} ${order.type} ${order.status}`);
     });
   }, [orderExecutions]);
+
+  // Fetch initial auto trading status from backend
+  useEffect(() => {
+    const fetchAutoTradingStatus = async () => {
+      try {
+        const response = await fetch('http://localhost:5000/api/auto-trading-status', {
+          headers: {
+            ...(accessToken && { 'Authorization': `Bearer ${accessToken}` })
+          }
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+          setAutoTradingEnabled(result.autoTradingActive);
+          console.log(`🔒 Initial auto trading status loaded: ${result.autoTradingActive ? 'ENABLED' : 'DISABLED'}`);
+        }
+      } catch (error) {
+        console.error('❌ Error fetching auto trading status:', error);
+      }
+    };
+    
+    fetchAutoTradingStatus();
+  }, []); // Run once on mount
+
+  // Function to identify target orders from positions and orders data
+  const identifyTargetOrders = useCallback((positions, orders) => {
+    const targetOrders = [];
+    
+    // Filter out positions with zero quantity
+    const activePositions = positions.filter(pos => pos.quantity !== 0);
+    
+    activePositions.forEach(position => {
+      const positionSymbol = position.tradingsymbol;
+      const positionQuantity = parseInt(position.quantity);
+      const positionSide = positionQuantity > 0 ? 'BUY' : 'SELL';
+      const avgPrice = parseFloat(position.average_price || position.price || 0);
+      
+      // Look for orders in opposite direction (target orders)
+      const targetSide = positionSide === 'BUY' ? 'SELL' : 'BUY';
+      
+      const matchingOrders = orders.filter(order => 
+        order.tradingsymbol === positionSymbol && 
+        order.transaction_type === targetSide &&
+        order.status === 'OPEN'
+      );
+      
+      matchingOrders.forEach(order => {
+        const orderPrice = parseFloat(order.price || 0);
+        const orderQuantity = parseInt(order.quantity || 0);
+        const investment = avgPrice * Math.abs(positionQuantity);
+        
+        // Calculate expected profit based on price difference
+        const pricePerShare = Math.abs(orderPrice - avgPrice);
+        const expectedProfit = pricePerShare * orderQuantity;
+        const profitPercentage = investment > 0 ? (expectedProfit / investment) * 100 : 0;
+        
+        const targetOrder = {
+          symbol: positionSymbol,
+          orderId: order.order_id,
+          avgPrice: avgPrice,
+          quantity: orderQuantity,
+          investment: investment,
+          targetPrice: orderPrice,
+          expectedProfit: expectedProfit,
+          profitPercentage: profitPercentage.toFixed(2),
+          side: positionSide,
+          targetSide: targetSide,
+          placedAt: order.order_timestamp || new Date().toISOString(),
+          timestamp: new Date(order.order_timestamp || Date.now()).toLocaleTimeString(),
+          status: order.status,
+          orderType: order.order_type
+        };
+        
+        targetOrders.push(targetOrder);
+      });
+    });
+    
+    return targetOrders;
+  }, []);
+
+  // Fetch positions and orders data
+  const fetchPositionsAndOrders = useCallback(async () => {
+    setPositionsOrdersLoading(true);
+    setPositionsOrdersError(null);
+    
+    try {
+      // Fetch both positions and orders in parallel
+      const [positionsRes, ordersRes] = await Promise.all([
+        fetch('http://localhost:5000/api/positions', {
+          headers: {
+            ...(accessToken && { 'Authorization': `Bearer ${accessToken}` })
+          }
+        }),
+        fetch('http://localhost:5000/api/orders', {
+          headers: {
+            ...(accessToken && { 'Authorization': `Bearer ${accessToken}` })
+          }
+        })
+      ]);
+      
+      let positions = [];
+      let orders = [];
+      
+      if (positionsRes.ok) {
+        const posData = await positionsRes.json();
+        positions = posData.positions || [];
+      }
+      
+      if (ordersRes.ok) {
+        const ordData = await ordersRes.json();
+        orders = ordData.orders || [];
+      }
+      
+      setPositionsData(positions);
+      setOrdersData(orders);
+      setLastPositionsOrdersUpdate(new Date().toLocaleTimeString());
+      
+      // Match positions with orders to identify target orders
+      const matchedTargetOrders = identifyTargetOrders(positions, orders);
+      
+      if (matchedTargetOrders.length > 0) {
+        setTargetOrderDetails(prevDetails => {
+          // Merge identified target orders with existing ones from WebSocket
+          // Remove any existing orders that are no longer open
+          const activeOrderIds = orders.filter(o => o.status === 'OPEN').map(o => o.order_id);
+          const activeExistingOrders = prevDetails.filter(order => 
+            !order.orderId || activeOrderIds.includes(order.orderId) || 
+            (Date.now() - new Date(order.placedAt).getTime()) < 300000 // Keep recent orders for 5 minutes
+          );
+          
+          // Add newly identified target orders if they don't already exist
+          const mergedOrders = [...activeExistingOrders];
+          matchedTargetOrders.forEach(newOrder => {
+            const existingIndex = mergedOrders.findIndex(order => order.orderId === newOrder.orderId);
+            if (existingIndex >= 0) {
+              // Update existing order with fresh data
+              mergedOrders[existingIndex] = newOrder;
+            } else {
+              // Add new identified target order
+              mergedOrders.push(newOrder);
+            }
+          });
+          
+          // Sort by timestamp (newest first) and keep last 10
+          return mergedOrders
+            .sort((a, b) => new Date(b.placedAt || b.timestamp) - new Date(a.placedAt || a.timestamp))
+            .slice(0, 10);
+        });
+        
+        setShowTargetOrderDetails(true);
+        console.log(`🎯 Found ${matchedTargetOrders.length} target orders from positions/orders matching:`, 
+          matchedTargetOrders.map(t => `${t.symbol}:${t.orderId}(${t.status})`));
+      }
+    } catch (err) {
+      console.error('Error fetching positions/orders:', err);
+      setPositionsOrdersError('Failed to fetch data. Make sure the backend is running.');
+    } finally {
+      setPositionsOrdersLoading(false);
+    }
+  }, [accessToken]);
+
+  // Auto-refresh positions and orders every 5 seconds
+  useEffect(() => {
+    if (accessToken) {
+      fetchPositionsAndOrders();
+      
+      const interval = setInterval(fetchPositionsAndOrders, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [fetchPositionsAndOrders, accessToken]);
 
   // Refs
   const pollIntervalRef = useRef(null);
@@ -471,45 +665,25 @@ function App() {
     
     console.log(`   Clean symbol: "${cleanSymbol}" → Token: ${token || 'NOT FOUND'}`);
     
-    if (token) {
-      const chartUrl = `https://kite.zerodha.com/markets/ext/chart/web/tvc/NSE/${cleanSymbol}/${token}`;
-      const tabName = 'kite-chart-tab'; // Use same simple tab name as StockResultsTable
-      
-      console.log(`🚀 Opening ${chartType} Kite chart for ${cleanSymbol}`);
-      
-      try {
-        const newTab = window.open(chartUrl, tabName);
-        if (newTab) {
-          newTab.focus();
-          console.log(`✅ Kite chart opened in tab: ${tabName}`);
-        } else {
-          console.error('❌ Kite chart blocked by popup blocker');
-          alert(`📊 Chart blocked!\nSymbol: ${cleanSymbol}\nEnable popups to open Kite charts.`);
-        }
-      } catch (error) {
-        console.error('❌ Error opening Kite chart:', error);
+    // Always use Kite chart URL format with token (use default token if not found)
+    const finalToken = token || '0'; // Use '0' as fallback if no token found
+    const chartUrl = `https://kite.zerodha.com/markets/ext/chart/web/tvc/NSE/${cleanSymbol}/${finalToken}`;
+    const tabName = 'kite-chart-tab'; // Use same simple tab name as StockResultsTable
+    
+    console.log(`🚀 Opening ${chartType} Kite chart for ${cleanSymbol}`);
+    
+    try {
+      const newTab = window.open(chartUrl, tabName);
+      if (newTab) {
+        newTab.focus();
+        console.log(`✅ Kite chart opened in tab: ${tabName}`);
+      } else {
+        console.error('❌ Kite chart blocked by popup blocker');
+        alert(`📊 Chart blocked!\nSymbol: ${cleanSymbol}\nEnable popups to open Kite charts.`);
       }
-    } else {
-      console.warn(`⚠️ Symbol "${cleanSymbol}" not found in ${mappingCount} mappings`);
-      
-      // TradingView fallback
-      const tradingViewUrl = `https://in.tradingview.com/chart/?symbol=NSE%3A${cleanSymbol}`;
-      const tabName = 'kite-chart-tab'; // Use same simple tab name for consistency
-      
-      console.log(`📈 Opening TradingView fallback for ${cleanSymbol}`);
-      
-      try {
-        const newTab = window.open(tradingViewUrl, tabName);
-        if (newTab) {
-          newTab.focus();
-          console.log(`✅ TradingView chart opened: ${tabName}`);
-        } else {
-          alert(`📊 Chart blocked!\nSymbol: ${cleanSymbol}\nTried TradingView fallback but popup was blocked.`);
-        }
-      } catch (error) {
-        console.error('❌ Error opening TradingView chart:', error);
-        alert(`📊 No chart available for ${cleanSymbol}\nBoth Kite and TradingView failed.\nSymbol mappings loaded: ${mappingCount}`);
-      }
+    } catch (error) {
+      console.error('❌ Error opening Kite chart:', error);
+      alert(`📊 No chart available for ${cleanSymbol}\nChart failed to open.\nSymbol mappings loaded: ${mappingCount}`);
     }
   }, [symbolMappings]);
 
@@ -687,9 +861,9 @@ function App() {
     }
   }, [voiceEnabled, lastSpokenMessage, lastSpeakTime]);
 
-  // Auto trading via SEPARATE routes
+  // Auto trading via DIRECT ORDER ROUTES with POSITION MANAGEMENT
   const executeAutoTradingViaSeparateRoutes = useCallback(async (buyStocks, sellStocks) => {
-    console.log('🎯 [AUTO-TRADE] === FUNCTION CALLED ===');
+    console.log('🎯 [AUTO-TRADE] === DIRECT ORDER EXECUTION WITH POSITION MANAGEMENT ===');
     console.log('🎯 [AUTO-TRADE] autoTradingEnabled:', autoTradingEnabled);
     console.log('🎯 [AUTO-TRADE] buyStocks:', buyStocks);
     console.log('🎯 [AUTO-TRADE] sellStocks:', sellStocks);
@@ -706,75 +880,301 @@ function App() {
       return;
     }
 
-    console.log(`🤖 Executing auto trading via TICKER SYSTEM:`);
+    console.log(`🤖 Executing auto trading via DIRECT ORDER ROUTES with position management:`);
     console.log(`   - Buy stocks: ${buyStocks.length}`);
     console.log(`   - Sell stocks: ${sellStocks.length}`);
 
     try {
-      // 🎯 ENABLE TICKER-BASED AUTO-TRADE: Set backend auto-trade mode
-      const autoTradeResponse = await fetch('http://localhost:5000/api/enable-auto-trade', {
+      // 🚦 STEP 1: CHECK EXISTING POSITIONS FIRST
+      console.log('🔍 Step 1: Checking existing positions...');
+      const positionsResponse = await fetch('http://localhost:5000/api/positions', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (!positionsResponse.ok) {
+        throw new Error(`Failed to fetch positions: ${positionsResponse.status}`);
+      }
+
+      const positionsData = await positionsResponse.json();
+      const activePositions = positionsData.positions || [];
+      const activePositionsFiltered = activePositions.filter(pos => pos.quantity !== 0);
+      
+      console.log(`📊 Found ${activePositionsFiltered.length} active positions:`, activePositionsFiltered.map(pos => pos.tradingsymbol));
+
+      let successfulOrders = 0;
+      let failedOrders = 0;
+      let blockedOrders = 0;
+
+      // 🎯 LIMIT TRADING: Only trade the FIRST stock from each category to avoid overwhelming orders
+      const maxOrdersPerType = 1;
+      const buyStocksToTrade = buyStocks.slice(0, maxOrdersPerType);
+      const sellStocksToTrade = sellStocks.slice(0, maxOrdersPerType);
+      
+      console.log(`🎯 CONTROLLED TRADING: Selected ${buyStocksToTrade.length} BUY + ${sellStocksToTrade.length} SELL from ${buyStocks.length + sellStocks.length} total signals`);
+
+      // 🚦 DECISION LOGIC: Positions exist vs no positions
+      if (activePositionsFiltered.length > 0) {
+        console.log('⚠️ POSITIONS EXIST - Using intelligent order logic');
+        
+        // For each stock, check if we have a position for that symbol
+        for (const stock of buyStocksToTrade) {
+          const hasPositionForSymbol = activePositionsFiltered.some(pos => pos.tradingsymbol === stock.symbol);
+          
+          if (hasPositionForSymbol) {
+            // ✅ ALLOW TARGET ORDER for existing position
+            console.log(`🎯 Placing TARGET order for existing position: ${stock.symbol}`);
+            const result = await executeOrder('BUY', stock, token, true); // isTargetOrder: true
+            if (result.success) successfulOrders++; else failedOrders++;
+          } else {
+            // ❌ BLOCK ORDER for different symbol
+            console.log(`🚫 BLOCKING BUY order for ${stock.symbol} - position exists for other symbols`);
+            blockedOrders++;
+          }
+        }
+
+        for (const stock of sellStocksToTrade) {
+          const hasPositionForSymbol = activePositionsFiltered.some(pos => pos.tradingsymbol === stock.symbol);
+          
+          if (hasPositionForSymbol) {
+            // ✅ ALLOW TARGET ORDER for existing position
+            console.log(`🎯 Placing TARGET order for existing position: ${stock.symbol}`);
+            const result = await executeOrder('SELL', stock, token, true); // isTargetOrder: true
+            if (result.success) successfulOrders++; else failedOrders++;
+          } else {
+            // ❌ BLOCK ORDER for different symbol
+            console.log(`🚫 BLOCKING SELL order for ${stock.symbol} - position exists for other symbols`);
+            blockedOrders++;
+          }
+        }
+      } else {
+        // ✅ NO POSITIONS - EXECUTE MAIN ORDERS NORMALLY
+        console.log('✅ NO POSITIONS EXIST - Executing main orders normally');
+        
+        // Execute BUY orders (LIMITED)
+        for (const stock of buyStocksToTrade) {
+          const result = await executeOrder('BUY', stock, token, false); // isTargetOrder: false
+          if (result.success) successfulOrders++; else failedOrders++;
+        }
+
+        // Execute SELL orders
+        for (const stock of sellStocksToTrade) {
+          const result = await executeOrder('SELL', stock, token, false); // isTargetOrder: false
+          if (result.success) successfulOrders++; else failedOrders++;
+        }
+      }
+
+      // Show completion notification
+      const totalAttempts = buyStocksToTrade.length + sellStocksToTrade.length;
+      console.log(`🎯 [AUTO-TRADE] EXECUTION COMPLETE: ${successfulOrders}/${totalAttempts} orders successful, ${blockedOrders} blocked by position management`);
+      
+      if (successfulOrders > 0 && voiceEnabled) {
+        speak(`${successfulOrders} orders executed successfully`);
+      }
+      
+    } catch (error) {
+      console.error('❌ [AUTO-TRADE] Execution failed:', error);
+      if (voiceEnabled) {
+        speak('Auto trading execution failed');
+      }
+    }
+  }, [autoTradingEnabled, accessToken, voiceEnabled, speak]);
+
+  // 🎯 POSITION & ORDER CHECK WITH DEDICATED TARGET ROUTES
+  const checkPositionsAndOrdersFromFrontend = useCallback(async () => {
+    try {
+      const token = accessToken || localStorage.getItem('kite_access_token');
+      if (!token || token === 'demo_token') {
+        console.log('⚠️ No valid access token for position & order check');
+        return;
+      }
+
+      console.log('🔍 === FRONTEND POSITION & ORDER CHECK WITH DEDICATED TARGET ROUTES ===');
+      
+      // STEP 1: Get current active positions
+      console.log('📡 Fetching positions from backend API...');
+      const positionsResponse = await fetch('http://localhost:5000/api/positions', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      let activePositions = [];
+      if (positionsResponse.ok) {
+        const positionsData = await positionsResponse.json();
+        activePositions = positionsData.positions?.filter(pos => pos.quantity !== 0) || [];
+      } else {
+        console.log('⚠️ Could not fetch positions');
+        return;
+      }
+      
+      // STEP 2: Get open orders
+      console.log('📋 Fetching open orders from backend API...');
+      const ordersResponse = await fetch('http://localhost:5000/api/orders', {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      let openOrders = [];
+      if (ordersResponse.ok) {
+        const ordersData = await ordersResponse.json();
+        openOrders = ordersData.orders || [];
+      } else {
+        console.log('⚠️ Could not fetch orders');
+        return;
+      }
+      
+      // STEP 3: Analyze and place missing target orders
+      if (activePositions.length === 0) {
+        console.log('✅ No active positions found - no target orders needed');
+        return;
+      }
+
+      console.log(`📊 Found ${activePositions.length} active positions:`, 
+        activePositions.map(pos => ({
+          symbol: pos.tradingsymbol,
+          quantity: pos.quantity,
+          avg_price: pos.average_price,
+          side: parseInt(pos.quantity) > 0 ? 'BUY' : 'SELL'
+        }))
+      );
+      
+      console.log(`📋 Found ${openOrders.length} open orders:`, 
+        openOrders.map(order => ({
+          symbol: order.tradingsymbol,
+          order_id: order.order_id,
+          transaction_type: order.transaction_type,
+          status: order.status,
+          price: order.price,
+          quantity: order.quantity
+        }))
+      );
+      
+      // STEP 4: Check each position for missing target orders and place them
+      for (const position of activePositions) {
+        const symbol = position.tradingsymbol;
+        const quantity = parseInt(position.quantity);
+        const avgPrice = parseFloat(position.average_price);
+        const positionSide = quantity > 0 ? 'BUY' : 'SELL';
+        const targetSide = positionSide === 'BUY' ? 'SELL' : 'BUY';
+        
+        console.log(`🎯 Checking ${symbol}: Qty=${quantity}, AvgPrice=₹${avgPrice}, Side=${positionSide}, Need=${targetSide}`);
+        
+        // Check if target order already exists (same symbol, opposite side, same quantity)
+        const existingTargetOrder = openOrders.find(order => 
+          order.tradingsymbol === symbol && 
+          order.transaction_type === targetSide &&
+          Math.abs(parseInt(order.quantity)) === Math.abs(quantity) &&
+          (order.status === 'OPEN' || order.status === 'TRIGGER PENDING')
+        );
+        
+        if (existingTargetOrder) {
+          console.log(`✅ Target order already exists for ${symbol}: ${existingTargetOrder.order_id} (${targetSide} ${existingTargetOrder.quantity} @ ₹${existingTargetOrder.price})`);
+          continue;
+        }
+        
+        // STEP 5: Place missing target order using dedicated route
+        console.log(`🆕 No target order found for ${symbol} - PLACING TARGET ORDER FROM FRONTEND`);
+        
+        try {
+          // Determine which dedicated route to use
+          const targetRoute = targetSide === 'SELL' ? 'target-sell-order' : 'target-buy-order';
+          
+          // Create target order data for dedicated route
+          const targetOrderData = {
+            symbol: symbol,
+            avgPrice: avgPrice,
+            quantity: quantity, // Keep original quantity (positive or negative)
+            access_token: token
+          };
+          
+          console.log(`📤 Calling dedicated route /${targetRoute} for ${symbol}: AvgPrice=₹${avgPrice}, Qty=${quantity}`);
+          
+          const targetResponse = await fetch(`http://localhost:5000/api/${targetRoute}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify(targetOrderData)
+          });
+          
+          const targetResult = await targetResponse.json();
+          
+          if (targetResult.success) {
+            console.log(`✅ Frontend placed target order for ${symbol}: ${targetResult.order_id || 'Order ID pending'}`);
+            
+            // 📊 OPEN NAMED CHART for successful target order
+            if (targetResult.openChart) {
+              console.log(`🚀 Opening named chart for target order: ${symbol}`);
+              openNamedChart(symbol, 'target-order');
+            }
+            
+            if (voiceEnabled) {
+              speak(`Target order placed for ${symbol}`);
+            }
+          } else {
+            console.log(`❌ Failed to place target order for ${symbol}:`, targetResult.error);
+          }
+          
+        } catch (targetError) {
+          console.error(`❌ Error placing target order for ${symbol}:`, targetError.message);
+        }
+      }
+      
+      console.log('🎯 Frontend position & order check complete - DEDICATED TARGET ROUTES USED');
+      
+    } catch (error) {
+      console.error('❌ Error in frontend position & order check:', error.message);
+    }
+  }, [accessToken, voiceEnabled, speak]);
+
+  // Helper function to execute individual orders
+  const executeOrder = useCallback(async (type, stock, token, isTargetOrder) => {
+    try {
+      const orderTypeText = isTargetOrder ? 'TARGET' : 'MAIN';
+      console.log(`${type === 'BUY' ? '🔵' : '🔴'} Attempting ${orderTypeText} ${type} order for ${stock.symbol} @ ₹${stock.ltp}`);
+      
+      const response = await fetch(`http://localhost:5000/api/${type.toLowerCase()}-order`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
         body: JSON.stringify({
-          enabled: true,
-          accessToken: token
+          symbol: stock.symbol,
+          ltp: stock.ltp,
+          access_token: token,
+          isTargetOrder: isTargetOrder
         })
       });
 
-      const autoTradeResult = await autoTradeResponse.json();
+      const result = await response.json();
       
-      if (autoTradeResult.success) {
-        console.log('✅ [TICKER] Auto-trade enabled successfully - ticker will handle all orders');
+      if (result.success) {
+        console.log(`✅ ${orderTypeText} ${type} order successful: ${stock.symbol} - Order ID: ${result.order_id}`);
         
-        // Show auto-trade enabled notification
-        setOrderNotification({
-          type: 'info',
-          symbol: 'AUTO-TRADE',
-          orderId: null,
-          price: null,
-          quantity: 'ENABLED',
-          timestamp: new Date().toISOString(),
-          success: true,
-          message: `Auto-trade enabled - ${buyStocks.length} buy + ${sellStocks.length} sell stocks monitored`
-        });
-        setTimeout(() => setOrderNotification(null), 5000);
+        // Open chart for successful orders
+        openNamedChart(stock.symbol);
         
+        return { success: true, orderId: result.order_id };
       } else {
-        console.error('❌ [TICKER] Failed to enable auto-trade:', autoTradeResult.error);
-        
-        setOrderNotification({
-          type: 'error',
-          symbol: 'AUTO-TRADE',
-          orderId: null,
-          price: null,
-          quantity: 'FAILED',
-          timestamp: new Date().toISOString(),
-          success: false,
-          error: autoTradeResult.error
-        });
-        setTimeout(() => setOrderNotification(null), 8000);
+        console.log(`❌ ${orderTypeText} ${type} order failed: ${stock.symbol} - ${result.error}`);
+        return { success: false, error: result.error };
       }
     } catch (error) {
-      console.error('❌ [TICKER] Auto-trade enable failed:', error);
-      
-      setOrderNotification({
-        type: 'error',
-        symbol: 'AUTO-TRADE',
-        orderId: null,
-        price: null,
-        quantity: 'ERROR',
-        timestamp: new Date().toISOString(),
-        success: false,
-        error: error.message || 'Network error'
-      });
-      setTimeout(() => setOrderNotification(null), 8000);
+      console.error(`❌ ${type} order error for ${stock.symbol}:`, error);
+      return { success: false, error: error.message };
     }
-
-    console.log(`🎯 Auto trading via TICKER SYSTEM complete`);
-  }, [accessToken, speak]);
+  }, [openNamedChart]);
 
   // Scanner data fetch function
   const fetchScannerData = useCallback(async () => {
@@ -788,7 +1188,7 @@ function App() {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          autoTrade: false, // Always false - scanner only returns data
+          autoTrade: autoTradingEnabled, // Use actual auto trade setting for direct execution
           access_token: accessToken || localStorage.getItem('kite_access_token')
         })
       });
@@ -939,6 +1339,26 @@ function App() {
         };
         setIntersectionSummary(intersectionData);
         
+        // NEW: Handle scan results for new UI tables
+        if (lowPriceData.buyTable || lowPriceData.sellTable) {
+          console.log('📊 NEW: Updating scan results tables');
+          console.log(`   - Buy table entries: ${lowPriceData.buyTable?.length || 0}`);
+          console.log(`   - Sell table entries: ${lowPriceData.sellTable?.length || 0}`);
+          console.log(`   - Execution mode: ${lowPriceData.executionMode || 'unknown'}`);
+          console.log(`   - Auto trade: ${lowPriceData.autoTrade}`);
+          
+          setScanResults({
+            buyTable: lowPriceData.buyTable || [],
+            sellTable: lowPriceData.sellTable || [],
+            executionMode: lowPriceData.executionMode || 'direct',
+            autoTrade: lowPriceData.autoTrade || false,
+            lastScanTime: new Date().toISOString(),
+            orderExecution: lowPriceData.orderExecution || {}
+          });
+        } else {
+          console.log('⚠️ No buyTable/sellTable found in response, using legacy format');
+        }
+        
         console.log('📊 Intersection Summary:', intersectionData);
         
         setLastUpdate(new Date().toLocaleTimeString());
@@ -970,6 +1390,12 @@ function App() {
         if (voiceEnabled && (buyStocks.length > 0 || sellStocks.length > 0)) {
           speak(`Low price scanner found ${buyStocks.length} buy signals and ${sellStocks.length} sell signals from stocks under ₹4000`);
         }
+        
+        // 🔄 STEP 3: FRONTEND POSITION & ORDER CHECK WITH DEDICATED TARGET ROUTES
+        console.log('🔄 Step 3: Running position & order check with dedicated target routes from frontend...');
+        setTimeout(() => {
+          checkPositionsAndOrdersFromFrontend();
+        }, 2000); // Delay to ensure scan/orders are processed
       }
     } catch (error) {
       console.error('Failed to fetch scanner data:', error);
@@ -977,7 +1403,7 @@ function App() {
       setBuySignals([]);
       setSellSignals([]);
     }
-  }, [voiceEnabled, autoTradingEnabled, speak, accessToken, kiteLoginStatus, executeAutoTradingViaSeparateRoutes]);
+  }, [voiceEnabled, autoTradingEnabled, speak, accessToken, kiteLoginStatus, executeAutoTradingViaSeparateRoutes, checkPositionsAndOrdersFromFrontend]);
 
   // Initialize WebSocket connection
   useEffect(() => {
@@ -1052,11 +1478,66 @@ function App() {
           data.charts.forEach((chart, index) => {
             // Small delay between opening multiple tabs to avoid popup blocking
             setTimeout(() => {
-              console.log(`🚀 Opening chart for ${chart.type} ${chart.symbol}: ${chart.chartUrl}`);
-              window.open(chart.chartUrl, '_blank');
+              // Construct chart URL from symbol and token sent by backend
+              const cleanSymbol = chart.symbol.replace('NSE:', '').replace('BSE:', '');
+              const token = chart.token || '0'; // Use token from backend or fallback to '0'
+              const chartUrl = `https://kite.zerodha.com/markets/ext/chart/web/tvc/NSE/${cleanSymbol}/${token}`;
+              
+              console.log(`🚀 Opening chart for ${chart.orderType} ${chart.symbol} with token ${token}`);
+              console.log(`📊 Chart URL: ${chartUrl}`);
+              
+              const newTab = window.open(chartUrl, 'kite-chart-tab');
+              if (newTab) {
+                newTab.focus();
+                console.log(`✅ Chart opened successfully for ${chart.symbol}`);
+              } else {
+                console.error('❌ Chart blocked by popup blocker');
+              }
             }, index * 500); // 500ms delay between each tab
           });
         }
+      } else if (data.type === 'target_order_placed') {
+        // Handle target order details for display
+        console.log('🎯 Target order placed:', data.targetOrder);
+        
+        setTargetOrderDetails(prevDetails => {
+          // Check if this target order already exists (avoid duplicates)
+          const existingIndex = prevDetails.findIndex(order => order.orderId === data.targetOrder.orderId);
+          
+          let newDetails;
+          if (existingIndex >= 0) {
+            // Update existing target order
+            newDetails = [...prevDetails];
+            newDetails[existingIndex] = data.targetOrder;
+          } else {
+            // Add new target order, keep only last 10 target orders
+            newDetails = [data.targetOrder, ...prevDetails].slice(0, 10);
+          }
+          
+          return newDetails;
+        });
+        
+        // Show the target order details section
+        setShowTargetOrderDetails(true);
+        
+        // Voice notification
+        if (voiceEnabled) {
+          const profit = Math.round(data.targetOrder.expectedProfit);
+          speak(`Target order placed for ${data.targetOrder.symbol}. Expected profit ${profit} rupees`);
+        }
+        
+        // Visual notification
+        setOrderNotification({
+          type: 'success',   
+          title: '🎯 Target Order Placed',
+          message: `Target order placed for ${data.targetOrder.symbol}`,
+          details: `Expected profit: ₹${data.targetOrder.expectedProfit.toFixed(2)} (0.3%)`,
+          timestamp: new Date().toLocaleTimeString()
+        });
+        
+        // Clear notification after 5 seconds
+        setTimeout(() => setOrderNotification(null), 5000);
+        
       } else if (data.type === 'subscription_update') {
         // Update real subscription count from backend
         console.log('📡 Subscription update received:', data.subscribed_count);
@@ -1180,6 +1661,38 @@ function App() {
     }
   }, [pollInterval, fetchScannerData]); // Add fetchScannerData dependency to get latest version
 
+  // 🔄 PERIODIC POSITION & ORDER MONITORING WITH DEDICATED TARGET ROUTES
+  useEffect(() => {
+    let positionCheckInterval;
+    
+    if (kiteLoginStatus === 'logged-in') {
+      console.log('🔄 Setting up position & order monitoring with dedicated target routes (30s interval)...');
+      
+      // Start after initial delay
+      const startPositionMonitoring = setTimeout(() => {
+        console.log('🎯 Starting position & order monitoring with dedicated target routes...');
+        checkPositionsAndOrdersFromFrontend();
+        
+        // Set up recurring position check every 30 seconds with dedicated target routes
+        positionCheckInterval = setInterval(() => {
+          console.log('⏰ Scheduled position & order check with dedicated target routes');
+          checkPositionsAndOrdersFromFrontend();
+        }, 30000); // 30 seconds
+        
+      }, 5000); // Initial 5 second delay
+      
+      return () => {
+        clearTimeout(startPositionMonitoring);
+        if (positionCheckInterval) {
+          clearInterval(positionCheckInterval);
+          console.log('🛑 Position & order monitoring stopped');
+        }
+      };
+    } else {
+      console.log('⚠️ Position & order monitoring skipped - not logged in');
+    }
+  }, [kiteLoginStatus, checkPositionsAndOrdersFromFrontend]);
+
   const startPolling = useCallback(() => {
     console.log(`🔄 Starting scanner polling with ${pollInterval}s interval...`);
     console.log('📊 Tick data should start flowing when symbols are scanned and subscribed via KiteTicker');
@@ -1236,10 +1749,35 @@ function App() {
     }
   }, [isPolling, startPolling, speak]);
 
-  const toggleAutoTrading = useCallback(() => {
-    setAutoTradingEnabled(!autoTradingEnabled);
-    speak(autoTradingEnabled ? 'Auto trading disabled' : 'Auto trading enabled');
-  }, [autoTradingEnabled, speak]);
+  const toggleAutoTrading = useCallback(async () => {
+    const newState = !autoTradingEnabled;
+    
+    try {
+      // 🔄 SYNC WITH BACKEND: Update server's autoTradingActive flag
+      const response = await fetch('http://localhost:5000/api/set-auto-trading', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken && { 'Authorization': `Bearer ${accessToken}` })
+        },
+        body: JSON.stringify({ enabled: newState })
+      });
+      
+      const result = await response.json();
+      
+      if (result.success) {
+        setAutoTradingEnabled(newState);
+        speak(newState ? 'Auto trading enabled' : 'Auto trading disabled');
+        console.log(`🔒 Auto trading ${newState ? 'ENABLED' : 'DISABLED'} - Backend synchronized`);
+      } else {
+        console.error('❌ Failed to sync auto trading with backend:', result.error);
+        speak('Auto trading sync failed');
+      }
+    } catch (error) {
+      console.error('❌ Error syncing auto trading with backend:', error);
+      speak('Auto trading sync error');
+    }
+  }, [autoTradingEnabled, speak, accessToken]);
 
   // Clear order notification
   const clearOrderNotification = useCallback(() => {
@@ -1296,7 +1834,33 @@ function App() {
         {/* Algorithm Tutorial - Commented out */}
         {/* <AlgorithmTutorial /> */}
         
-        {/* Live Stock Tracker - NOW VISIBLE */}
+        {/* NEW: Scan Results Tables - Side by Side Buy/Sell */}
+        <ScanResultsTables 
+          buyStocks={scanResults.buyTable}
+          sellStocks={scanResults.sellTable}
+          autoTrade={scanResults.autoTrade}
+          onSymbolClick={openNamedChart}
+        />
+        
+        {/* NEW: Positions and Orders Tables */}
+        <PositionsOrdersTable 
+          positions={positionsData}
+          orders={ordersData}
+          loading={positionsOrdersLoading}
+          error={positionsOrdersError}
+          lastUpdated={lastPositionsOrdersUpdate}
+          onRefresh={fetchPositionsAndOrders}
+        />
+        
+        {/* NEW: Target Order Details */}
+        <TargetOrderDetails 
+          targetOrders={targetOrderDetails}
+          isVisible={showTargetOrderDetails}
+          onClose={() => setShowTargetOrderDetails(false)}
+        />
+        
+        {/* TEMPORARILY HIDDEN: Live Stock Tracker */}
+        {/* 
         <SubscribedStockTracker 
           tickData={tickData}
           onOpenChart={openNamedChart}
@@ -1305,6 +1869,7 @@ function App() {
           sellSignalsCount={sellSignals.length}
           pollCountdown={pollCountdown}
         />
+        */}
         
         {/* Trading Dashboard with Scan Stocks Table */}
         <ScannerSection>
@@ -1335,13 +1900,15 @@ function App() {
         </ScannerSection>
       </MainContent>
       
-      {/* Order Execution Panel */}
+      {/* TEMPORARILY HIDDEN: Order Execution Panel */}
+      {/* 
       <OrderExecutionPanel 
         isOpen={orderPanelOpen}
         orderExecutions={orderExecutions}
         onClose={handleCloseOrderPanel}
         onClear={handleClearOrderExecutions}
       />
+      */}
       </ContentWrapper>
       
       <ControlPanelWrapper>

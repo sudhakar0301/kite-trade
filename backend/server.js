@@ -2,6 +2,7 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
+const { KiteConnect } = require('kiteconnect');
 require('dotenv').config();
 
 const scannerRoutes = require('./routes/scanner-routes');
@@ -156,7 +157,6 @@ app.get('/login/callback', async (req, res) => {
         console.log('📝 Processing request token:', request_token);
         
         // Generate session to get access token
-        const KiteConnect = require('kiteconnect').KiteConnect;
         const kc = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
         
         // Replace with your actual API secret
@@ -244,7 +244,6 @@ app.get('/login/status', async (req, res) => {
         }
         
         // Validate access token by getting user profile
-        const KiteConnect = require('kiteconnect').KiteConnect;
         const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
         kite.setAccessToken(access_token);
         
