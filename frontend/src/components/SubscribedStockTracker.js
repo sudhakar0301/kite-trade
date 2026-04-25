@@ -328,6 +328,14 @@ const SubscribedStockTracker = ({
   
   // Add ref to track manual symbol selections to prevent auto-override
   const manualSelectionRef = useRef(null);
+
+  // State for funds data (same as scanner)
+  const [fundsData, setFundsData] = useState({
+    availableFunds: 0,
+    leverageFunds: 0,
+    usableFunds: 0,
+    lastUpdated: null
+  });
   const MANUAL_SELECTION_LOCK_TIME = 5000; // 5 seconds protection from auto-override
   
   // Function to toggle accordion sections
@@ -347,9 +355,17 @@ const SubscribedStockTracker = ({
         setIsRelianceFallback(result.isRelianceFallback);
         setRelianceScanType(result.relianceScanType || 'FALLBACK');
         console.log('📊 Fallback status:', result);
+      } else {
+        // Fallback: If route doesn't exist, disable Reliance fallback
+        console.log('⚠️ Fallback-status route not available, disabling Reliance fallback');
+        setIsRelianceFallback(false);
+        setRelianceScanType('DISABLED');
       }
     } catch (error) {
       console.error('❌ Error checking fallback status:', error);
+      // Fallback: If route was removed or server error, disable Reliance fallback
+      setIsRelianceFallback(false);
+      setRelianceScanType('DISABLED');
     }
   }, []);
   
@@ -364,17 +380,17 @@ const SubscribedStockTracker = ({
     const screenWidth = window.innerWidth;
     
     if (screenWidth <= 480) {
-      // Very small mobile: All 10 columns in ~400px (added action column)
-      return '55px 30px 45px 35px 35px 40px 40px 45px 50px 50px';
+      // Very small mobile: 11 columns - Symbol, Type, LTP, CALC QTY, BID QTY, ASK QTY, BID LEVELS, ASK LEVELS, BUY SLIP, SELL SLIP, FUNDS
+      return '45px 25px 35px 30px 30px 30px 35px 35px 35px 35px 60px';
     } else if (screenWidth <= 768) {
-      // Mobile: All 10 columns in ~550px (added action column)
-      return '70px 35px 55px 45px 40px 50px 50px 55px 60px 60px';
+      // Mobile: 11 columns
+      return '65px 35px 50px 40px 40px 40px 45px 45px 45px 45px 80px';
     } else if (screenWidth <= 1024) {
-      // Tablet: All 10 columns in ~700px (added action column)
-      return '90px 45px 70px 60px 50px 65px 65px 70px 80px 80px';
+      // Tablet: 11 columns
+      return '85px 40px 65px 55px 55px 55px 60px 60px 60px 60px 100px';
     } else {
-      // Desktop: All 10 columns in ~800px (added action column)
-      return '110px 50px 80px 70px 60px 75px 75px 80px 90px 90px';
+      // Desktop: 11 columns
+      return '100px 45px 75px 65px 65px 65px 70px 70px 70px 70px 120px';
     }
   };
   
@@ -389,6 +405,17 @@ const SubscribedStockTracker = ({
     
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Fetch funds data on component mount and periodically
+  useEffect(() => {
+    // Initial fetch
+    fetchFundsData();
+    
+    // Refresh funds every 30 seconds
+    const fundsInterval = setInterval(fetchFundsData, 30000);
+    
+    return () => clearInterval(fundsInterval);
   }, []);
   
   // Function to handle unsubscribing a stock
@@ -522,41 +549,19 @@ const SubscribedStockTracker = ({
     if (realSubscribedSymbols.length > 0) {
       console.log('🔍 Using all real subscribed symbols from backend (including those without tick data):', realSubscribedSymbols);
       
-      // Sort subscribed symbols: those with tick data first, then by name
-      return realSubscribedSymbols.sort((a, b) => {
-        const hasTickDataA = tickData && tickData[a] && tickData[a].length > 0;
-        const hasTickDataB = tickData && tickData[b] && tickData[b].length > 0;
-        
-        // Symbols with tick data come first
-        if (hasTickDataA && !hasTickDataB) return -1;
-        if (!hasTickDataA && hasTickDataB) return 1;
-        
-        // If both have or don't have tick data, sort by most recent activity, then by name
-        if (hasTickDataA && hasTickDataB) {
-          const aLatestTime = new Date(tickData[a][tickData[a].length - 1]?.timestamp || 0).getTime();
-          const bLatestTime = new Date(tickData[b][tickData[b].length - 1]?.timestamp || 0).getTime();
-          if (aLatestTime !== bLatestTime) return bLatestTime - aLatestTime; // Most recent first
-        }
-        
-        return a.localeCompare(b); // Alphabetical fallback
-      });
+      // ✅ DEDUPLICATE symbols to prevent table duplicates
+      const uniqueSymbols = [...new Set(realSubscribedSymbols)];
+      console.log('🔍 Deduplication: original length', realSubscribedSymbols.length, '→ unique length', uniqueSymbols.length);
+      
+      // ✅ NO SORTING - Keep original subscription order, add new symbols to bottom
+      console.log('🔍 Stable order maintained - no sorting by activity');
+      return uniqueSymbols; // Return in original order
     }
     
-    // Fallback: Show all stocks from tickData but sort by most recent activity (newest on top)
+    // Fallback: Show all stocks from tickData in original order (no sorting)
     if (tickData) {
-      const stocks = Object.keys(tickData).sort((a, b) => {
-        const aHistory = tickData[a];
-        const bHistory = tickData[b];
-        
-        const aLatestTime = aHistory && aHistory.length > 0 ? 
-          new Date(aHistory[aHistory.length - 1]?.timestamp || 0).getTime() : 0;
-        const bLatestTime = bHistory && bHistory.length > 0 ? 
-          new Date(bHistory[bHistory.length - 1]?.timestamp || 0).getTime() : 0;
-          
-        return bLatestTime - aLatestTime; // Newest first
-      });
-      
-      console.log('🔍 Fallback: Stocks sorted by recent activity (newest first):', stocks.slice(0, 5));
+      const stocks = Object.keys(tickData);
+      console.log('🔍 Fallback: Stocks in original order (no activity sorting):', stocks);
       return stocks;
     }
     
@@ -634,7 +639,29 @@ const SubscribedStockTracker = ({
           const data = await response.json();
           const subscribedSymbols = data.subscribed_symbols || [];
           console.log('🔍 Real subscribed symbols from backend:', subscribedSymbols);
-          setRealSubscribedSymbols(subscribedSymbols);
+          console.log('🔍 Full subscription-status response:', data); // DEBUG: Log full response
+          
+          // ✅ DEDUPLICATE symbols at source to prevent table duplicates
+          const uniqueSubscribedSymbols = [...new Set(subscribedSymbols)];
+          console.log('🔍 Deduplication at source: original length', subscribedSymbols.length, '→ unique length', uniqueSubscribedSymbols.length);
+          setRealSubscribedSymbols(uniqueSubscribedSymbols);
+          
+          // NEW: Use enhanced signal stocks data from subscription-status
+          if (data.signal_stocks) {
+            const buySignals = data.signal_stocks.buySignals || [];
+            const sellSignals = data.signal_stocks.sellSignals || [];
+            console.log('📊 Signal stocks from subscription-status:', { buySignals: buySignals.length, sellSignals: sellSignals.length });
+            console.log('📊 Buy signals data:', buySignals); // DEBUG: Log buy signals
+            console.log('📊 Sell signals data:', sellSignals); // DEBUG: Log sell signals
+            
+            // ✅ DEDUPLICATE signal stocks as well
+            const uniqueBuySignals = [...new Set(buySignals)];
+            const uniqueSellSignals = [...new Set(sellSignals)];
+            setBuyStocks(uniqueBuySignals);
+            setSellStocks(uniqueSellSignals);
+          } else {
+            console.log('⚠️ No signal_stocks found in response');
+          }
         } else {
           console.log('⚠️ Failed to get subscription status from backend');
         }
@@ -653,6 +680,8 @@ const SubscribedStockTracker = ({
   }, []);
 
   // Check fallback status periodically
+  // DISABLED: fallback-status route was removed
+  /*
   useEffect(() => {
     // Check initially
     checkFallbackStatus();
@@ -662,35 +691,40 @@ const SubscribedStockTracker = ({
 
     return () => clearInterval(interval);
   }, [checkFallbackStatus]);
+  */
 
   // Effect to fetch buy/sell stocks for smart Reliance management
-  useEffect(() => {
-    const fetchBuySellStocks = async () => {
-      try {
-        const [buyResponse, sellResponse] = await Promise.all([
-          fetch('http://localhost:5000/api/buy-stocks'),
-          fetch('http://localhost:5000/api/sell-stocks')
-        ]);
-        
-        if (buyResponse.ok) {
-          const buyData = await buyResponse.json();
-          setBuyStocks(buyData.stocks || []);
-        }
-        
-        if (sellResponse.ok) {
-          const sellData = await sellResponse.json();
-          setSellStocks(sellData.stocks || []);
-        }
-      } catch (error) {
-        console.error('❌ Error fetching buy/sell stocks:', error);
-      }
-    };
-    
-    fetchBuySellStocks();
-    const interval = setInterval(fetchBuySellStocks, 15000); // Check every 15 seconds
-    
-    return () => clearInterval(interval);
-  }, []);
+  // DISABLED: Now getting signal stocks from enhanced /api/subscription-status
+  /*
+  // OLD: Removed conflicting fetchBuySellStocks - now using subscription-status data
+  // useEffect(() => {
+  //   const fetchBuySellStocks = async () => {
+  //     try {
+  //       const [buyResponse, sellResponse] = await Promise.all([
+  //         fetch('http://localhost:5000/api/buy-stocks'),
+  //         fetch('http://localhost:5000/api/sell-stocks')
+  //       ]);
+  //       
+  //       if (buyResponse.ok) {
+  //         const buyData = await buyResponse.json();
+  //         setBuyStocks(buyData.stocks || []);
+  //       }
+  //       
+  //       if (sellResponse.ok) {
+  //         const sellData = await sellResponse.json();
+  //         setSellStocks(sellData.stocks || []);
+  //       }
+  //     } catch (error) {
+  //       console.error('❌ Error fetching buy/sell stocks:', error);
+  //     }
+  //   };
+  //   
+  //   fetchBuySellStocks();
+  //   const interval = setInterval(fetchBuySellStocks, 15000); // Check every 15 seconds
+  //   
+  //   return () => clearInterval(interval);
+  // }, []);
+  */
   
   // Effect to trigger live updates when tick data changes
   useEffect(() => {
@@ -957,6 +991,183 @@ const SubscribedStockTracker = ({
     
     return () => clearInterval(timer);
   }, []);
+
+  // Auto-unsubscribe effect - removes inactive symbols automatically
+  useEffect(() => {
+    const autoUnsubscribeCheck = async () => {
+      if (realSubscribedSymbols.length === 0) return;
+      
+      const symbolsToUnsubscribe = [];
+      
+      console.log('🔄 AUTO-UNSUBSCRIBE: Checking symbols against current signals...');
+      console.log('🔄 Current buyStocks:', buyStocks);
+      console.log('🔄 Current sellStocks:', sellStocks);
+      
+      // Get all current signal symbols (both buy and sell)
+      const currentSignalSymbols = new Set([
+        ...buyStocks.map(stock => stock.symbol || stock),
+        ...sellStocks.map(stock => stock.symbol || stock)
+      ]);
+      
+      console.log('🔄 All current signal symbols:', Array.from(currentSignalSymbols));
+      
+      for (const symbol of realSubscribedSymbols) {
+        // Skip RELIANCE - never auto-unsubscribe (protected)
+        if (symbol.toLowerCase().includes('reliance')) {
+          console.log('🏛️ AUTO-UNSUBSCRIBE: Keeping RELIANCE (protected):', symbol);
+          continue;
+        }
+        
+        // ✅ STRICT SIGNAL CHECK: Only keep symbols that are in current signals
+        const isInCurrentSignals = currentSignalSymbols.has(symbol);
+        
+        if (!isInCurrentSignals) {
+          console.log('🔄 AUTO-UNSUBSCRIBE: Symbol NOT in current signals, removing:', symbol);
+          symbolsToUnsubscribe.push(symbol);
+        } else {
+          console.log('✅ AUTO-UNSUBSCRIBE: Symbol in current signals, keeping:', symbol);
+        }
+      }
+      
+      // ✅ SPECIAL CASE: If no buy/sell signals exist, unsubscribe everything except RELIANCE
+      if (currentSignalSymbols.size === 0) {
+        console.log('🔄 AUTO-UNSUBSCRIBE: No signals found, unsubscribing all non-RELIANCE symbols');
+        for (const symbol of realSubscribedSymbols) {
+          if (!symbol.toLowerCase().includes('reliance')) {
+            symbolsToUnsubscribe.push(symbol);
+          }
+        }
+      }
+      
+      // Batch unsubscribe inactive symbols
+      if (symbolsToUnsubscribe.length > 0) {
+        console.log('🔄 AUTO-UNSUBSCRIBE: Unsubscribing symbols not in signals:', symbolsToUnsubscribe);
+        
+        try {
+          const response = await fetch('http://localhost:5000/api/unsubscribe', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              symbols: symbolsToUnsubscribe
+            })
+          });
+          
+          if (response.ok) {
+            const result = await response.json();
+            console.log('✅ AUTO-UNSUBSCRIBE: Successfully unsubscribed:', result);
+            
+            // ✅ IMMEDIATE TABLE UPDATE - Remove from local state instantly
+            setRealSubscribedSymbols(prev => {
+              const updated = prev.filter(s => !symbolsToUnsubscribe.includes(s));
+              console.log('🔄 AUTO-UNSUBSCRIBE: Table updated instantly - removed symbols from UI');
+              return updated;
+            });
+            
+            // Clear selection if current symbol was unsubscribed
+            if (selectedSymbol && symbolsToUnsubscribe.includes(extractSymbolName(selectedSymbol))) {
+              setSelectedSymbol(null);
+              console.log('🔄 AUTO-UNSUBSCRIBE: Cleared selected symbol as it was unsubscribed');
+            }
+            
+          } else {
+            console.error('❌ AUTO-UNSUBSCRIBE: Failed to unsubscribe:', response.statusText);
+          }
+        } catch (error) {
+          console.error('❌ AUTO-UNSUBSCRIBE: Error during batch unsubscribe:', error);
+        }
+      } else {
+        console.log('✅ AUTO-UNSUBSCRIBE: All subscribed symbols are in current signals');
+      }
+    };
+    
+    // Run auto-unsubscribe check every 10 seconds (more frequent for strict signal tracking)
+    autoUnsubscribeCheck(); // Initial check
+    const autoUnsubscribeInterval = setInterval(autoUnsubscribeCheck, 10 * 1000);
+    
+    return () => clearInterval(autoUnsubscribeInterval);
+  }, [realSubscribedSymbols, buyStocks, sellStocks, selectedSymbol]);
+
+  // Auto-subscribe effect - subscribes to new buy/sell signals (only if tokens available)
+  useEffect(() => {
+    const autoSubscribeCheck = async () => {
+      console.log('🔄 AUTO-SUBSCRIBE: Checking for signal symbols...');
+      
+      // ✅ STRICT SIGNAL SUBSCRIPTION: Get all current signal symbols
+      const allSignalSymbols = new Set([
+        ...buyStocks.map(stock => stock.symbol || stock),
+        ...sellStocks.map(stock => stock.symbol || stock)
+      ]);
+      
+      console.log('🔄 AUTO-SUBSCRIBE: Current signal symbols:', Array.from(allSignalSymbols));
+      
+      if (allSignalSymbols.size === 0) {
+        console.log('ℹ️ AUTO-SUBSCRIBE: No buy/sell signals available - nothing to subscribe');
+        return;
+      }
+      
+      const symbolToTokenMap = getSymbolToTokenMap();
+      const symbolsToSubscribe = [];
+      
+      for (const symbol of allSignalSymbols) {
+        // Skip if already subscribed
+        if (realSubscribedSymbols.includes(symbol)) {
+          console.log('🔄 AUTO-SUBSCRIBE: Already subscribed to:', symbol);
+          continue;
+        }
+        
+        // Check if token exists for this symbol
+        const hasToken = symbolToTokenMap.hasOwnProperty(symbol);
+        
+        if (hasToken) {
+          console.log('✅ AUTO-SUBSCRIBE: Token found for signal symbol:', symbol);
+          symbolsToSubscribe.push(symbol);
+        } else {
+          console.log('❌ AUTO-SUBSCRIBE: No token found for signal symbol:', symbol);
+        }
+      }
+      
+      // Batch subscribe to new signal symbols
+      if (symbolsToSubscribe.length > 0) {
+        console.log('🔄 AUTO-SUBSCRIBE: Subscribing to new signal symbols:', symbolsToSubscribe);
+        
+        try {
+          const response = await fetch('http://localhost:5000/api/subscribe', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              symbols: symbolsToSubscribe
+            })
+          });
+          
+          if (response.ok) {
+            const result = await response.json();
+            console.log('✅ AUTO-SUBSCRIBE: Successfully subscribed:', result);
+            
+            // Update local state
+            setRealSubscribedSymbols(prev => [...prev, ...symbolsToSubscribe]);
+            
+          } else {
+            console.error('❌ AUTO-SUBSCRIBE: Failed to subscribe:', response.statusText);
+          }
+        } catch (error) {
+          console.error('❌ AUTO-SUBSCRIBE: Error during batch subscribe:', error);
+        }
+      } else {
+        console.log('ℹ️ AUTO-SUBSCRIBE: No new signal symbols to subscribe');
+      }
+    };
+    
+    // ✅ MORE FREQUENT CHECKS: Run auto-subscribe every 10 seconds for strict signal tracking
+    autoSubscribeCheck(); // Initial check
+    const autoSubscribeInterval = setInterval(autoSubscribeCheck, 10 * 1000);
+    
+    return () => clearInterval(autoSubscribeInterval);
+    
+  }, [buyStocks, sellStocks, realSubscribedSymbols, getSymbolToTokenMap]);
   
   // Helper function to extract symbol name from exchange:symbol format
   const extractSymbolName = (fullSymbol) => {
@@ -1034,6 +1245,103 @@ const SubscribedStockTracker = ({
     if (qty >= 1000000) return `${(qty / 1000000).toFixed(1)}M`;
     if (qty >= 1000) return `${(qty / 1000).toFixed(0)}K`;
     return qty.toString();
+  };
+
+  // Fetch funds data from backend (same as scanner logic)
+  const fetchFundsData = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/get-margins', {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' }
+      });
+      
+      if (!response.ok) {
+        console.error('❌ Failed to fetch margins:', response.status);
+        return null;
+      }
+      
+      const margins = await response.json();
+      console.log('📊 Margins data for subscribed table:', margins);
+      
+      if (margins?.equity?.available?.cash) {
+        const availableFunds = parseFloat(margins.equity.available.cash);
+        const leverageFunds = availableFunds * 5; // 5x leverage
+        const usableFunds = leverageFunds * 0.95; // 95% usable
+        
+        const fundsInfo = {
+          availableFunds,
+          leverageFunds,
+          usableFunds,
+          lastUpdated: new Date().toISOString()
+        };
+        
+        setFundsData(fundsInfo);
+        console.log('💰 Updated subscribed table funds:', fundsInfo);
+        return fundsInfo;
+      }
+    } catch (error) {
+      console.error('❌ Error fetching funds for subscribed table:', error);
+    }
+    return null;
+  };
+
+  // Calculate quantity based on funds (same as scanner logic)
+  const calculateQuantityFromFunds = (price) => {
+    if (!price || !fundsData?.usableFunds || fundsData.usableFunds <= 0) {
+      return 0;
+    }
+    
+    const investment = fundsData.usableFunds;
+    const quantity = Math.floor(investment / price);
+    
+    console.log(`📊 Funds-based calc for price ${price}: investment=${investment}, quantity=${quantity}`);
+    return quantity;
+  };
+
+  // Helper function to calculate level consumption and slippage (real 5-level depth)
+  const calculateLevelConsumption = (calcQty, depthLevels, side) => {
+    if (!calcQty || !depthLevels || depthLevels.length === 0) {
+      return { levels: '-', slippage: 'N/A', fitsIn5: false };
+    }
+
+    let remainingQty = calcQty;
+    let levelsConsumed = 0;
+    let totalCost = 0;
+    let totalQtyFilled = 0;
+
+    // Process only the available levels (max 5 from KiteTicker)
+    for (let i = 0; i < Math.min(depthLevels.length, 5); i++) {
+      const level = depthLevels[i];
+      if (!level || !level.price || !level.quantity) continue;
+
+      levelsConsumed++;
+      const qtyAtLevel = Math.min(remainingQty, level.quantity);
+      totalCost += qtyAtLevel * level.price;
+      totalQtyFilled += qtyAtLevel;
+      remainingQty -= qtyAtLevel;
+
+      if (remainingQty <= 0) break;
+    }
+
+    const fitsIn5 = remainingQty <= 0;
+    const avgExecutionPrice = totalQtyFilled > 0 ? totalCost / totalQtyFilled : 0;
+    
+    // Calculate slippage vs first level price
+    const firstLevelPrice = depthLevels[0]?.price || 0;
+    let slippage = 'N/A';
+    
+    if (fitsIn5 && firstLevelPrice > 0 && avgExecutionPrice > 0) {
+      const slippagePercent = Math.abs((avgExecutionPrice - firstLevelPrice) / firstLevelPrice * 100);
+      slippage = `${slippagePercent.toFixed(3)}%`;
+    } else if (!fitsIn5) {
+      slippage = 'High Slippage';
+    }
+
+    return {
+      levels: fitsIn5 ? `${levelsConsumed} lvls` : '>5 lvls',
+      slippage: slippage,
+      fitsIn5: fitsIn5
+    };
   };
 
   // Calculate order book analytics for first 5, 10, and 20 levels
@@ -1264,7 +1572,7 @@ const SubscribedStockTracker = ({
         {/* Scanner Status */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(4, 1fr)',
+          gridTemplateColumns: 'repeat(5, 1fr)',
           gap: '8px',
           padding: '12px 16px',
           background: 'linear-gradient(135deg, rgba(30, 60, 114, 0.1), rgba(42, 82, 152, 0.05))',
@@ -1290,6 +1598,10 @@ const SubscribedStockTracker = ({
             <div style={{ fontWeight: '600', fontSize: '16px' }}>{pollCountdown || 0}s</div>
             <div style={{ opacity: '0.8' }}>Next Poll</div>
           </div>
+          <div style={{ textAlign: 'center', color: '#8b5cf6' }}>
+            <div style={{ fontWeight: '600', fontSize: '16px' }}>🔄</div>
+            <div style={{ opacity: '0.8' }}>Auto-Sub/Unsub</div>
+          </div>
         </div>
         
         {/* Table Header */}
@@ -1310,16 +1622,17 @@ const SubscribedStockTracker = ({
           border: '1px solid #e5e7eb',
           whiteSpace: 'nowrap',
           overflow: 'hidden'
-        }}>          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SYM</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>TYP</div>
+        }}>          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SYMBOL</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>TYPE</div>
           <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>LTP</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>QTY</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>LEV</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }} title="Near Support - Next 5 levels after concentration">SUP5</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }} title="Deep Support - 5 levels deeper than SUP5">DEEP</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SLP</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>AVG</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>ACTION</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>CALC QTY</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>BID QTY</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>ASK QTY</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>BID LEVELS</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>ASK LEVELS</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>BUY SLIP</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SELL SLIP</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>FUNDS</div>
         </div>
       
         {/* Table Data */}
@@ -1542,7 +1855,7 @@ const SubscribedStockTracker = ({
                   
                   return (
                     <div
-                      key={`${symbol}-${index}-${displayTick?.timestamp || lastTickUpdate}`}
+                      key={`unique-row-${symbol}-${index}`}
                       style={{
                         display: 'grid',
                         gridTemplateColumns: gridTemplate,
@@ -1643,10 +1956,10 @@ const SubscribedStockTracker = ({
                         overflow: 'hidden',
                         textOverflow: 'ellipsis'
                       }}>
-                        {scanType === 'BUY_SCAN' ? 'B' : 
-                         scanType === 'SELL_SCAN' ? 'S' : 
-                         scanType === 'PENDING' ? 'P' :
-                         'U'}
+                        {scanType === 'BUY_SCAN' ? 'BUY' : 
+                         scanType === 'SELL_SCAN' ? 'SELL' : 
+                         scanType === 'PENDING' ? 'PENDING' :
+                         'UNKNOWN'}
                       </div>
                       
                       {/* LTP */}
@@ -1660,11 +1973,9 @@ const SubscribedStockTracker = ({
                         {hasTickData && displayTick?.last_price ? (window.innerWidth <= 480 ? displayTick.last_price.toFixed(0) : `₹${displayTick.last_price.toFixed(2)}`) : (hasTickData ? '-' : 'Pending')}
                       </div>
                       
-                      {/* Quantity (consolidated from buy/sell based on scan type) */}
+                      {/* CALC QTY */}
                       <div style={{ 
-                        color: scanType === 'BUY_SCAN' ? '#059669' : 
-                               scanType === 'SELL_SCAN' ? '#dc2626' : 
-                               scanType === 'PENDING' ? '#6b7280' : '#dc2626',
+                        color: '#059669',
                         fontWeight: '500',
                         fontSize: window.innerWidth <= 480 ? '9px' : '12px',
                         overflow: 'hidden',
@@ -1672,18 +1983,30 @@ const SubscribedStockTracker = ({
                       }}>
                         {(() => {
                           if (!hasTickData) return 'Pending';
-                          const quantity = scanType === 'BUY_SCAN' ? buyImpact.quantity : sellImpact.quantity;
-                          if (!quantity) return '-';
-                          const formatted = formatQuantity(quantity);
+                          // Get calculated quantity - prioritize funds-based calculation
+                          const currentPrice = displayTick?.last_price || displayTick?.ltp || 0;
+                          const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
+                          
+                          const calcQty = fundsBasedQty > 0 ? fundsBasedQty :
+                                         displayTick?.calculated_quantity || 
+                                         displayTick?.calculated_quantity_buy ||
+                                         displayTick?.calculated_quantity_sell ||
+                                         displayTick?.marketImpact?.buy?.quantity ||
+                                         displayTick?.marketImpact?.sell?.quantity ||
+                                         displayTick?.calculatedQuantity ||
+                                         displayTick?.quantity ||
+                                         displayTick?.target_quantity ||
+                                         displayTick?.targetQuantity || 0;
+                          
+                          if (!calcQty) return 'N/A';
+                          const formatted = formatQuantity(calcQty);
                           return window.innerWidth <= 480 ? formatted.substring(0, 4) : formatted;
                         })()}
                       </div>
                       
-                      {/* Levels (consolidated from buy/sell based on scan type) */}
+                      {/* BID QTY */}
                       <div style={{ 
-                        color: scanType === 'BUY_SCAN' ? '#059669' : 
-                               scanType === 'SELL_SCAN' ? '#dc2626' : 
-                               scanType === 'PENDING' ? '#6b7280' : '#dc2626',
+                        color: '#059669',
                         fontWeight: '500',
                         fontSize: window.innerWidth <= 480 ? '9px' : '12px',
                         overflow: 'hidden',
@@ -1691,16 +2014,15 @@ const SubscribedStockTracker = ({
                       }}>
                         {(() => {
                           if (!hasTickData) return '-';
-                          const levels = scanType === 'BUY_SCAN' ? buyImpact.levels : sellImpact.levels;
-                          return levels || '-';
+                          const depth = displayTick?.depth || {};
+                          const bidQty = depth.buy?.reduce((sum, level) => sum + (level.quantity || 0), 0) || 0;
+                          return bidQty > 0 ? formatQuantity(bidQty) : '0';
                         })()}
                       </div>
                       
-                      {/* SUP5 - Near Support (Next 5 levels) */}
+                      {/* ASK QTY */}
                       <div style={{ 
-                        color: !hasTickData ? '#6b7280' : 
-                               imbalance5 > 1.2 ? '#059669' : 
-                               imbalance5 < -1.2 ? '#dc2626' : '#6b7280',
+                        color: '#dc2626',
                         fontWeight: '500',
                         fontSize: window.innerWidth <= 480 ? '9px' : '12px',
                         overflow: 'hidden',
@@ -1708,21 +2030,15 @@ const SubscribedStockTracker = ({
                       }}>
                         {(() => {
                           if (!hasTickData) return '-';
-                          if (imbalance5 === 0) return '-';
-                          if (Math.abs(imbalance5) >= 999) return imbalance5 > 0 ? '∞' : '-∞';
-                          const absRatio = Math.abs(imbalance5);
-                          const formatted = window.innerWidth <= 480 ? 
-                            absRatio.toFixed(1) : 
-                            `${absRatio.toFixed(1)}x`;
-                          return imbalance5 < 0 ? `-${formatted}` : formatted;
+                          const depth = displayTick?.depth || {};
+                          const askQty = depth.sell?.reduce((sum, level) => sum + (level.quantity || 0), 0) || 0;
+                          return askQty > 0 ? formatQuantity(askQty) : '0';
                         })()}
                       </div>
                       
-                      {/* DEEP - Deep Support (5 levels deeper) */}
+                      {/* BID LEVELS (levels consumed by calc qty) */}
                       <div style={{ 
-                        color: !hasTickData ? '#6b7280' : 
-                               imbalance10 > 1.2 ? '#059669' : 
-                               imbalance10 < -1.2 ? '#dc2626' : '#6b7280',
+                        color: '#059669',
                         fontWeight: '500',
                         fontSize: window.innerWidth <= 480 ? '9px' : '12px',
                         overflow: 'hidden',
@@ -1730,21 +2046,29 @@ const SubscribedStockTracker = ({
                       }}>
                         {(() => {
                           if (!hasTickData) return '-';
-                          if (imbalance10 === 0) return '-';
-                          if (Math.abs(imbalance10) >= 999) return imbalance10 > 0 ? '∞' : '-∞';
-                          const absRatio = Math.abs(imbalance10);
-                          const formatted = window.innerWidth <= 480 ? 
-                            absRatio.toFixed(1) : 
-                            `${absRatio.toFixed(1)}x`;
-                          return imbalance10 < 0 ? `-${formatted}` : formatted;
+                          const currentPrice = displayTick?.last_price || displayTick?.ltp || 0;
+                          const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
+                          
+                          const calcQty = fundsBasedQty > 0 ? fundsBasedQty :
+                                         displayTick?.calculated_quantity || 
+                                         displayTick?.calculated_quantity_buy ||
+                                         displayTick?.calculated_quantity_sell ||
+                                         displayTick?.marketImpact?.buy?.quantity ||
+                                         displayTick?.marketImpact?.sell?.quantity ||
+                                         displayTick?.calculatedQuantity ||
+                                         displayTick?.quantity ||
+                                         displayTick?.target_quantity ||
+                                         displayTick?.targetQuantity || 0;
+                          
+                          const depth = displayTick?.depth || {};
+                          const bidConsumption = calculateLevelConsumption(calcQty, depth.buy, 'bid');
+                          return bidConsumption.levels;
                         })()}
                       </div>
                       
-                      {/* Slippage (consolidated from buy/sell based on scan type) */}
+                      {/* ASK LEVELS (levels consumed by calc qty) */}
                       <div style={{ 
-                        color: scanType === 'BUY_SCAN' ? '#059669' : 
-                               scanType === 'SELL_SCAN' ? '#dc2626' : 
-                               scanType === 'PENDING' ? '#6b7280' : '#dc2626',
+                        color: '#dc2626',
                         fontWeight: '500',
                         fontSize: window.innerWidth <= 480 ? '9px' : '12px',
                         overflow: 'hidden',
@@ -1752,17 +2076,29 @@ const SubscribedStockTracker = ({
                       }}>
                         {(() => {
                           if (!hasTickData) return '-';
-                          const slippage = scanType === 'BUY_SCAN' ? buyImpact.slippage : sellImpact.slippage;
-                          if (slippage === null || slippage === undefined) return '-';
-                          return window.innerWidth <= 480 ? slippage.toFixed(1) : `${slippage.toFixed(3)}%`;
+                          const currentPrice = displayTick?.last_price || displayTick?.ltp || 0;
+                          const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
+                          
+                          const calcQty = fundsBasedQty > 0 ? fundsBasedQty :
+                                         displayTick?.calculated_quantity || 
+                                         displayTick?.calculated_quantity_buy ||
+                                         displayTick?.calculated_quantity_sell ||
+                                         displayTick?.marketImpact?.buy?.quantity ||
+                                         displayTick?.marketImpact?.sell?.quantity ||
+                                         displayTick?.calculatedQuantity ||
+                                         displayTick?.quantity ||
+                                         displayTick?.target_quantity ||
+                                         displayTick?.targetQuantity || 0;
+                          
+                          const depth = displayTick?.depth || {};
+                          const askConsumption = calculateLevelConsumption(calcQty, depth.sell, 'ask');
+                          return askConsumption.levels;
                         })()}
                       </div>
                       
-                      {/* Avg Price (consolidated from buy/sell based on scan type) */}
+                      {/* BUY SLIP (calculated with 5-level depth limit) */}
                       <div style={{ 
-                        color: scanType === 'BUY_SCAN' ? '#059669' : 
-                               scanType === 'SELL_SCAN' ? '#dc2626' : 
-                               scanType === 'PENDING' ? '#6b7280' : '#dc2626',
+                        color: '#059669',
                         fontWeight: '500',
                         fontSize: window.innerWidth <= 480 ? '9px' : '12px',
                         overflow: 'hidden',
@@ -1770,50 +2106,83 @@ const SubscribedStockTracker = ({
                       }}>
                         {(() => {
                           if (!hasTickData) return '-';
-                          const avgPrice = scanType === 'BUY_SCAN' ? buyImpact.avgPrice : sellImpact.avgPrice;
-                          if (!avgPrice) return '-';
-                          return window.innerWidth <= 480 ? avgPrice.toFixed(0) : `₹${avgPrice.toFixed(2)}`;
+                          const currentPrice = displayTick?.last_price || displayTick?.ltp || 0;
+                          const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
+                          
+                          const calcQty = fundsBasedQty > 0 ? fundsBasedQty :
+                                         displayTick?.calculated_quantity || 
+                                         displayTick?.calculated_quantity_buy ||
+                                         displayTick?.calculated_quantity_sell ||
+                                         displayTick?.marketImpact?.buy?.quantity ||
+                                         displayTick?.marketImpact?.sell?.quantity ||
+                                         displayTick?.calculatedQuantity ||
+                                         displayTick?.quantity ||
+                                         displayTick?.target_quantity ||
+                                         displayTick?.targetQuantity || 0;
+                          
+                          const depth = displayTick?.depth || {};
+                          const buyConsumption = calculateLevelConsumption(calcQty, depth.sell, 'buy'); // Buy consumes ask levels
+                          return window.innerWidth <= 480 ? buyConsumption.slippage.substring(0, 6) : buyConsumption.slippage;
                         })()}
                       </div>
                       
-                      {/* Unsubscribe Button */}
+                      {/* SELL SLIP (calculated with 5-level depth limit) */}
                       <div style={{ 
-                        display: 'flex',
-                        justifyContent: 'center',
-                        alignItems: 'center'
+                        color: '#dc2626',
+                        fontWeight: '500',
+                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
                       }}>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation(); // Prevent triggering row click
-                            handleUnsubscribe(symbol);
-                          }}
-                          style={{
-                            background: 'linear-gradient(135deg, #ef4444, #dc2626)',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            padding: window.innerWidth <= 480 ? '2px 4px' : '4px 6px',
-                            fontSize: window.innerWidth <= 480 ? '8px' : '10px',
-                            fontWeight: '600',
-                            cursor: 'pointer',
-                            transition: 'all 0.2s ease',
-                            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.1)',
-                            fontFamily: 'system-ui, -apple-system, sans-serif'
-                          }}
-                          onMouseEnter={(e) => {
-                            e.target.style.background = 'linear-gradient(135deg, #dc2626, #b91c1c)';
-                            e.target.style.transform = 'scale(1.05)';
-                            e.target.style.boxShadow = '0 2px 4px rgba(220, 38, 38, 0.3)';
-                          }}
-                          onMouseLeave={(e) => {
-                            e.target.style.background = 'linear-gradient(135deg, #ef4444, #dc2626)';
-                            e.target.style.transform = 'scale(1)';
-                            e.target.style.boxShadow = '0 1px 2px rgba(0, 0, 0, 0.1)';
-                          }}
-                          title={`Unsubscribe from ${symbol.replace('NSE:', '')}`}
-                        >
-                          {window.innerWidth <= 480 ? '✕' : 'Unsub'}
-                        </button>
+                        {(() => {
+                          if (!hasTickData) return '-';
+                          const currentPrice = displayTick?.last_price || displayTick?.ltp || 0;
+                          const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
+                          
+                          const calcQty = fundsBasedQty > 0 ? fundsBasedQty :
+                                         displayTick?.calculated_quantity || 
+                                         displayTick?.calculated_quantity_buy ||
+                                         displayTick?.calculated_quantity_sell ||
+                                         displayTick?.marketImpact?.buy?.quantity ||
+                                         displayTick?.marketImpact?.sell?.quantity ||
+                                         displayTick?.calculatedQuantity ||
+                                         displayTick?.quantity ||
+                                         displayTick?.target_quantity ||
+                                         displayTick?.targetQuantity || 0;
+                          
+                          const depth = displayTick?.depth || {};
+                          const sellConsumption = calculateLevelConsumption(calcQty, depth.buy, 'sell'); // Sell consumes bid levels
+                          return window.innerWidth <= 480 ? sellConsumption.slippage.substring(0, 6) : sellConsumption.slippage;
+                        })()}
+                      </div>
+                      
+                      {/* FUNDS (Available, Leveraged, Usable) */}
+                      <div style={{ 
+                        color: '#8b5cf6',
+                        fontWeight: '500',
+                        fontSize: window.innerWidth <= 480 ? '8px' : '10px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        lineHeight: '1.1'
+                      }}>
+                        {(() => {
+                          if (window.innerWidth <= 480) {
+                            // Very small screen - show only usable funds
+                            return `₹${(fundsData.usableFunds / 1000).toFixed(0)}K`;
+                          } else if (window.innerWidth <= 768) {
+                            // Small screen - show usable funds with leverage info
+                            return `₹${(fundsData.usableFunds / 1000).toFixed(0)}K (5x)`;
+                          } else {
+                            // Full screen - show all funds info
+                            return (
+                              <div style={{ lineHeight: '1.1' }}>
+                                <div style={{ color: '#059669', fontSize: '9px' }}>₹{(fundsData.availableFunds / 1000).toFixed(0)}K</div>
+                                <div style={{ color: '#dc2626', fontSize: '9px' }}>₹{(fundsData.leverageFunds / 1000).toFixed(0)}K (5x)</div>
+                                <div style={{ color: '#8b5cf6', fontSize: '10px', fontWeight: '600' }}>₹{(fundsData.usableFunds / 1000).toFixed(0)}K</div>
+                              </div>
+                            );
+                          }
+                        })()}
                       </div>
                     </div>
                   );
@@ -2067,8 +2436,13 @@ const SubscribedStockTracker = ({
                       // Debug: Log all latestTick data to see what we have
                       console.log('CALC QTY Debug - latestTick:', latestTick);
                       
-                      // Try multiple sources for calculated quantity (prioritize new backend fields)
-                      const calcQty = latestTick?.calculated_quantity || 
+                      // Calculate funds-based quantity first
+                      const currentPrice = latestTick?.last_price || latestTick?.ltp || displayTick?.last_price || displayTick?.ltp || 0;
+                      const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
+                      
+                      // Try multiple sources for calculated quantity (prioritize funds-based calculation)
+                      const calcQty = fundsBasedQty > 0 ? fundsBasedQty :
+                                     latestTick?.calculated_quantity || 
                                      latestTick?.calculated_quantity_buy ||
                                      latestTick?.calculated_quantity_sell ||
                                      latestTick?.marketImpact?.buy?.quantity ||
@@ -2078,7 +2452,7 @@ const SubscribedStockTracker = ({
                                      latestTick?.target_quantity ||
                                      latestTick?.targetQuantity || 0;
                       
-                      console.log('CALC QTY Debug - Found quantity:', calcQty);
+                      console.log('CALC QTY Debug - Found quantity:', calcQty, 'fundsBasedQty:', fundsBasedQty);
                       return calcQty > 0 ? calcQty.toLocaleString() : 'N/A';
                     })()}
                   </div>
@@ -2098,7 +2472,13 @@ const SubscribedStockTracker = ({
                 <div>
                   {(() => {
                     const scanType = latestTick?.scan_type || displayTick?.scan_type;
-                    const calcQuantity = latestTick?.calculated_quantity_buy || 
+                    
+                    // Calculate funds-based quantity first
+                    const currentPrice = latestTick?.last_price || latestTick?.ltp || displayTick?.last_price || displayTick?.ltp || 0;
+                    const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
+                    
+                    const calcQuantity = fundsBasedQty > 0 ? fundsBasedQty :
+                                        latestTick?.calculated_quantity_buy || 
                                         latestTick?.calculated_quantity_sell ||
                                         latestTick?.calculated_quantity || 
                                         latestTick?.marketImpact?.buy?.quantity ||
@@ -2176,8 +2556,13 @@ const SubscribedStockTracker = ({
                   <div style={{ color: '#6b7280', fontSize: '9px' }}>BUY SLIP</div>
                   <div style={{ color: '#dc2626', fontWeight: '600' }}>
                     {(() => {
-                      // Try multiple sources for calculated quantity (prioritize new backend fields)
-                      const calcQuantity = latestTick?.calculated_quantity_buy || // Specific buy quantity
+                      // Calculate funds-based quantity first
+                      const currentPrice = latestTick?.last_price || latestTick?.ltp || displayTick?.last_price || displayTick?.ltp || 0;
+                      const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
+                      
+                      // Try multiple sources for calculated quantity (prioritize funds-based calculation)
+                      const calcQuantity = fundsBasedQty > 0 ? fundsBasedQty :
+                                          latestTick?.calculated_quantity_buy || // Specific buy quantity
                                           latestTick?.calculated_quantity || 
                                           latestTick?.marketImpact?.buy?.quantity ||
                                           latestTick?.calculatedQuantity ||
@@ -2220,8 +2605,13 @@ const SubscribedStockTracker = ({
                   <div style={{ color: '#6b7280', fontSize: '9px' }}>SELL SLIP</div>
                   <div style={{ color: '#059669', fontWeight: '600' }}>
                     {(() => {
-                      // Try multiple sources for calculated quantity (prioritize new backend fields)
-                      const calcQuantity = latestTick?.calculated_quantity_sell || // Specific sell quantity
+                      // Calculate funds-based quantity first
+                      const currentPrice = latestTick?.last_price || latestTick?.ltp || displayTick?.last_price || displayTick?.ltp || 0;
+                      const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
+                      
+                      // Try multiple sources for calculated quantity (prioritize funds-based calculation)
+                      const calcQuantity = fundsBasedQty > 0 ? fundsBasedQty :
+                                          latestTick?.calculated_quantity_sell || // Specific sell quantity
                                           latestTick?.calculated_quantity || 
                                           latestTick?.marketImpact?.sell?.quantity ||
                                           latestTick?.calculatedQuantity ||

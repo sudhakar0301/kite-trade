@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import styled from 'styled-components';
 import TradingDashboard from './components/TradingDashboard';
 import WebSocketManager from './utils/WebSocketManager';
 import TradingControlPanel from './components/TradingControlPanel';
@@ -10,345 +9,20 @@ import ScanResultsTables from './components/ScanResultsTables'; // NEW: Scan res
 import PositionsOrdersTable from './components/PositionsOrdersTable'; // NEW: Positions and Orders display
 import TargetOrderDetails from './components/TargetOrderDetails'; // NEW: Target order details display
 // import AlgorithmTutorial from './components/AlgorithmTutorial';
+import {
+  AppContainer,
+  ControlPanelWrapper,
+  ContentWrapper,
+  MainContent,
+  ScannerSection,
+  ScanBlockNotification,
+  ScanBlockHeader,
+  ScanBlockDetails,
+  ScanBlockTiming
+} from './App.styles';
 import './App.css';
 
 
-const DevConsole = styled.div`
-  background: linear-gradient(135deg, #0d1117, #161b22);
-  border: 1px solid #30363d;
-  border-radius: 16px;
-  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', 'Consolas', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  color: #c9d1d9;
-  padding: 24px;
-  margin: 20px 20px 30px 20px;
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(10px);
-  max-height: 300px;
-  overflow-y: auto;
-  
-  &::-webkit-scrollbar {
-    width: 6px;
-  }
-  
-  &::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.2);
-    border-radius: 3px;
-  }
-  
-  &::-webkit-scrollbar-thumb {
-    background: rgba(139, 148, 158, 0.3);
-    border-radius: 3px;
-    
-    &:hover {
-      background: rgba(139, 148, 158, 0.5);
-    }
-  }
-  
-  /* Laptop adjustments */
-  @media (max-width: 1400px) {
-    padding: 20px;
-    margin: 16px 16px 24px 16px;
-    font-size: 12px;
-    max-height: 250px;
-  }
-  
-  /* Smaller laptop */
-  @media (max-width: 1200px) {
-    padding: 16px;
-    margin: 12px 12px 20px 12px;
-    font-size: 11px;
-    max-height: 220px;
-    border-radius: 12px;
-  }
-  
-  /* Tablet landscape */
-  @media (max-width: 1024px) {
-    padding: 14px;
-    margin: 10px 10px 16px 10px;
-    max-height: 200px;
-    border-radius: 10px;
-  }
-`;
-
-const ConsoleHeader = styled.div`
-  color: #ffd700;
-  font-weight: 600;
-  font-size: 15px;
-  margin-bottom: 18px;
-  padding-bottom: 12px;
-  border-bottom: 2px solid rgba(139, 148, 158, 0.2);
-  text-align: center;
-  letter-spacing: 0.5px;
-  
-  /* Laptop adjustments */
-  @media (max-width: 1400px) {
-    font-size: 14px;
-    margin-bottom: 15px;
-    padding-bottom: 10px;
-  }
-  
-  /* Smaller laptop */
-  @media (max-width: 1200px) {
-    font-size: 13px;
-    margin-bottom: 12px;
-    padding-bottom: 8px;
-  }
-`;
-
-const TokenLine = styled.div`
-  margin-bottom: 8px;
-  color: ${props => {
-    if (props.type === 'sell') return '#f85149';
-    if (props.type === 'buy') return '#3fb950';
-    if (props.type === 'status') return '#79c0ff';
-    return '#e6edf3';
-  }};
-  font-size: 12px;
-  padding: 4px 0;
-  font-weight: 500;
-  
-  &:hover {
-    background: rgba(139, 148, 158, 0.1);
-    border-radius: 4px;
-    padding: 4px 8px;
-    margin: 0 -8px 8px -8px;
-  }
-`;
-
-const HighlightValue = styled.span`
-  color: #ffd700;
-  font-weight: 600;
-`;
-
-const AppContainer = styled.div`
-  min-height: 100vh;
-  background: linear-gradient(135deg, #0f0f0f 0%, #1a1a2e 50%, #16213e 100%);
-  background-attachment: fixed;
-  color: #ffffff;
-  font-family: 'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
-  position: relative;
-  overflow-x: hidden;
-  display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 20px;
-  
-  /* Large laptop adjustments */
-  @media (max-width: 1600px) {
-    grid-template-columns: 1fr 300px;
-    gap: 16px;
-  }
-  
-  /* Standard laptop */
-  @media (max-width: 1400px) {
-    grid-template-columns: 1fr 280px;
-    gap: 12px;
-  }
-  
-  /* Smaller laptop */
-  @media (max-width: 1200px) {
-    grid-template-columns: 1fr 260px;
-    gap: 10px;
-  }
-  
-  /* Tablet landscape - side by side */
-  @media (min-width: 769px) and (max-width: 1024px) {
-    grid-template-columns: 1fr 240px;
-    gap: 8px;
-  }
-  
-  /* Mobile and tablet portrait - stack vertically */
-  @media (max-width: 768px) {
-    display: block;
-    padding-bottom: 0;
-  }
-`;
-
-const ControlPanelWrapper = styled.div`
-  /* Desktop - sticky position in grid */
-  @media (min-width: 769px) {
-    order: 2;
-    padding: 20px;
-    display: flex;
-    justify-content: center;
-  }
-  
-  /* Mobile - let TradingControlPanel handle fixed positioning */
-  @media (max-width: 768px) {
-    order: 1;
-    padding: 0;
-  }
-`;
-
-const ContentWrapper = styled.div`
-  width: 100%;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  
-  /* Mobile - full width */
-  @media (max-width: 768px) {
-    order: 2;
-  }
-`;
-
-const MainContent = styled.main`
-  padding: 20px;
-  flex: 1;
-  
-  /* Mobile adjustments */
-  @media (max-width: 768px) {
-    padding: 12px;
-  }
-  
-  /* Small mobile */
-  @media (max-width: 480px) {
-    padding: 8px;
-  }
-`;
-
-const KiteStatusContainer = styled.div`
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 20px;
-  background: rgba(0, 0, 0, 0.3);
-  backdrop-filter: blur(15px);
-  padding: 18px 24px;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  margin-bottom: 2rem;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
-  
-  /* Mobile adjustments */
-  @media (max-width: 768px) {
-    flex-direction: column;
-    gap: 12px;
-    padding: 12px 16px;
-    margin-bottom: 1rem;
-  }
-  
-  /* Small mobile */
-  @media (max-width: 480px) {
-    padding: 10px 12px;
-    border-radius: 12px;
-  }
-`;
-
-const ScannerSection = styled.div`
-  background: rgba(0, 0, 0, 0.3);
-  backdrop-filter: blur(25px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 24px;
-  padding: 32px;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.2);
-  margin-top: 24px;
-  transition: all 0.3s ease;
-  
-  &:hover {
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4), 0 8px 16px rgba(0, 0, 0, 0.3);
-  }
-  
-  /* Tablet adjustments */
-  @media (max-width: 1024px) {
-    padding: 24px;
-    border-radius: 20px;
-  }
-  
-  /* Mobile adjustments */
-  @media (max-width: 768px) {
-    padding: 16px;
-    border-radius: 16px;
-    margin-top: 16px;
-  }
-  
-  /* Small mobile */
-  @media (max-width: 480px) {
-    padding: 12px;
-    border-radius: 12px;
-    margin-top: 12px;
-  }
-`;
-
-const ScanBlockNotification = styled.div`
-  background: linear-gradient(135deg, #f59e0b, #d97706);
-  border: 2px solid #fbbf24;
-  color: white;
-  padding: 20px 24px;
-  border-radius: 16px;
-  margin: 20px;
-  font-weight: 600;
-  text-align: center;
-  box-shadow: 0 8px 24px rgba(245, 158, 11, 0.3);
-  animation: pulse 2s infinite;
-  
-  @keyframes pulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.85; transform: scale(1.02); }
-  }
-  
-  /* Laptop adjustments */
-  @media (max-width: 1400px) {
-    padding: 16px 20px;
-    margin: 16px;
-    border-radius: 14px;
-  }
-  
-  /* Smaller laptop */
-  @media (max-width: 1200px) {
-    padding: 14px 18px;
-    margin: 14px;
-    border-radius: 12px;
-  }
-  
-  /* Tablet landscape */
-  @media (max-width: 1024px) {
-    padding: 12px 16px;
-    margin: 12px;
-    border-radius: 10px;
-  }
-`;
-
-const ScanBlockHeader = styled.div`
-  font-size: 18px;
-  margin-bottom: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  
-  /* Laptop adjustments */
-  @media (max-width: 1400px) {
-    font-size: 17px;
-    margin-bottom: 10px;
-  }
-  
-  /* Smaller laptop */
-  @media (max-width: 1200px) {
-    font-size: 16px;
-    margin-bottom: 8px;
-    gap: 6px;
-  }
-  
-  /* Tablet landscape */
-  @media (max-width: 1024px) {
-    font-size: 15px;
-  }
-`;
-
-const ScanBlockDetails = styled.div`
-  font-size: 14px;
-  opacity: 0.9;
-  margin-bottom: 8px;
-`;
-
-const ScanBlockTiming = styled.div`
-  font-size: 12px;
-  opacity: 0.8;
-  font-style: italic;
-`;
 
 function App() {
   const [socketConnected, setSocketConnected] = useState(false);
@@ -404,6 +78,13 @@ function App() {
   // NEW: Target Order Details
   const [targetOrderDetails, setTargetOrderDetails] = useState([]);
   const [showTargetOrderDetails, setShowTargetOrderDetails] = useState(false);
+
+  // NEW: Signal Stocks Tracking for Tick-Driven Execution
+  const [signalStocks, setSignalStocks] = useState({
+    buySignals: [],
+    sellSignals: [],
+    lastUpdate: null
+  });
 
   // Debug state changes
   useEffect(() => {
@@ -593,19 +274,26 @@ function App() {
   const countdownIntervalRef = useRef(null);
   const hasInitialLoaded = useRef(false);
 
+  // Refs for WebSocket handler to access current values (avoiding stale closure)
+  const autoTradingEnabledRef = useRef(autoTradingEnabled);
+  const kiteLoginStatusRef = useRef(kiteLoginStatus);
+  const signalStocksRef = useRef(signalStocks);
+  const executeAutoTradingRef = useRef(null);
+
+  // Update refs when values change
+  useEffect(() => {
+    autoTradingEnabledRef.current = autoTradingEnabled;
+  }, [autoTradingEnabled]);
+
+  useEffect(() => {
+    kiteLoginStatusRef.current = kiteLoginStatus;
+  }, [kiteLoginStatus]);
+
+  useEffect(() => {
+    signalStocksRef.current = signalStocks;
+  }, [signalStocks]);
 
 
-  // Handle order execution panel
-  const handleClearOrderExecutions = useCallback(() => {
-    setOrderExecutions([]);
-    console.log('🗑️ [ORDER] Order executions cleared');
-    console.log('🎯 [PANEL] Order executions cleared, panel remains open');
-  }, []);
-
-  const handleCloseOrderPanel = useCallback(() => {
-    setOrderPanelOpen(false);
-    console.log('🎯 [PANEL] Order panel closed manually');
-  }, []);
 
   // Handle updating order executions from external components
   const handleUpdateOrderExecutions = useCallback((updateFn) => {
@@ -863,10 +551,27 @@ function App() {
 
   // Auto trading via DIRECT ORDER ROUTES with POSITION MANAGEMENT
   const executeAutoTradingViaSeparateRoutes = useCallback(async (buyStocks, sellStocks) => {
-    console.log('🎯 [AUTO-TRADE] === DIRECT ORDER EXECUTION WITH POSITION MANAGEMENT ===');
+    console.log('🎯 [AUTO-TRADE] === DIRECT ORDER EXECUTION WITH PRE-CALCULATED QUANTITIES ===');
     console.log('🎯 [AUTO-TRADE] autoTradingEnabled:', autoTradingEnabled);
-    console.log('🎯 [AUTO-TRADE] buyStocks:', buyStocks);
-    console.log('🎯 [AUTO-TRADE] sellStocks:', sellStocks);
+    console.log('🎯 [AUTO-TRADE] buyStocks count:', buyStocks.length);
+    console.log('🎯 [AUTO-TRADE] sellStocks count:', sellStocks.length);
+    
+    // Log pre-calculated data for each stock
+    buyStocks.forEach(stock => {
+      if (stock.preCalculated) {
+        console.log(`💰 [BUY] ${stock.symbol}: Qty=${stock.preCalculated.quantity}, Investment=₹${stock.preCalculated.investment.toFixed(2)}, Funds=₹${stock.preCalculated.usableFunds.toLocaleString('en-IN')}`);
+      } else {
+        console.log(`⚠️ [BUY] ${stock.symbol}: No pre-calculated data available`);
+      }
+    });
+    
+    sellStocks.forEach(stock => {
+      if (stock.preCalculated) {
+        console.log(`💰 [SELL] ${stock.symbol}: Qty=${stock.preCalculated.quantity}, Investment=₹${stock.preCalculated.investment.toFixed(2)}, Funds=₹${stock.preCalculated.usableFunds.toLocaleString('en-IN')}`);
+      } else {
+        console.log(`⚠️ [SELL] ${stock.symbol}: No pre-calculated data available`);
+      }
+    });
     
     // Check if auto trading is enabled first
     if (!autoTradingEnabled) {
@@ -880,7 +585,7 @@ function App() {
       return;
     }
 
-    console.log(`🤖 Executing auto trading via DIRECT ORDER ROUTES with position management:`);
+    console.log(`🤖 Executing auto trading with PRE-CALCULATED quantities:`);
     console.log(`   - Buy stocks: ${buyStocks.length}`);
     console.log(`   - Sell stocks: ${sellStocks.length}`);
 
@@ -969,7 +674,10 @@ function App() {
 
       // Show completion notification
       const totalAttempts = buyStocksToTrade.length + sellStocksToTrade.length;
-      console.log(`🎯 [AUTO-TRADE] EXECUTION COMPLETE: ${successfulOrders}/${totalAttempts} orders successful, ${blockedOrders} blocked by position management`);
+      
+      console.log(`🎯 [AUTO-TRADE] EXECUTION COMPLETE:`);
+      console.log(`   - Signal-based orders: ${successfulOrders}/${totalAttempts} successful, ${blockedOrders} blocked`);
+      console.log(`   - Total successful orders: ${successfulOrders}`);
       
       if (successfulOrders > 0 && voiceEnabled) {
         speak(`${successfulOrders} orders executed successfully`);
@@ -981,7 +689,98 @@ function App() {
         speak('Auto trading execution failed');
       }
     }
-  }, [autoTradingEnabled, accessToken, voiceEnabled, speak]);
+  }, [autoTradingEnabled, accessToken, voiceEnabled, speak, openNamedChart]);
+
+  // Update executeAutoTradingRef when function changes
+  useEffect(() => {
+    executeAutoTradingRef.current = executeAutoTradingViaSeparateRoutes;
+  }, [executeAutoTradingViaSeparateRoutes]);
+
+  // 🎯 SUBSCRIBE SIGNAL STOCKS TO KITETICKER
+  const subscribeToSignalStocks = useCallback(async (buyStocks, sellStocks) => {
+    try {
+      const token = accessToken || localStorage.getItem('kite_access_token');
+      if (!token || token === 'demo_token') {
+        console.log('⚠️ No valid access token for stock subscription');
+        return;
+      }
+
+      const allSignalStocks = [...buyStocks, ...sellStocks];
+      if (allSignalStocks.length === 0) {
+        console.log('📊 No signal stocks to subscribe');
+        return;
+      }
+
+      console.log(`📡 Subscribing ${allSignalStocks.length} signal stocks to KiteTicker...`);
+      console.log('   - Buy signals:', buyStocks.map(s => s.symbol || s.s));
+      console.log('   - Sell signals:', sellStocks.map(s => s.symbol || s.s));
+
+      // Update signal stocks state for tick handler
+      setSignalStocks({
+        buySignals: buyStocks,
+        sellSignals: sellStocks,
+        lastUpdate: new Date().toISOString()
+      });
+
+      // Call backend to subscribe stocks
+      const subscribeResponse = await fetch('http://localhost:5000/api/subscribe-signal-stocks', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          stocks: allSignalStocks.map(stock => ({
+            symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
+            ltp: stock.ltp || stock.d?.[0] || 0,
+            signalType: buyStocks.includes(stock) ? 'BUY' : 'SELL'
+          }))
+        })
+      });
+
+      if (subscribeResponse.ok) {
+        const subscribeResult = await subscribeResponse.json();
+        console.log('✅ Signal stocks subscription successful:', subscribeResult.subscribed_count || 0, 'stocks');
+        
+        if (voiceEnabled && subscribeResult.subscribed_count > 0) {
+          speak(`Subscribed ${subscribeResult.subscribed_count} signal stocks for tick monitoring`);
+        }
+      } else {
+        console.log('⚠️ Signal stocks subscription failed:', subscribeResponse.status);
+      }
+
+    } catch (error) {
+      console.error('❌ Error subscribing signal stocks:', error);
+    }
+  }, [accessToken, voiceEnabled, speak]);
+
+  // 🔍 CHECK IF STOCK HAS ACTIVE SIGNALS
+  const hasSignalForStock = useCallback((tickSymbol) => {
+    const cleanSymbol = tickSymbol.replace('NSE:', '').replace('BSE:', '');
+    
+    const hasBuySignal = signalStocks.buySignals.some(stock => {
+      const stockSymbol = stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s);
+      return stockSymbol === cleanSymbol;
+    });
+    
+    const hasSellSignal = signalStocks.sellSignals.some(stock => {
+      const stockSymbol = stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s);
+      return stockSymbol === cleanSymbol;
+    });
+    
+    return hasBuySignal || hasSellSignal;
+  }, [signalStocks]);
+
+  // 📊 GET SIGNAL STOCKS FOR EXECUTION
+  const getSignalStocks = useCallback((signalType, tickSymbol) => {
+    const cleanSymbol = tickSymbol.replace('NSE:', '').replace('BSE:', '');
+    const targetSignals = signalType === 'buy' ? signalStocks.buySignals : signalStocks.sellSignals;
+    
+    return targetSignals.filter(stock => {
+      const stockSymbol = stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s);
+      return stockSymbol === cleanSymbol;
+    });
+  }, [signalStocks]);
 
   // 🎯 POSITION & ORDER CHECK WITH DEDICATED TARGET ROUTES
   const checkPositionsAndOrdersFromFrontend = useCallback(async () => {
@@ -1135,13 +934,36 @@ function App() {
     } catch (error) {
       console.error('❌ Error in frontend position & order check:', error.message);
     }
-  }, [accessToken, voiceEnabled, speak]);
+  }, [accessToken, voiceEnabled, speak, openNamedChart]);
 
   // Helper function to execute individual orders
   const executeOrder = useCallback(async (type, stock, token, isTargetOrder) => {
     try {
       const orderTypeText = isTargetOrder ? 'TARGET' : 'MAIN';
-      console.log(`${type === 'BUY' ? '🔵' : '🔴'} Attempting ${orderTypeText} ${type} order for ${stock.symbol} @ ₹${stock.ltp}`);
+      const preCalcInfo = stock.preCalculated ? `Qty=${stock.preCalculated.quantity}, Investment=₹${stock.preCalculated.investment.toFixed(2)}` : 'No pre-calc data';
+      console.log(`${type === 'BUY' ? '🔵' : '🔴'} Attempting ${orderTypeText} ${type} order for ${stock.symbol} @ ₹${stock.ltp} (${preCalcInfo})`);
+      
+      // Prepare order data with pre-calculated quantities
+      const orderData = {
+        symbol: stock.symbol,
+        ltp: stock.ltp,
+        access_token: token,
+        isTargetOrder: isTargetOrder
+      };
+      
+      // Add pre-calculated data if available (backend will use this for optimization)
+      if (stock.preCalculated && !isTargetOrder) {
+        orderData.preCalculatedData = {
+          quantity: stock.preCalculated.quantity,
+          maxQuantity: stock.preCalculated.maxQuantity,
+          investment: stock.preCalculated.investment,
+          fundsAvailable: stock.preCalculated.fundsAvailable,
+          leveragedFunds: stock.preCalculated.leveragedFunds,
+          usableFunds: stock.preCalculated.usableFunds,
+          calculatedAt: stock.preCalculated.calculatedAt
+        };
+        console.log(`💰 Including pre-calculated data: Qty=${stock.preCalculated.quantity}, Funds=₹${stock.preCalculated.usableFunds.toLocaleString('en-IN')}`);
+      }
       
       const response = await fetch(`http://localhost:5000/api/${type.toLowerCase()}-order`, {
         method: 'POST',
@@ -1149,12 +971,7 @@ function App() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({
-          symbol: stock.symbol,
-          ltp: stock.ltp,
-          access_token: token,
-          isTargetOrder: isTargetOrder
-        })
+        body: JSON.stringify(orderData)
       });
 
       const result = await response.json();
@@ -1363,27 +1180,20 @@ function App() {
         
         setLastUpdate(new Date().toLocaleTimeString());
         
-        // STEP 2: If auto trading enabled, make SEPARATE route calls with low-price results
-        console.log(`📊 Debug Auto Trading Check:`);
-        console.log(`   - autoTradingEnabled: ${autoTradingEnabled}`);
-        console.log(`   - buyStocks.length: ${buyStocks.length}`);
-        console.log(`   - sellStocks.length: ${sellStocks.length}`);
-        console.log(`   - accessToken: ${accessToken ? 'present' : 'missing'}`);
-        console.log(`   - kiteLoginStatus: ${kiteLoginStatus}`);
+        // 🎯 NEW ARCHITECTURE: STEP 2 - Subscribe signal stocks (no direct execution)
+        console.log(`📡 Step 2: Subscribing signal stocks for tick-driven execution...`);
+        console.log(`   - Buy signals found: ${buyStocks.length}`);
+        console.log(`   - Sell signals found: ${sellStocks.length}`);
+        console.log(`   - Auto trading enabled: ${autoTradingEnabled}`);
+        console.log(`   - Kite login status: ${kiteLoginStatus}`);
         
-        if (autoTradingEnabled && (buyStocks.length > 0 || sellStocks.length > 0) && kiteLoginStatus === 'logged-in') {
-          console.log('🚀 Step 2: Auto trading enabled - making SEPARATE route calls with low-price results...');
-          console.log('🎯 [AUTO-TRADE] About to call executeAutoTradingViaSeparateRoutes with:', {
-            buyStocks: buyStocks.map(s => s.s || s.symbol),
-            sellStocks: sellStocks.map(s => s.s || s.symbol)
-          });
-          await executeAutoTradingViaSeparateRoutes(buyStocks, sellStocks);
-          console.log('🎯 [AUTO-TRADE] executeAutoTradingViaSeparateRoutes completed');
+        if (buyStocks.length > 0 || sellStocks.length > 0) {
+          console.log('📡 Subscribing signal stocks to KiteTicker for tick-driven execution...');
+          await subscribeToSignalStocks(buyStocks, sellStocks);
+          console.log('✅ Signal stocks subscription completed - waiting for tick updates to trigger trades');
         } else {
-          console.log('⚠️ Auto trading not triggered because:');
-          if (!autoTradingEnabled) console.log('   - Auto trading is DISABLED');
-          if (buyStocks.length === 0 && sellStocks.length === 0) console.log('   - No buy/sell signals found');
-          if (kiteLoginStatus !== 'logged-in') console.log(`   - Kite login status: ${kiteLoginStatus} (need logged-in)`);
+          console.log('⚠️ No signal stocks to subscribe - clearing previous signals');
+          setSignalStocks({ buySignals: [], sellSignals: [], lastUpdate: null });
         }
         
         // Voice alert for low-price scanner results
@@ -1403,24 +1213,28 @@ function App() {
       setBuySignals([]);
       setSellSignals([]);
     }
-  }, [voiceEnabled, autoTradingEnabled, speak, accessToken, kiteLoginStatus, executeAutoTradingViaSeparateRoutes, checkPositionsAndOrdersFromFrontend]);
+  }, [voiceEnabled, autoTradingEnabled, speak, accessToken, kiteLoginStatus, subscribeToSignalStocks, checkPositionsAndOrdersFromFrontend]);
 
   // Initialize WebSocket connection
   useEffect(() => {
+    console.log('🔧 WebSocket useEffect running - creating new connection');
     const websocket = new WebSocketManager('ws://localhost:5000');
+    
+    // Store reference to prevent garbage collection
+    window.debugWebSocket = websocket;
 
     websocket.onConnect = () => {
       setSocketConnected(true);
-      console.log('🔗 WebSocket connected');
+      console.log('🔗 WebSocket connected - State updated');
       // No auto-fetch here - let polling handle it
     };
 
     websocket.onDisconnect = () => {
       setSocketConnected(false);
-      console.log('🔌 WebSocket disconnected');
+      console.log('🔌 WebSocket disconnected - State updated');
     };
 
-    websocket.onMessage = (data) => {
+    websocket.onMessage = async (data) => {
       console.log('📡 WebSocket received:', data.type, data);
       
       if (data.type === 'scanner_results') {
@@ -1451,6 +1265,88 @@ function App() {
               [symbol]: updatedHistory
             };
           });
+
+          // 🎯 NEW: TICK-DRIVEN TRADE EXECUTION - SINGLE TRIGGER POINT
+          // Only execute if auto trading is enabled and user is logged in
+          const currentAutoTradingEnabled = autoTradingEnabledRef.current;
+          const currentKiteLoginStatus = kiteLoginStatusRef.current;
+          const currentSignalStocks = signalStocksRef.current;
+          const executeFunction = executeAutoTradingRef.current;
+          
+          console.log(`🎯 [TICK-DEBUG] Tick received for ${symbol}:`, {
+            autoTradingEnabled: currentAutoTradingEnabled,
+            kiteLoginStatus: currentKiteLoginStatus,
+            buySignalsCount: currentSignalStocks.buySignals.length,
+            sellSignalsCount: currentSignalStocks.sellSignals.length,
+            hasExecuteFunction: !!executeFunction
+          });
+          
+          if (currentAutoTradingEnabled && currentKiteLoginStatus === 'logged-in' && executeFunction) {
+            // Check if this symbol has active signals
+            const cleanSymbol = symbol.replace('NSE:', '').replace('BSE:', '');
+            console.log(`🔍 [TICK-TRADE] Checking signals for cleaned symbol: ${cleanSymbol}`);
+            
+            const hasBuySignal = currentSignalStocks.buySignals.some(stock => {
+              const stockSymbol = stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s);
+              const match = stockSymbol === cleanSymbol;
+              if (match) console.log(`✅ [TICK-TRADE] Found BUY signal match: ${stockSymbol}`);
+              return match;
+            });
+            
+            const hasSellSignal = currentSignalStocks.sellSignals.some(stock => {
+              const stockSymbol = stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s);
+              const match = stockSymbol === cleanSymbol;
+              if (match) console.log(`✅ [TICK-TRADE] Found SELL signal match: ${stockSymbol}`);
+              return match;
+            });
+            
+            console.log(`🔍 [TICK-TRADE] Signal check for ${cleanSymbol}:`, { hasBuySignal, hasSellSignal });
+            
+            if (hasBuySignal || hasSellSignal) {
+              console.log(`🚀 [TICK-TRADE] *** EXECUTING ORDERS FOR ${symbol} *** - triggering execution`);
+              
+              const buySignalStocks = hasBuySignal ? currentSignalStocks.buySignals.filter(stock => {
+                const stockSymbol = stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s);
+                return stockSymbol === cleanSymbol;
+              }) : [];
+              
+              const sellSignalStocks = hasSellSignal ? currentSignalStocks.sellSignals.filter(stock => {
+                const stockSymbol = stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s);
+                return stockSymbol === cleanSymbol;
+              }) : [];
+              
+              console.log(`🎯 [TICK-TRADE] Filtered stocks for execution:`, {
+                symbol: cleanSymbol,
+                buyStocks: buySignalStocks.length,
+                sellStocks: sellSignalStocks.length,
+                buyDetails: buySignalStocks.map(s => ({ symbol: s.symbol, ltp: s.ltp })),
+                sellDetails: sellSignalStocks.map(s => ({ symbol: s.symbol, ltp: s.ltp }))
+              });
+              
+              // 🚀 DIRECT EXECUTION: Call the frontend route executor immediately
+              try {
+                console.log(`🚀 [TICK-TRADE] CALLING executeAutoTradingViaSeparateRoutes() for ${symbol} via REF`);
+                await executeFunction(buySignalStocks, sellSignalStocks);
+                console.log(`✅ [TICK-TRADE] Execution completed successfully for ${symbol}`);
+              } catch (error) {
+                console.error(`❌ [TICK-TRADE] Execution failed for ${symbol}:`, error);
+              }
+            } else {
+              console.log(`⚪ [TICK-TRADE] No signals found for ${cleanSymbol} - skipping execution`);
+            }
+          } else {
+            const blockingReasons = [];
+            if (!currentAutoTradingEnabled) blockingReasons.push('Auto trading disabled');
+            if (currentKiteLoginStatus !== 'logged-in') blockingReasons.push('Not logged in');
+            if (!executeFunction) blockingReasons.push('Execute function not available');
+            
+            console.log(`⚠️ [TICK-TRADE] Execution blocked for ${symbol}:`, {
+              autoTradingEnabled: currentAutoTradingEnabled,
+              kiteLoginStatus: currentKiteLoginStatus,
+              hasExecuteFunction: !!executeFunction,
+              reasons: blockingReasons
+            });
+          }
         }
       } else if (data.type === 'order_charts') {
         // Auto-open charts for successful orders
@@ -1567,7 +1463,7 @@ function App() {
     return () => {
       websocket.disconnect();
     };
-  }, []);
+  }, []); // FIXED: Removed problematic function dependencies that were causing multiple WebSocket connections
 
   // Auto-polling with countdown management
   useEffect(() => {
@@ -1802,45 +1698,30 @@ function App() {
   return (
     <AppContainer>
       <ContentWrapper>
-      
-      {/* Main Tick Data Console - Hidden */}
-      {/*
-      <DevConsole>
-        <ConsoleHeader>
-          📡 LIVE MARKET SCANNER & TICK DATA STREAM • {new Date().toLocaleTimeString()}
-        </ConsoleHeader>
-        
-        {currentTick ? (
-          <>
-            <TokenLine type="buy">
-              <HighlightValue>[TICK]</HighlightValue> {currentTick.symbol} • LTP: <HighlightValue>₹{currentTick.last_price?.toFixed(2)}</HighlightValue> • Vol: <HighlightValue>{currentTick.volume?.toLocaleString()}</HighlightValue>
-            </TokenLine>
-            <TokenLine>
-              📈 Bid: <HighlightValue>₹{currentTick.depth?.buy?.[0]?.price?.toFixed(2)} ({currentTick.depth?.buy?.[0]?.quantity})</HighlightValue> | Ask: <HighlightValue>₹{currentTick.depth?.sell?.[0]?.price?.toFixed(2)} ({currentTick.depth?.sell?.[0]?.quantity})</HighlightValue>
-            </TokenLine>
-            <TokenLine type="status">
-              ⚖️ Order Imbalance: Buy <HighlightValue>{currentTick.buy_quantity}</HighlightValue> vs Sell <HighlightValue>{currentTick.sell_quantity}</HighlightValue> • Spread: <HighlightValue>₹{((currentTick.depth?.sell?.[0]?.price || 0) - (currentTick.depth?.buy?.[0]?.price || 0)).toFixed(2)}</HighlightValue>
-            </TokenLine>
-          </>
-        ) : (
-          <TokenLine>
-            🔍 Waiting for live tick data stream • Mock data will generate shortly...
-          </TokenLine>
-        )}
-      </DevConsole>
-      */}
-
+  
       <MainContent>
         {/* Algorithm Tutorial - Commented out */}
         {/* <AlgorithmTutorial /> */}
         
-        {/* NEW: Scan Results Tables - Side by Side Buy/Sell */}
+        {/* LIVE STOCK TRACKER: Showing Subscribed Signal Stocks with Real-time Ticks */}
+        <SubscribedStockTracker 
+          tickData={tickData}
+          onOpenChart={openNamedChart}
+          subscribedCount={realSubscriptionCount}
+          buySignalsCount={signalStocks.buySignals.length}
+          sellSignalsCount={signalStocks.sellSignals.length}
+          pollCountdown={pollCountdown}
+        />
+        
+        {/* TEMPORARILY HIDDEN: Scan Results Tables */}
+        {/* 
         <ScanResultsTables 
           buyStocks={scanResults.buyTable}
           sellStocks={scanResults.sellTable}
           autoTrade={scanResults.autoTrade}
           onSymbolClick={openNamedChart}
         />
+        */}
         
         {/* NEW: Positions and Orders Tables */}
         <PositionsOrdersTable 
@@ -1859,7 +1740,7 @@ function App() {
           onClose={() => setShowTargetOrderDetails(false)}
         />
         
-        {/* TEMPORARILY HIDDEN: Live Stock Tracker */}
+        {/* TEMPORARILY HIDDEN: Live Stock Tracker (now shown above) */}
         {/* 
         <SubscribedStockTracker 
           tickData={tickData}

@@ -214,6 +214,46 @@ const PositionsOrdersTable = ({
     return { value: `${sign}₹${value.toFixed(2)}`, className };
   };
 
+  // Categorize orders by type
+  const categorizeOrders = (orders, positions) => {
+    const buyOrders = [];
+    const sellOrders = [];
+    const targetOrders = [];
+    
+    orders.forEach(order => {
+      // Check if this order is a target order (opposite direction of existing position)
+      const matchingPosition = positions.find(pos => 
+        pos.tradingsymbol === order.tradingsymbol && pos.quantity !== 0
+      );
+      
+      if (matchingPosition) {
+        const positionSide = matchingPosition.quantity > 0 ? 'BUY' : 'SELL';
+        const orderSide = order.transaction_type;
+        
+        // If order direction is opposite to position, it's likely a target order
+        if ((positionSide === 'BUY' && orderSide === 'SELL') || 
+            (positionSide === 'SELL' && orderSide === 'BUY')) {
+          targetOrders.push({...order, positionInfo: matchingPosition});
+        } else if (orderSide === 'BUY') {
+          buyOrders.push(order);
+        } else {
+          sellOrders.push(order);
+        }
+      } else {
+        // No matching position, categorize as regular buy/sell
+        if (order.transaction_type === 'BUY') {
+          buyOrders.push(order);
+        } else {
+          sellOrders.push(order);
+        }
+      }
+    });
+    
+    return { buyOrders, sellOrders, targetOrders };
+  };
+
+  const { buyOrders, sellOrders, targetOrders } = categorizeOrders(orders, positions);
+
   const renderPositionRow = (position, index) => {
     const pnl = formatPnL(position.pnl);
     const isLong = position.quantity > 0;
@@ -237,7 +277,7 @@ const PositionsOrdersTable = ({
     );
   };
 
-  const renderOrderRow = (order, index) => {
+  const renderOrderRow = (order, index, orderType = '') => {
     const getStatusClass = (status) => {
       switch (status.toLowerCase()) {
         case 'open': return 'open';
@@ -249,20 +289,50 @@ const PositionsOrdersTable = ({
     };
 
     return (
-      <OrderRow key={index}>
+      <OrderRow key={`${orderType}-${index}`}>
         <div>
           <SymbolName>{order.tradingsymbol}</SymbolName>
           <DataValue>
             {order.transaction_type} • ₹{parseFloat(order.price || 0).toFixed(2)} • Qty: {order.quantity}
+            {orderType === 'TARGET' && order.positionInfo && (
+              <div style={{ fontSize: '10px', color: 'rgba(255, 255, 255, 0.6)', marginTop: '2px' }}>
+                Target for {order.positionInfo.quantity > 0 ? 'LONG' : 'SHORT'} position
+              </div>
+            )}
           </DataValue>
         </div>
         <DataValue>
           {order.order_type}
+          {orderType && (
+            <div style={{ fontSize: '9px', color: 'rgba(255, 255, 255, 0.5)' }}>
+              {orderType}
+            </div>
+          )}
         </DataValue>
         <StatusBadge className={getStatusClass(order.status)}>
           {order.status}
         </StatusBadge>
       </OrderRow>
+    );
+  };
+
+  const OrderSection = ({ title, orders, orderType, icon }) => {
+    if (orders.length === 0) return null;
+    
+    return (
+      <div style={{ marginBottom: '10px' }}>
+        <div style={{ 
+          fontSize: '11px', 
+          color: 'rgba(255, 255, 255, 0.7)', 
+          padding: '8px 15px', 
+          borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+          background: 'rgba(255, 255, 255, 0.02)',
+          fontWeight: '600'
+        }}>
+          {icon} {title} ({orders.length})
+        </div>
+        {orders.map((order, index) => renderOrderRow(order, index, orderType))}
+      </div>
     );
   };
 
@@ -290,7 +360,7 @@ const PositionsOrdersTable = ({
         </TableContent>
       </TableWrapper>
 
-      {/* Orders Table */}
+      {/* Orders Table with Categories */}
       <TableWrapper>
         <TableHeader className="orders-header">
           <div>
@@ -307,7 +377,26 @@ const PositionsOrdersTable = ({
           ) : orders.length === 0 ? (
             <EmptyMessage>No pending orders</EmptyMessage>
           ) : (
-            orders.map(renderOrderRow)
+            <>
+              <OrderSection 
+                title="Buy Orders" 
+                orders={buyOrders} 
+                orderType="BUY"
+                icon="🟢"
+              />
+              <OrderSection 
+                title="Sell Orders" 
+                orders={sellOrders} 
+                orderType="SELL"
+                icon="🔴"
+              />
+              <OrderSection 
+                title="Target Orders" 
+                orders={targetOrders} 
+                orderType="TARGET"
+                icon="🎯"
+              />
+            </>
           )}
         </TableContent>
       </TableWrapper>

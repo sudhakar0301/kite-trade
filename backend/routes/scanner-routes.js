@@ -25,6 +25,72 @@ let positionCheckTimer = null;
 // Auto Trading Control - Main orders only allowed when active
 let autoTradingActive = false; // 🔒 SAFETY: Default to disabled
 
+// 💰 GLOBAL FUNDS MANAGEMENT - Single source of truth for all trading operations
+let globalAvailableFunds = 0;
+let globalLeverageFunds = 0;
+let globalUsableFunds = 0;
+let globalFundsLastUpdated = null;
+let globalFundsError = null;
+
+// Function to update global funds from Kite margins API
+async function updateGlobalFunds(accessToken) {
+    try {
+        if (!accessToken || accessToken === 'demo_token') {
+            console.log('⚠️ No valid access token for global funds update');
+            return false;
+        }
+
+        console.log('💰 Updating global funds from Kite margins API...');
+        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
+        kite.setAccessToken(accessToken);
+        
+        const margins = await kite.getMargins();
+        
+        let availableFunds = 0;
+        if (margins.equity && margins.equity.available) {
+            availableFunds = margins.equity.available.live_balance || 0;
+        } else if (margins.equity && margins.equity.net) {
+            availableFunds = margins.equity.net || 0;
+        } else if (margins.net) {
+            availableFunds = margins.net || 0;
+        }
+        
+        // Calculate leveraged funds (5x for MIS) and usable funds (95% of leveraged)
+        const leverageFunds = availableFunds * 5;
+        const usableFunds = leverageFunds * 0.95;
+        
+        // Update global variables
+        globalAvailableFunds = availableFunds;
+        globalLeverageFunds = leverageFunds;
+        globalUsableFunds = usableFunds;
+        globalFundsLastUpdated = new Date();
+        globalFundsError = null;
+        
+        console.log(`💰 Global funds updated successfully:`);
+        console.log(`   - Available: ₹${globalAvailableFunds.toLocaleString('en-IN')}`);
+        console.log(`   - Leveraged (5x): ₹${globalLeverageFunds.toLocaleString('en-IN')}`);
+        console.log(`   - Usable (95%): ₹${globalUsableFunds.toLocaleString('en-IN')}`);
+        
+        return true;
+        
+    } catch (error) {
+        console.log('❌ Global funds update failed:', error.message);
+        globalFundsError = error.message;
+        return false;
+    }
+}
+
+// Function to get current global funds (with validation)
+function getGlobalFunds() {
+    return {
+        availableFunds: globalAvailableFunds,
+        leverageFunds: globalLeverageFunds, 
+        usableFunds: globalUsableFunds,
+        lastUpdated: globalFundsLastUpdated,
+        error: globalFundsError
+    };
+}
+
 
 // Simple token to symbol mapping
 function getSymbolFromToken(token) {
@@ -117,6 +183,45 @@ router.get('/auto-trading-status', (req, res) => {
     } catch (error) {
         console.error('❌ Error getting auto trading status:', error);
         res.status(500).json({ error: 'Failed to get auto trading status' });
+    }
+});
+
+// Route to get global funds
+router.get('/get-margins', async (req, res) => {
+    try {
+        let token = req.query.access_token;
+        if (!token && req.headers.authorization) {
+            token = req.headers.authorization.replace('Bearer ', '');
+        }
+        
+        if (!token) {
+            return res.status(401).json({
+                success: false,
+                error: 'Access token is required'
+            });
+        }
+        
+        // Update global funds first
+        const fundsUpdated = await updateGlobalFunds(token);
+        const globalFunds = getGlobalFunds();
+        
+        res.json({
+            success: true,
+            globalFunds: globalFunds,
+            fundsUpdated: fundsUpdated,
+            availableFunds: globalFunds.availableFunds,
+            leverageFunds: globalFunds.leverageFunds,
+            usableFunds: globalFunds.usableFunds,
+            lastUpdated: globalFunds.lastUpdated,
+            error: globalFunds.error
+        });
+        
+    } catch (error) {
+        console.error('❌ Error getting global funds:', error);
+        res.status(500).json({ 
+            success: false,
+            error: error.message 
+        });
     }
 });
 
@@ -1030,8 +1135,8 @@ router.get('/profile', async (req, res) => {
         
         const profile = await kite.getProfile();
         
-        // RELIANCE will only be subscribed if found in scan results
-        // await initializeRelianceSubscription(token);
+        // Initialize KiteTicker for signal stock subscriptions (without RELIANCE)
+        await initializeKiteTicker(token);
         
         res.json({
             success: true,
@@ -1076,7 +1181,71 @@ let scannerSubscriptions = null;
 let buyCandidates = new Map(); // token -> {symbol, ema5_5, ema3_15, technical_data}
 let sellCandidates = new Map(); // token -> {symbol, ema5_5, ema3_15, technical_data}
 let processedOrders = new Set(); // track symbols already processed to avoid duplicates
+let executedSignals = new Set(); // track executed signals to prevent repeated tick-based orders
+let lastSignalExecutionTime = {}; // track last execution time per signal to prevent spam
+
+// Helper function to create signal key
+function createSignalKey(symbol, signalType) {
+    return `${symbol}_${signalType}`;
+}
+
+// Helper function to check if signal was recently executed
+function wasSignalRecentlyExecuted(symbol, signalType, cooldownMinutes = 5) {
+    const signalKey = createSignalKey(symbol, signalType);
+    const lastExecution = lastSignalExecutionTime[signalKey];
+    
+    if (!lastExecution) return false;
+    
+    const cooldownMs = cooldownMinutes * 60 * 1000;
+    const timeSinceExecution = Date.now() - lastExecution;
+    
+    return timeSinceExecution < cooldownMs;
+}
+
+// Helper function to mark signal as executed
+function markSignalAsExecuted(symbol, signalType) {
+    const signalKey = createSignalKey(symbol, signalType);
+    executedSignals.add(signalKey);
+    lastSignalExecutionTime[signalKey] = Date.now();
+    console.log(`🔒 Signal marked as executed: ${signalKey} at ${new Date().toLocaleTimeString()}`);
+}
 let lastScannerUpdate = 0; // timestamp of last scanner update
+
+// Initialize KiteTicker for signal stock subscriptions (without RELIANCE dependency)
+async function initializeKiteTicker(access_token) {
+    try {
+        if (!access_token) {
+            console.log('⚠️ No valid access token for KiteTicker initialization');
+            return;
+        }
+
+        if (!globalTicker) {
+            console.log('🚀 Initializing global KiteTicker for signal stocks...');
+            globalTicker = new KiteTicker({
+                api_key: 'r1a7qo9w30bxsfax',
+                access_token: access_token,
+                reconnect: true,
+                max_retry: 10,
+                max_delay: 60000
+            });
+            
+            console.log('📊 KITETICKER AVAILABLE MODES:', {
+                modeLTP: globalTicker.modeLTP,
+                modeQuote: globalTicker.modeQuote, 
+                modeFull: globalTicker.modeFull,
+                availableMethods: Object.getOwnPropertyNames(globalTicker).filter(name => typeof globalTicker[name] === 'function')
+            });
+            
+            setupTickerEventHandlers();
+            globalTicker.connect();
+            console.log('✅ KiteTicker initialized and ready for signal stock subscriptions');
+        } else {
+            console.log('✅ KiteTicker already initialized');
+        }
+    } catch (error) {
+        console.error('❌ Error initializing KiteTicker:', error);
+    }
+}
 
 // Initialize RELIANCE subscription (called when first API endpoint is accessed with valid token)
 // REMOVED: initializeRelianceSubscription function
@@ -1234,33 +1403,21 @@ async function callSeparateBuyOrderRoute(accessToken, symbol, ltp, requestedQuan
         const productType = 'MIS'; // Force MIS for all orders
         const roundedPrice = roundToTickSize(ltp, ltp);
         
-        // CALCULATE PROPER QUANTITY BASED ON FUNDS AND LEVERAGE
-        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
-        kite.setAccessToken(accessToken);
+        // Use global funds instead of calculating locally
+        const globalFunds = getGlobalFunds();
+        const usableFunds = globalFunds.usableFunds;
         
-        console.log('💰 Getting account funds for quantity calculation...');
-        const margins = await kite.getMargins();
-        
-        let availableFunds = 0;
-        if (margins.equity && margins.equity.available) {
-            availableFunds = margins.equity.available.live_balance || 0;
-        } else if (margins.equity && margins.equity.net) {
-            availableFunds = margins.equity.net || 0;
-        } else if (margins.net) {
-            availableFunds = margins.net || 0;
-        }
-        
-        const leverageFunds = availableFunds * 5; // 5x leverage for MIS
-        const usableFunds = leverageFunds * 0.95; // Use 95% of leveraged funds for safety
-        
-        // Check minimum leveraged amount requirement (₹400,000)
-        const minLeveragedAmount = 400000;
-        if (leverageFunds < minLeveragedAmount) {
+        // Check minimum leveraged amount requirement (₹50,000 - reduced from 400,000)
+        const minLeveragedAmount = 50000;
+        if (globalFunds.leverageFunds < minLeveragedAmount) {
             return {
                 success: false,
-                error: `Insufficient leveraged funds. Need ₹${minLeveragedAmount.toLocaleString('en-IN')}, have ₹${leverageFunds.toLocaleString('en-IN')}`,
-                leverageFunds: leverageFunds,
-                minRequired: minLeveragedAmount
+                error: `Insufficient leveraged funds. Need ₹${minLeveragedAmount.toLocaleString('en-IN')}, have ₹${globalFunds.leverageFunds.toLocaleString('en-IN')}`,
+                availableFunds: globalFunds.availableFunds,
+                leverageFunds: globalFunds.leverageFunds,
+                minRequired: minLeveragedAmount,
+                order_category: 'BUY',
+                symbol: symbol
             };
         }
         
@@ -1268,23 +1425,24 @@ async function callSeparateBuyOrderRoute(accessToken, symbol, ltp, requestedQuan
         const finalQuantity = requestedQuantity ? Math.min(requestedQuantity, maxQuantity) : maxQuantity;
         
         // CONSOLE LOG ALL CALCULATIONS
-        console.log('\n🔵 BUY ORDER QUANTITY CALCULATION:');
-        console.log('💰 Available Funds:', '₹' + availableFunds.toLocaleString('en-IN'));
-        console.log('⚡ Leveraged Funds (5x):', '₹' + leverageFunds.toLocaleString('en-IN'));
-        console.log('✅ Leveraged Amount Check:', `₹${leverageFunds.toLocaleString('en-IN')} > ₹${minLeveragedAmount.toLocaleString('en-IN')}`);
-        console.log('🔒 Usable Funds (95%):', '₹' + usableFunds.toLocaleString('en-IN'));
-        console.log('⚡ Leveraged Funds (5x):', '₹' + leverageFunds.toLocaleString('en-IN'));
+        console.log('\n🔵 BUY ORDER QUANTITY CALCULATION (GLOBAL FUNDS):');
+        console.log('💰 Global Available Funds:', '₹' + globalFunds.availableFunds.toLocaleString('en-IN'));
+        console.log('⚡ Global Leveraged Funds (5x):', '₹' + globalFunds.leverageFunds.toLocaleString('en-IN'));
+        console.log('✅ Leveraged Amount Check:', `₹${globalFunds.leverageFunds.toLocaleString('en-IN')} > ₹${minLeveragedAmount.toLocaleString('en-IN')}`);
+        console.log('🔒 Global Usable Funds (95%):', '₹' + usableFunds.toLocaleString('en-IN'));
         console.log('💵 Price per Share:', '₹' + ltp);
         console.log('🔢 Max Possible Quantity:', maxQuantity);
         console.log('📊 Final Quantity:', finalQuantity);
         console.log('💸 Total Investment:', '₹' + (finalQuantity * ltp).toLocaleString('en-IN'));
+        
+        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
+        kite.setAccessToken(accessToken);
         
         const orderParams = {
             exchange: 'NSE',
             tradingsymbol: symbol,
             transaction_type: 'BUY',
             quantity: finalQuantity,
-            price: roundedPrice,
             product: productType,
             order_type: 'MARKET',
             validity: 'DAY'
@@ -1320,34 +1478,22 @@ async function callSeparateSellOrderRoute(accessToken, symbol, ltp, requestedQua
         const productType = 'MIS'; // Force MIS for all orders (allows short selling)
         const roundedPrice = roundToTickSize(ltp, ltp);
         
-        // CALCULATE PROPER QUANTITY BASED ON FUNDS AND LEVERAGE
-        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
-        kite.setAccessToken(accessToken);
+        // Use global funds instead of calculating locally
+        const globalFunds = getGlobalFunds();
+        const usableFunds = globalFunds.usableFunds;
         
-        console.log('💰 Getting account funds for quantity calculation...');
-        const margins = await kite.getMargins();
-        
-        let availableFunds = 0;
-        if (margins.equity && margins.equity.available) {
-            availableFunds = margins.equity.available.live_balance || 0;
-        } else if (margins.equity && margins.equity.net) {
-            availableFunds = margins.equity.net || 0;
-        } else if (margins.net) {
-            availableFunds = margins.net || 0;
-        }
-        
-        const leverageFunds = availableFunds * 5; // 5x leverage for MIS
-        const usableFunds = leverageFunds * 0.95; // Use 95% of leveraged funds for safety
-        
-        // Check minimum leveraged amount requirement (₹400,000)
-        const minLeveragedAmount = 400000;
-        if (leverageFunds < minLeveragedAmount) {
-            console.log(`❌ Insufficient leveraged funds for SELL: ₹${leverageFunds.toLocaleString('en-IN')} < ₹${minLeveragedAmount.toLocaleString('en-IN')}`);
+        // Check minimum leveraged amount requirement (₹50,000 - reduced from 400,000)
+        const minLeveragedAmount = 50000;
+        if (globalFunds.leverageFunds < minLeveragedAmount) {
+            console.log(`❌ Insufficient leveraged funds for SELL: ₹${globalFunds.leverageFunds.toLocaleString('en-IN')} < ₹${minLeveragedAmount.toLocaleString('en-IN')}`);
             return {
                 success: false,
-                error: `Insufficient leveraged funds for short selling. Need ₹${minLeveragedAmount.toLocaleString('en-IN')}, have ₹${leverageFunds.toLocaleString('en-IN')}`,
-                leverageFunds: leverageFunds,
-                minRequired: minLeveragedAmount
+                error: `Insufficient leveraged funds for short selling. Need ₹${minLeveragedAmount.toLocaleString('en-IN')}, have ₹${globalFunds.leverageFunds.toLocaleString('en-IN')}`,
+                availableFunds: globalFunds.availableFunds,
+                leverageFunds: globalFunds.leverageFunds,
+                minRequired: minLeveragedAmount,
+                order_category: 'SELL',
+                symbol: symbol
             };
         }
         
@@ -1355,16 +1501,18 @@ async function callSeparateSellOrderRoute(accessToken, symbol, ltp, requestedQua
         const finalQuantity = requestedQuantity ? Math.min(requestedQuantity, maxQuantity) : maxQuantity;
         
         // CONSOLE LOG ALL CALCULATIONS
-        console.log('\n🔴 SELL ORDER QUANTITY CALCULATION:');
-        console.log('💰 Available Funds:', '₹' + availableFunds.toLocaleString('en-IN'));
-        console.log('⚡ Leveraged Funds (5x):', '₹' + leverageFunds.toLocaleString('en-IN'));
-        console.log('✅ Leveraged Amount Check:', `₹${leverageFunds.toLocaleString('en-IN')} > ₹${minLeveragedAmount.toLocaleString('en-IN')}`);
-        console.log('🔒 Usable Funds (95%):', '₹' + usableFunds.toLocaleString('en-IN'));
-        console.log('⚡ Leveraged Funds (5x):', '₹' + leverageFunds.toLocaleString('en-IN'));
+        console.log('\n🔴 SELL ORDER QUANTITY CALCULATION (GLOBAL FUNDS):');
+        console.log('💰 Global Available Funds:', '₹' + globalFunds.availableFunds.toLocaleString('en-IN'));
+        console.log('⚡ Global Leveraged Funds (5x):', '₹' + globalFunds.leverageFunds.toLocaleString('en-IN'));
+        console.log('✅ Leveraged Amount Check:', `₹${globalFunds.leverageFunds.toLocaleString('en-IN')} > ₹${minLeveragedAmount.toLocaleString('en-IN')}`);
+        console.log('🔒 Global Usable Funds (95%):', '₹' + usableFunds.toLocaleString('en-IN'));
         console.log('💵 Price per Share:', '₹' + ltp);
         console.log('🔢 Max Possible Quantity:', maxQuantity);
         console.log('📊 Final Quantity:', finalQuantity);
         console.log('💸 Total Investment:', '₹' + (finalQuantity * ltp).toLocaleString('en-IN'));
+        
+        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
+        kite.setAccessToken(accessToken);
         
         const orderParams = {
             exchange: 'NSE',
@@ -1588,16 +1736,13 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
             
             console.log(`🔧 Managing subscriptions - Current: ${currentlySubscribed.size}, New: ${newTokens.size}`);
             
-            // 🚫 AUTO-UNSUBSCRIBE DISABLED: Keep stocks subscribed even when they no longer meet scan conditions
-            // Only manual unsubscribe via "Unsub" button will remove stocks from live data
-            /*
+            // ✅ AUTO-UNSUBSCRIBE ENABLED: Remove stocks no longer in scan conditions
             // Find tokens to unsubscribe (no longer in scan results)
             currentlySubscribed.forEach(token => {
                 if (!newTokens.has(token)) {
                     tokensToUnsubscribe.push(token);
                 }
             });
-            */
             
             // Find tokens to subscribe (new in scan results)
             newTokens.forEach(token => {
@@ -1606,10 +1751,9 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
                 }
             });
             
-            console.log(`📊 Subscription changes: 0 to unsubscribe (auto-unsubscribe disabled), ${tokensToSubscribe.length} to subscribe`);
+            console.log(`📊 Subscription changes: ${tokensToUnsubscribe.length} to unsubscribe, ${tokensToSubscribe.length} to subscribe`);
             
-            // 🚫 AUTO-UNSUBSCRIBE DISABLED: Stocks stay subscribed for manual control
-            /*
+            // ✅ AUTO-UNSUBSCRIBE ENABLED: Clean up old subscriptions
             // Unsubscribe from removed tokens
             if (tokensToUnsubscribe.length > 0) {
                 console.log(`🔴 Unsubscribing from ${tokensToUnsubscribe.length} tokens:`, tokensToUnsubscribe);
@@ -1626,8 +1770,6 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
             } else {
                 console.log('✅ No tokens to unsubscribe');
             }
-            */
-            console.log('✅ Auto-unsubscribe disabled - stocks remain subscribed for manual control');
             
             // Subscribe to new tokens
             if (tokensToSubscribe.length > 0) {
@@ -1669,7 +1811,23 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
                     }
                 }, 2000);
             } else if (newTokens.size === 0 && currentlySubscribed.size > 0) {
-                console.log('📊 No new scan results - keeping existing subscriptions (auto-unsubscribe disabled)');
+                // ✅ AUTO-UNSUBSCRIBE: No scan results means unsubscribe from all
+                console.log(`📊 No scan results - unsubscribing from all ${currentlySubscribed.size} existing subscriptions`);
+                try {
+                    const allSubscribedTokens = Array.from(currentlySubscribed);
+                    globalTicker.unsubscribe(allSubscribedTokens);
+                    
+                    // Clear all tracking
+                    allSubscribedTokens.forEach(token => {
+                        currentlySubscribed.delete(token);
+                        scanTypeTracker.delete(token);
+                        console.log(`❌ Unsubscribed (no scan results): ${token}`);
+                    });
+                    
+                    broadcastSubscriptionUpdate();
+                } catch (error) {
+                    console.error('❌ Error unsubscribing all tokens:', error);
+                }
             }
             
             broadcastSubscriptionUpdate();
@@ -2313,6 +2471,16 @@ router.post('/low-price-scanners', async (req, res) => {
 
         const startTime = Date.now();
 
+        // 💰 STEP: Update global funds before scanning
+        console.log('💰 Updating global funds before scanning...');
+        const fundsUpdated = await updateGlobalFunds(req.body.access_token);
+        if (!fundsUpdated) {
+            console.log('⚠️ Failed to update global funds, proceeding with existing values');
+        }
+        
+        const globalFunds = getGlobalFunds();
+        console.log(`💰 Using global funds: Available=₹${globalFunds.availableFunds.toLocaleString('en-IN')}, Leveraged=₹${globalFunds.leverageFunds.toLocaleString('en-IN')}, Usable=₹${globalFunds.usableFunds.toLocaleString('en-IN')}`);
+
         // Common settings for NSE 500 stocks  
         const commonSettings = {
             "ignore_unknown_fields": false,
@@ -2450,25 +2618,27 @@ router.post('/low-price-scanners', async (req, res) => {
             };
         };
 
+        // 💰 Use global funds for quantity pre-calculation  
+        const globalFunds = getGlobalFunds();
+        let fundsCalculationError = null;
+        
+        if (globalFunds.error) {
+            console.log('⚠️ Global funds have error:', globalFunds.error);
+            fundsCalculationError = globalFunds.error;
+        }
+        
+        console.log(`💰 Using global funds for quantity calculation:`);
+        console.log(`   - Available: ₹${globalFunds.availableFunds.toLocaleString('en-IN')}`);
+        console.log(`   - Leveraged (5x): ₹${globalFunds.leverageFunds.toLocaleString('en-IN')}`);
+        console.log(`   - Usable (95%): ₹${globalFunds.usableFunds.toLocaleString('en-IN')}`);
+        console.log(`   - Last Updated: ${globalFunds.lastUpdated}`);
+                
+        // Enhanced scanner processing with pre-calculated quantities
+        
         // Enrich all stocks with technical data
         const enrichedStocks = allStocks.map(enrichStockData);
 
-        // DEBUG: Log sample EMA values to verify data
-        // if (enrichedStocks.length > 0) {
-        //     const sampleStock = enrichedStocks[0];
-        //    // console.log('🔍 EMA DEBUG - Sample stock:', sampleStock.symbol);
-        //    // console.log('   EMA3_1 (col 36):', sampleStock.ema3_1);
-        //    // console.log('   EMA5_1 (col 22):', sampleStock.ema5_1); 
-        //    // console.log('   EMA9_1 (col 23):', sampleStock.ema9_1);
-        //     ///.log('   Raw data length:', sampleStock.d ? sampleStock.d.length : 'no data');
-        //     if (sampleStock.d && sampleStock.d.length > 36) {
-        //         console.log('   Raw values - col 22:', sampleStock.d[22], 'col 23:', sampleStock.d[23], 'col 36:', sampleStock.d[36]);
-        //     }
-        //     console.log('   1min EMA conditions for buy:');
-        //     console.log('     EMA3_1 > EMA5_1:', sampleStock.ema3_1, '>', sampleStock.ema5_1, '=', sampleStock.ema3_1 > sampleStock.ema5_1);
-        //     console.log('     EMA5_1 > EMA9_1:', sampleStock.ema5_1, '>', sampleStock.ema9_1, '=', sampleStock.ema5_1 > sampleStock.ema9_1);
-        // }
-
+    
         // Classify stocks into buy/sell based on conditions
         const buyStocks = [];
         const sellStocks = [];
@@ -2477,8 +2647,14 @@ router.post('/low-price-scanners', async (req, res) => {
         buyCandidates.clear();
         sellCandidates.clear();
         processedOrders.clear();
+        
+        // 🔒 RESET EXECUTION TRACKING: Clear old executed signals for fresh scan
+        console.log(`🔄 Clearing ${executedSignals.size} previous executed signals for fresh scan`);
+        executedSignals.clear();
+        // Keep lastSignalExecutionTime for cooldown tracking but don't clear it
+        
         lastScannerUpdate = Date.now();
-        console.log('🔄 Cleared previous candidates for fresh scan - DIRECT EXECUTION MODE');
+        console.log('🔄 Cleared previous candidates + executed signals for fresh scan - FUNDS CALCULATED MODE');
         
         // DEBUG: Track condition pass counts
         let conditionStats = {
@@ -2544,32 +2720,34 @@ router.post('/low-price-scanners', async (req, res) => {
                 });
             }
             
-            // SELL CONDITIONS (opposite of buy):
+            // SELL CONDITIONS (exact opposite of buy conditions):
             // Multi-timeframe conditions:
-            // 1. EMA5 (5min) > EMA3 (15min)
-            // 2. Open > EMA3 (15min)
-            // 3. -DI > ADX (on 15min OR 5min) - either timeframe
-            // 4. ADX > +DI (on 5min) - NEW ADX CONDITION  
-            // 5. ADX > +DI (on 15min) - NEW ADX CONDITION
-            // 6. MACD < Signal (5min)
-            // 7. MACD < 0 (5min)
-            // 8. MACD < 0 (1min)
-            // 9. EMA9 < VWAP (1min)
-            // 10. EMA3 < EMA5 (1min)
-            // 11. LTP > EMA3(15min) AND LTP > EMA5(5min)
+            // 1. EMA5 (5min) > EMA3 (15min) - opposite of buy condition 1
+            // 2. -DI > ADX (5min) - opposite of buy condition 2 (+DI > ADX)
+            // 3. ADX < -DI (5min) - opposite of buy condition 3 (ADX > -DI)
+            // 4. MACD < Signal (5min) - opposite of buy condition 4
+            // 5. MACD < Signal (15min) - opposite of buy condition 5
+            // 6. MACD < 0 (5min) - opposite of buy condition 6
+            // 7. MACD < 0 (1min) - opposite of buy condition 7
+            // 8. EMA9 < VWAP (1min) - opposite of buy condition 8
+            // 9. Open > EMA3 (5min) - opposite of buy condition 9 (Open < EMA3)
+            // 10. ADX < 25 (1min) - opposite of buy condition 10 (ADX > 25)
+            // 11. MACD < Signal (1min) - opposite of buy condition 11
+            // 12. EMA3 < EMA5 (1min) - opposite of buy condition 12
             
             const sellConditions = [
                 stock.ema5_5 > stock.ema3_15, // EMA5 (5min) > EMA3 (15min)
-                stock.open15 > stock.ema3_15, // Open > EMA3 on 15min
-                (stock.minusDI15 > stock.adx15) || (stock.minusDI5 > stock.adx5), // -DI > ADX on 15min OR 5min
-                stock.adx5 > stock.plusDI5, // ADX > +DI on 5min (NEW)
-                stock.adx15 > stock.plusDI15, // ADX > +DI on 15min (NEW)
+                stock.minusDI5 > stock.adx5, // -DI > ADX on 5min (opposite of +DI > ADX)
+                stock.adx5 > stock.plusDI5, // ADX > +DI on 5min (changed from ADX < -DI)
                 stock.macd5 < stock.signal5, // MACD < Signal on 5min
+                stock.macd15 < stock.signal15, // MACD < Signal on 15min
                 stock.macd5 < 0, // MACD < 0 on 5min
                 stock.macd1 < 0, // MACD < 0 on 1min
                 stock.ema9_1 < stock.vwap1, // EMA9 < VWAP on 1min
-                stock.ema3_1 < stock.ema5_1, // EMA3 < EMA5 on 1min
-                (stock.ltp > stock.ema3_15 && stock.ltp > stock.ema5_5) // LTP > EMA3(15min) AND LTP > EMA5(5min)
+                stock.open5 > stock.ema3_5, // Open > EMA3 on 5min (opposite of Open < EMA3)
+                stock.adx1 > 25, // ADX > 25 on 1min (changed from ADX < 25)
+                stock.macd1 < stock.signal1, // MACD < Signal on 1min
+                stock.ema3_1 < stock.ema5_1 // EMA3 < EMA5 on 1min
             ];
             
             
@@ -2577,19 +2755,75 @@ router.post('/low-price-scanners', async (req, res) => {
             const isSellSignal = sellConditions.every(condition => condition);
             
             if (isBuySignal) {
+                // 💰 Pre-calculate quantity based on global funds
+                let preCalculatedQuantity = 1; // Default testing quantity
+                let maxPossibleQuantity = 0;
+                let quantityCalculationError = null;
+                
+                if (globalFunds.usableFunds > 0 && stock.ltp > 0) {
+                    try {
+                        maxPossibleQuantity = Math.floor(globalFunds.usableFunds / stock.ltp);
+                        // For main orders, use testing quantity of 1
+                        preCalculatedQuantity = 1;
+                    } catch (qtyError) {
+                        quantityCalculationError = qtyError.message;
+                        console.log(`⚠️ Quantity calculation error for ${stock.symbol}:`, qtyError.message);
+                    }
+                }
+                
+                // Add pre-calculated data to stock
+                stock.preCalculated = {
+                    quantity: preCalculatedQuantity,
+                    maxQuantity: maxPossibleQuantity,
+                    investment: preCalculatedQuantity * stock.ltp,
+                    fundsAvailable: globalFunds.availableFunds,
+                    leveragedFunds: globalFunds.leverageFunds,
+                    usableFunds: globalFunds.usableFunds,
+                    quantityError: quantityCalculationError,
+                    calculatedAt: new Date().toISOString()
+                };
+                
                 buyStocks.push(stock);
                 
                 // 🚫 REMOVED: Direct order execution - Orders handled by frontend routes only
-                console.log(`📋 BUY SIGNAL DETECTED: ${stock.symbol} @ ₹${stock.ltp} - Frontend will handle execution`);
+                console.log(`📋 BUY SIGNAL: ${stock.symbol} @ ₹${stock.ltp} (Qty: ${preCalculatedQuantity}, Investment: ₹${(preCalculatedQuantity * stock.ltp).toFixed(2)}) - Frontend execution`);
                 stock.orderExecuted = false; // No backend execution
                 
                 // NO LONGER STORING FOR TICK-BASED EXECUTION - Direct execution only
                 // buyCandidates.set() removed
             } else if (isSellSignal) {
+                // 💰 Pre-calculate quantity for SELL orders based on global funds
+                let preCalculatedQuantity = 1; // Default testing quantity
+                let maxPossibleQuantity = 0;
+                let quantityCalculationError = null;
+                
+                if (globalFunds.usableFunds > 0 && stock.ltp > 0) {
+                    try {
+                        maxPossibleQuantity = Math.floor(globalFunds.usableFunds / stock.ltp);
+                        // For main orders, use testing quantity of 1
+                        preCalculatedQuantity = 1;
+                    } catch (qtyError) {
+                        quantityCalculationError = qtyError.message;
+                        console.log(`⚠️ Quantity calculation error for ${stock.symbol}:`, qtyError.message);
+                    }
+                }
+                
+                // Add pre-calculated data to stock
+                stock.preCalculated = {
+                    quantity: preCalculatedQuantity,
+                    maxQuantity: maxPossibleQuantity,
+                    investment: preCalculatedQuantity * stock.ltp,
+                    fundsAvailable: globalFunds.availableFunds,
+                    leveragedFunds: globalFunds.leverageFunds,
+                    usableFunds: globalFunds.usableFunds,
+                    quantityError: quantityCalculationError,
+                    calculatedAt: new Date().toISOString()
+                };
+                
                 sellStocks.push(stock);
                 
                 // 🚫 REMOVED: Direct order execution - Orders handled by frontend routes only  
-                console.log(`📋 SELL SIGNAL DETECTED: ${stock.symbol} @ ₹${stock.ltp} - Frontend will handle execution`);
+                console.log(`📋 SELL SIGNAL: ${stock.symbol} @ ₹${stock.ltp} (Qty: ${preCalculatedQuantity}, Investment: ₹${(preCalculatedQuantity * stock.ltp).toFixed(2)}) - Frontend execution`);
                 stock.orderExecuted = false; // No backend execution
                 
                 // NO LONGER STORING FOR TICK-BASED EXECUTION - Direct execution only
@@ -2606,18 +2840,6 @@ router.post('/low-price-scanners', async (req, res) => {
             }
             // If neither buy nor sell conditions are met, stock is ignored
         });
-
-        // console.log(`📊 Low Price Classification Results:`);
-        // console.log(`   Total stocks: ${enrichedStocks.length}`);
-        // console.log(`   Buy signals: ${buyStocks.length}`);
-        // console.log(`   Sell signals: ${sellStocks.length}`);
-        // console.log(`🎯 TICK EXECUTION SETUP:`);
-        // console.log(`   Buy candidates stored: ${buyCandidates.size}`);
-        // console.log(`   Sell candidates stored: ${sellCandidates.size}`);
-        // console.log(`   Auto trade enabled: ${global.autoTrade}`);
-        // console.log(`   Access token available: ${global.lastAccessToken ? 'YES' : 'NO'}`);
-        // console.log(`   Last scanner update: ${new Date(lastScannerUpdate).toISOString()}`);
-        // // 
         // DEBUG: Print condition statistics
         console.log('🔍 CONDITION ANALYSIS:');
         const conditionLabels = [
@@ -2626,16 +2848,8 @@ router.post('/low-price-scanners', async (req, res) => {
             'EMA9 > VWAP (1min)', 'Open < EMA3 (5min)', 'ADX > 25 (1min)', 'MACD > Signal (1min)', 
             'EMA3 > EMA5 (1min)'
         ];
-        conditionStats.buy_condition_passes.forEach((count, i) => {
-            const percentage = conditionStats.total_stocks > 0 ? (count / conditionStats.total_stocks * 100).toFixed(1) : 0;
-           // console.log(`   ${i + 1}. ${conditionLabels[i]}: ${count}/${conditionStats.total_stocks} (${percentage}%)`);
-        });
-        
-        // Show sample EMA 1min issues
-        if (conditionStats.ema_1min_issues.length > 0) {
-           // console.log(`🚨 EMA 1min issues found in ${conditionStats.ema_1min_issues.length} stocks:`);
-           // console.log('   Sample issues:', conditionStats.ema_1min_issues.slice(0, 3));
-        }
+       
+    
 
        // console.log('ℹ️ SCAN COMPLETE: Direct order execution completed');
         console.log(`🎯 SCAN RESULTS: ${buyStocks.length} buy signals, ${sellStocks.length} sell signals`);
@@ -2753,38 +2967,7 @@ router.post('/low-price-scanners', async (req, res) => {
     }
 });
 
-// Manual RELIANCE subscription endpoint for debugging
-router.post('/subscribe-reliance', async (req, res) => {
-    try {
-        console.log('🛠️ Manual RELIANCE subscription triggered');
-        const token = req.body.access_token || req.headers.authorization?.replace('Bearer ', '');
-        
-        if (!token) {
-            return res.status(400).json({
-                success: false,
-                error: 'Access token required'
-            });
-        }
-        
-        // RELIANCE will only be subscribed if found in scan results
-        // await initializeRelianceSubscription(token);
-        
-        res.json({
-            success: true,
-            message: 'Subscription check completed - stocks only subscribed via scan results',
-            subscribed_count: currentlySubscribed.size,
-            subscribed_tokens: Array.from(currentlySubscribed),
-            note: 'No permanent subscriptions - all stocks subscribed based on scan results only'
-        });
-        
-    } catch (error) {
-        console.error('❌ Manual RELIANCE subscription error:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
+
 
 // Get current subscription status endpoint
 router.get('/subscription-status', (req, res) => {
@@ -2795,12 +2978,38 @@ router.get('/subscription-status', (req, res) => {
             return `NSE:${symbol}`; // Add NSE: prefix to match frontend format
         });
         
+        // 🎯 NEW: Include signal stock information
+        const signalStocks = {
+            buySignals: currentBuyStocks.map(stock => ({
+                symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
+                ltp: stock.ltp || stock.d?.[0] || 0,
+                volume: stock.volume || stock.d?.[1] || 0,
+                signalType: 'BUY'
+            })),
+            sellSignals: currentSellStocks.map(stock => ({
+                symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s), 
+                ltp: stock.ltp || stock.d?.[0] || 0,
+                volume: stock.volume || stock.d?.[1] || 0,
+                signalType: 'SELL'
+            }))
+        };
+        
+        // 🔍 Create signal type mapping from scanTypeTracker
+        const signalTypeMap = {};
+        scanTypeTracker.forEach((signalType, token) => {
+            const symbol = getSymbolFromToken(token);
+            signalTypeMap[symbol] = signalType;
+        });
+        
         res.json({
             success: true,
             subscribed_count: currentlySubscribed.size,
             subscribed_tokens: subscribedTokens,
             subscribed_symbols: subscribedSymbols,
+            signal_stocks: signalStocks, // NEW: Signal stock data
+            signal_type_map: signalTypeMap, // NEW: Token to signal type mapping
             ticker_connected: globalTicker !== null,
+            last_scan_timestamp: lastScanTimestamp,
             timestamp: new Date().toISOString()
         });
     } catch (error) {
@@ -2808,50 +3017,148 @@ router.get('/subscription-status', (req, res) => {
         res.status(500).json({
             success: false,
             error: error.message,
-            subscribed_count: 0
+            subscribed_count: 0,
+            signal_stocks: { buySignals: [], sellSignals: [] },
+            signal_type_map: {}
         });
     }
 });
 
-// Get current buy stocks from latest scan
-router.get('/buy-stocks', (req, res) => {
+// Subscribe signal stocks to KiteTicker for tick-driven execution
+router.post('/subscribe-signal-stocks', async (req, res) => {
     try {
+        const { stocks } = req.body;
+        
+        console.log('🎯 SUBSCRIBE-SIGNAL-STOCKS route called with:', {
+            stocksCount: stocks ? stocks.length : 0,
+            stocks: stocks ? stocks.map(s => ({ symbol: s.symbol, signalType: s.signalType })) : []
+        });
+        
+        if (!stocks || !Array.isArray(stocks) || stocks.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'No stocks provided for subscription'
+            });
+        }
+        
+        // Extract instrument tokens for subscription
+        const tokensToSubscribe = [];
+        const symbolTokenMap = new Map();
+        
+        for (const stock of stocks) {
+            const cleanSymbol = stock.symbol.replace('NSE:', '').replace('BSE:', '');
+            const token = symbolMappings.symbolMappings[cleanSymbol];
+            
+            if (token) {
+                const tokenNum = parseInt(token);
+                tokensToSubscribe.push(tokenNum);
+                symbolTokenMap.set(tokenNum, cleanSymbol);
+                
+                // Track signal type for this token
+                scanTypeTracker.set(tokenNum, stock.signalType === 'BUY' ? 'BUY_SCAN' : 'SELL_SCAN');
+                
+                console.log(`📍 Mapped ${cleanSymbol} → Token ${token} (${stock.signalType} signal)`);
+            } else {
+                console.log(`⚠️ No token found for symbol: ${cleanSymbol}`);
+            }
+        }
+        
+        if (tokensToSubscribe.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'No valid tokens found for provided symbols'
+            });
+        }
+        
+        // Add tokens to subscription set
+        const newSubscriptions = [];
+        tokensToSubscribe.forEach(token => {
+            if (!currentlySubscribed.has(token)) {
+                currentlySubscribed.add(token);
+                newSubscriptions.push(token);
+            }
+        });
+        
+        console.log(`📡 Signal stock subscription results:`);
+        console.log(`   - Total tokens to subscribe: ${tokensToSubscribe.length}`);
+        console.log(`   - New subscriptions: ${newSubscriptions.length}`);
+        console.log(`   - Already subscribed: ${tokensToSubscribe.length - newSubscriptions.length}`);
+        console.log(`   - Total subscribed count: ${currentlySubscribed.size}`);
+        
+        // Initialize KiteTicker if needed
+        if (!globalTicker && global.initializeKiteTicker) {
+            console.log('🔌 Initializing KiteTicker for signal stock subscriptions...');
+            try {
+                await global.initializeKiteTicker();
+                console.log('✅ KiteTicker initialized successfully');
+            } catch (tickerError) {
+                console.error('❌ Failed to initialize KiteTicker:', tickerError);
+                return res.status(500).json({
+                    success: false,
+                    error: 'Failed to initialize KiteTicker',
+                    details: tickerError.message
+                });
+            }
+        }
+        
+        // Subscribe to tokens if ticker is available
+        if (globalTicker && newSubscriptions.length > 0) {
+            try {
+                globalTicker.subscribe(newSubscriptions);
+                console.log(`✅ Subscribed ${newSubscriptions.length} new signal stocks to KiteTicker`);
+            } catch (subscribeError) {
+                console.error('❌ KiteTicker subscription error:', subscribeError);
+                return res.status(500).json({
+                    success: false,
+                    error: 'Failed to subscribe stocks to KiteTicker',
+                    details: subscribeError.message
+                });
+            }
+        }
+        
+        // Broadcast subscription update
+        broadcastSubscriptionUpdate();
+        
+        // Store signal stocks for reference
+        const signalStocksByType = stocks.reduce((acc, stock) => {
+            if (stock.signalType === 'BUY') {
+                acc.buySignals.push(stock);
+            } else {
+                acc.sellSignals.push(stock);
+            }
+            return acc;
+        }, { buySignals: [], sellSignals: [] });
+        
+        // Update current signal stocks (for tick handler reference)
+        currentBuyStocks = signalStocksByType.buySignals;
+        currentSellStocks = signalStocksByType.sellSignals;
+        lastScanTimestamp = new Date().toISOString();
+        
+        console.log('🎯 Signal stocks subscription completed successfully');
+        console.log(`   - Buy signals: ${signalStocksByType.buySignals.length}`);
+        console.log(`   - Sell signals: ${signalStocksByType.sellSignals.length}`);
+        
         res.json({
             success: true,
-            stocks: currentBuyStocks,
-            count: currentBuyStocks.length,
-            lastScan: lastScanTimestamp,
-            timestamp: new Date().toISOString()
+            subscribed_count: tokensToSubscribe.length,
+            new_subscriptions: newSubscriptions.length,
+            total_subscriptions: currentlySubscribed.size,
+            buy_signals: signalStocksByType.buySignals.length,
+            sell_signals: signalStocksByType.sellSignals.length,
+            ticker_connected: !!globalTicker,
+            message: `Subscribed ${tokensToSubscribe.length} signal stocks for tick-driven execution`
         });
+        
     } catch (error) {
-        console.error('❌ Error getting buy stocks:', error);
+        console.error('❌ Error subscribing signal stocks:', error);
         res.status(500).json({
             success: false,
-            error: error.message,
-            stocks: []
+            error: 'Failed to subscribe signal stocks',
+            details: error.message
         });
     }
 });
 
-// Get current sell stocks from latest scan
-router.get('/sell-stocks', (req, res) => {
-    try {
-        res.json({
-            success: true,
-            stocks: currentSellStocks,
-            count: currentSellStocks.length,
-            lastScan: lastScanTimestamp,
-            timestamp: new Date().toISOString()
-        });
-    } catch (error) {
-        console.error('❌ Error getting sell stocks:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message,
-            stocks: []
-        });
-    }
-});
 
 // BUY ORDER ROUTE - Enhanced with funds, leverage, quantity calculation, and position checking
 // ⚠️ MARKET IMPACT ENFORCEMENT: Only allows orders that have passed market impact analysis
@@ -2879,6 +3186,25 @@ router.post('/buy-order', async (req, res) => {
         
         // 🔄 ACCEPT SIMPLE FORMAT: symbol, ltp, access_token from frontend
         const { symbol, ltp, orderParams: existingOrderParams, isTargetOrder } = req.body;
+        
+        // 🔒 SIGNAL EXECUTION TRACKING: Prevent repeated orders for same signal
+        if (!isTargetOrder && symbol) {
+            const signalKey = createSignalKey(symbol, 'BUY');
+            
+            // Check if this signal was recently executed
+            if (wasSignalRecentlyExecuted(symbol, 'BUY', 5)) { // 5 minute cooldown
+                console.log(`🚫 BUY signal execution blocked for ${symbol} - Recently executed (5min cooldown)`);
+                return res.status(429).json({
+                    success: false,
+                    error: `BUY signal for ${symbol} was recently executed. Cooldown: 5 minutes`,
+                    signalKey: signalKey,
+                    lastExecution: new Date(lastSignalExecutionTime[signalKey]).toLocaleTimeString(),
+                    cooldownRemaining: Math.max(0, 5 * 60 * 1000 - (Date.now() - lastSignalExecutionTime[signalKey]))
+                });
+            }
+            
+            console.log(`✅ BUY signal execution allowed for ${symbol} - No recent execution found`);
+        }
         
         // 🔒 AUTO TRADING CHECK: Main orders only allowed when auto trading is active
         if (!isTargetOrder && !autoTradingActive) {
@@ -2953,7 +3279,7 @@ router.post('/buy-order', async (req, res) => {
             transaction_type: 'BUY',
             price: ltp,
             product: 'MIS',
-            order_type: 'LIMIT',  // ✅ Changed from MARKET to LIMIT (Zerodha API requirement)
+            order_type: 'MARKET',  // ✅ Changed from LIMIT to MARKET (Zerodha API requirement)
             validity: 'DAY'
         };
         
@@ -3092,41 +3418,26 @@ router.post('/buy-order', async (req, res) => {
         const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
         kite.setAccessToken(access_token);
         
-        // STEP 1: Get funds and check available balance
-        console.log('💰 STEP 1: Checking available funds...');
-        const margins = await kite.getMargins();
+        // STEP 1: Use global funds instead of recalculating
+        console.log('💰 STEP 1: Using global funds...');
+        const globalFunds = getGlobalFunds();
         
-        let availableFunds = 0;
-        if (margins.equity && margins.equity.available) {
-            availableFunds = margins.equity.available.live_balance || 0;
-        } else if (margins.equity && margins.equity.net) {
-            availableFunds = margins.equity.net || 0;
-        } else if (margins.net) {
-            availableFunds = margins.net || 0;
-        }
+        console.log(`💰 Global funds: Available=₹${globalFunds.availableFunds.toLocaleString('en-IN')}, Leveraged=₹${globalFunds.leverageFunds.toLocaleString('en-IN')}, Usable=₹${globalFunds.usableFunds.toLocaleString('en-IN')}`);
         
-        console.log(`💰 Available funds: ₹${availableFunds.toLocaleString('en-IN')}`);
-        
-        if (availableFunds <= 0) {
+        if (globalFunds.availableFunds <= 0) {
             return res.status(400).json({
                 success: false,
                 error: 'Insufficient funds available',
-                availableFunds: availableFunds
+                availableFunds: globalFunds.availableFunds
             });
         }
         
-        // STEP 2: Calculate leveraged funds (5x for MIS)
-        const leverageFunds = availableFunds * 5;
-        const usableFunds = leverageFunds * 0.95; // Use 95% of leveraged funds for safety
-        console.log(`⚡ Leveraged funds (5x): ₹${leverageFunds.toLocaleString('en-IN')}`);
-        console.log(`🔒 Usable funds (95%): ₹${usableFunds.toLocaleString('en-IN')}`);
-        
-        // STEP 2.5: Check minimum leveraged amount requirement (₹400,000)
-        const minLeveragedAmount = 400000;
-        if (leverageFunds < minLeveragedAmount) {
+        // STEP 2.5: Check minimum leveraged amount requirement (₹50,000 - reduced from 400,000)
+        const minLeveragedAmount = 50000;
+        if (globalFunds.leverageFunds < minLeveragedAmount) {
             return res.status(400).json({
                 success: false,
-                error: `Insufficient leveraged funds. Need ₹${minLeveragedAmount.toLocaleString('en-IN')}, have ₹${leverageFunds.toLocaleString('en-IN')}`,
+                error: `Insufficient leveraged funds. Need ₹${minLeveragedAmount.toLocaleString('en-IN')}, have ₹${globalFunds.leverageFunds.toLocaleString('en-IN')}`,
                 availableFunds: availableFunds,
                 leverageFunds: leverageFunds,
                 minRequired: minLeveragedAmount,
@@ -3344,6 +3655,12 @@ router.post('/buy-order', async (req, res) => {
                 });
             }
             
+            // 🔒 MARK SIGNAL AS EXECUTED: Prevent repeated attempts
+            if (!isTargetOrder && symbol) {
+                markSignalAsExecuted(symbol, 'BUY');
+                console.log(`🔒 BUY signal marked as executed for ${symbol} - 5 minute cooldown active`);
+            }
+            
             // Return comprehensive response
             res.json({
                 success: true,
@@ -3495,6 +3812,25 @@ router.post('/sell-order', async (req, res) => {
         // 🔄 ACCEPT SIMPLE FORMAT: symbol, ltp, access_token from frontend
         const { symbol, ltp, orderParams: existingOrderParams, isTargetOrder } = req.body;
         
+        // 🔒 SIGNAL EXECUTION TRACKING: Prevent repeated orders for same signal
+        if (!isTargetOrder && symbol) {
+            const signalKey = createSignalKey(symbol, 'SELL');
+            
+            // Check if this signal was recently executed
+            if (wasSignalRecentlyExecuted(symbol, 'SELL', 5)) { // 5 minute cooldown
+                console.log(`🚫 SELL signal execution blocked for ${symbol} - Recently executed (5min cooldown)`);
+                return res.status(429).json({
+                    success: false,
+                    error: `SELL signal for ${symbol} was recently executed. Cooldown: 5 minutes`,
+                    signalKey: signalKey,
+                    lastExecution: new Date(lastSignalExecutionTime[signalKey]).toLocaleTimeString(),
+                    cooldownRemaining: Math.max(0, 5 * 60 * 1000 - (Date.now() - lastSignalExecutionTime[signalKey]))
+                });
+            }
+            
+            console.log(`✅ SELL signal execution allowed for ${symbol} - No recent execution found`);
+        }
+        
         // 🔒 AUTO TRADING CHECK: Main orders only allowed when auto trading is active
         if (!isTargetOrder && !autoTradingActive) {
             return res.status(403).json({
@@ -3568,7 +3904,7 @@ router.post('/sell-order', async (req, res) => {
             transaction_type: 'SELL',
             price: ltp,
             product: 'MIS', 
-            order_type: 'LIMIT',  // ✅ Changed from MARKET to LIMIT (Zerodha API requirement)
+            order_type: 'MARKET',  // ✅ Changed from LIMIT to MARKET (Zerodha API requirement)
             validity: 'DAY'
         };
         
@@ -3738,64 +4074,49 @@ router.post('/sell-order', async (req, res) => {
         
         console.log('✅ No active positions + No pending orders found, proceeding with main SELL order');
         
-        // STEP 2: Get funds and check available balance (for MIS short selling)
-        console.log('💰 STEP 2: Checking available funds for MIS sell (short) order...');
-        const margins = await kite.getMargins();
+        // STEP 2: Use global funds instead of recalculating (for MIS short selling)
+        console.log('💰 STEP 2: Using global funds for MIS sell (short) order...');
+        const globalFunds = getGlobalFunds();
         
-        let availableFunds = 0;
-        if (margins.equity && margins.equity.available) {
-            availableFunds = margins.equity.available.live_balance || 0;
-        } else if (margins.equity && margins.equity.net) {
-            availableFunds = margins.equity.net || 0;
-        } else if (margins.net) {
-            availableFunds = margins.net || 0;
-        }
+        console.log(`💰 Global funds: Available=₹${globalFunds.availableFunds.toLocaleString('en-IN')}, Leveraged=₹${globalFunds.leverageFunds.toLocaleString('en-IN')}, Usable=₹${globalFunds.usableFunds.toLocaleString('en-IN')}`);
         
-        console.log(`💰 Available funds: ₹${availableFunds.toLocaleString('en-IN')}`);
-        
-        if (availableFunds <= 0) {
+        if (globalFunds.availableFunds <= 0) {
             return res.status(400).json({
                 success: false,
                 error: 'Insufficient funds available for short selling',
-                availableFunds: availableFunds
+                availableFunds: globalFunds.availableFunds
             });
         }
         
-        // STEP 2: Calculate leveraged funds (5x for MIS)
-        const leverageFunds = availableFunds * 5;
-        const usableFunds = leverageFunds * 0.95; // Use 95% of leveraged funds for safety
-        console.log(`⚡ Leveraged funds (5x): ₹${leverageFunds.toLocaleString('en-IN')}`);
-        console.log(`🔒 Usable funds (95%): ₹${usableFunds.toLocaleString('en-IN')}`);
-        
-        // STEP 2.5: Check minimum leveraged amount requirement (₹400,000)
-        const minLeveragedAmount = 400000;
-        if (leverageFunds < minLeveragedAmount) {
+        // STEP 2.5: Check minimum leveraged amount requirement (₹50,000 - reduced from 400,000)
+        const minLeveragedAmount = 50000;
+        if (globalFunds.leverageFunds < minLeveragedAmount) {
             return res.status(400).json({
                 success: false,
-                error: `Insufficient leveraged funds for short selling. Need ₹${minLeveragedAmount.toLocaleString('en-IN')}, have ₹${leverageFunds.toLocaleString('en-IN')}`,
-                availableFunds: availableFunds,
-                leverageFunds: leverageFunds,
+                error: `Insufficient leveraged funds for short selling. Need ₹${minLeveragedAmount.toLocaleString('en-IN')}, have ₹${globalFunds.leverageFunds.toLocaleString('en-IN')}`,
+                availableFunds: globalFunds.availableFunds,
+                leverageFunds: globalFunds.leverageFunds,
                 minRequired: minLeveragedAmount,
                 order_category: 'SELL',
                 symbol: orderParams.tradingsymbol
             });
         }
-        console.log(`✅ Leveraged Amount Check: ₹${leverageFunds.toLocaleString('en-IN')} > ₹${minLeveragedAmount.toLocaleString('en-IN')}`);
+        console.log(`✅ Leveraged Amount Check: ₹${globalFunds.leverageFunds.toLocaleString('en-IN')} > ₹${minLeveragedAmount.toLocaleString('en-IN')}`);
         
-        // STEP 3: Calculate optimal quantity based on available funds (for short selling margin)
+        // STEP 3: Calculate optimal quantity based on global funds (for short selling margin)
         pricePerShare = ltp || orderParams.price; // Assign to existing let variable
-        const maxQuantity = Math.floor(usableFunds / pricePerShare);
+        const maxQuantity = Math.floor(globalFunds.usableFunds / pricePerShare);
         
         // Use either requested quantity or calculated max quantity (whichever is smaller)
         // If no quantity provided, use calculated max quantity
         const requestedQuantity = orderParams.quantity || maxQuantity;
         finalQuantity = Math.min(requestedQuantity, maxQuantity); // Assign to existing let variable
         
-        console.log(`\n📊 SELL ORDER QUANTITY CALCULATION:`);
-        console.log(`💰 Available Funds: ₹${availableFunds.toLocaleString('en-IN')}`);
-        console.log(`⚡ Leveraged Funds (5x): ₹${leverageFunds.toLocaleString('en-IN')}`);
-        console.log(`� Usable Funds (95%): ₹${usableFunds.toLocaleString('en-IN')}`);
-        console.log(`�💵 Price per share: ₹${pricePerShare}`);
+        console.log(`\n📊 SELL ORDER QUANTITY CALCULATION (GLOBAL FUNDS):`);
+        console.log(`💰 Global Available Funds: ₹${globalFunds.availableFunds.toLocaleString('en-IN')}`);
+        console.log(`⚡ Global Leveraged Funds (5x): ₹${globalFunds.leverageFunds.toLocaleString('en-IN')}`);
+        console.log(`🔒 Global Usable Funds (95%): ₹${globalFunds.usableFunds.toLocaleString('en-IN')}`);
+        console.log(`💵 Price per share: ₹${pricePerShare}`);
         console.log(`🔢 Max possible quantity: ${maxQuantity}`);
         console.log(`📋 Requested quantity: ${orderParams.quantity || 'auto-calculated'}`);
         console.log(`🎯 Final quantity: ${finalQuantity}`);
@@ -3810,10 +4131,10 @@ router.post('/sell-order', async (req, res) => {
         if (finalQuantity <= 0) {
             return res.status(400).json({
                 success: false,
-                error: `Insufficient funds for even 1 share short sell. Need ₹${pricePerShare}, have ₹${usableFunds}`,
-                availableFunds: availableFunds,
-                leverageFunds: leverageFunds,
-                usableFunds: usableFunds,
+                error: `Insufficient funds for even 1 share short sell. Need ₹${pricePerShare}, have ₹${globalFunds.usableFunds}`,
+                availableFunds: globalFunds.availableFunds,
+                leverageFunds: globalFunds.leverageFunds,
+                usableFunds: globalFunds.usableFunds,
                 pricePerShare: pricePerShare
             });
         }
@@ -3856,6 +4177,12 @@ router.post('/sell-order', async (req, res) => {
                         timestamp: new Date().toISOString()
                     }]
                 });
+            }
+            
+            // 🔒 MARK SIGNAL AS EXECUTED: Prevent repeated attempts
+            if (!isTargetOrder && symbol) {
+                markSignalAsExecuted(symbol, 'SELL');
+                console.log(`🔒 SELL signal marked as executed for ${symbol} - 5 minute cooldown active`);
             }
             
             // Return comprehensive response
@@ -4107,123 +4434,105 @@ router.get('/all-nse500-stocks', async (req, res) => {
     }
 });
 
-// TEST RELIANCE BUY ORDER ROUTE - Uses existing buy-order logic
-router.post('/test-reliance-buy', async (req, res) => {
-    console.log('🧪 TEST RELIANCE BUY ORDER route hit');
-    
+
+
+// MANUAL UNSUBSCRIBE ENDPOINT
+// GENERAL SUBSCRIBE ROUTE - For any symbols (used by auto-subscribe)
+router.post('/subscribe', async (req, res) => {
     try {
-        // Extract access token from request
-        const authHeader = req.headers.authorization;
-        const headerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : null;
-        let access_token = headerToken || req.body.access_token;
+        console.log('🟢 Manual subscribe request received:', req.body);
         
-        if (!access_token) {
-            return res.status(401).json({
+        const { symbols } = req.body;
+        
+        if (!symbols || !Array.isArray(symbols) || symbols.length === 0) {
+            return res.status(400).json({
                 success: false,
-                error: 'Access token required for test order'
+                error: 'Invalid symbols array provided',
+                message: 'Please provide a symbols array with symbol names to subscribe'
             });
         }
-
-        // Get current RELIANCE price from KiteTicker or use fallback
-        console.log('📊 Getting RELIANCE current price...');
         
-        // Try to get LTP from Kite API
-        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
-        kite.setAccessToken(access_token);
+        // Convert symbols to tokens
+        const tokensToSubscribe = [];
+        const subscribeResults = [];
         
-        const relianceToken = 738561;
-        const quotes = await kite.getQuote(['NSE:RELIANCE']);
-        const relianceQuote = quotes['NSE:RELIANCE'];
-        const currentPrice = relianceQuote?.last_price || 2500; // Fallback price
-        
-        console.log(`💰 RELIANCE Current Price: ₹${currentPrice}`);
-        
-        // Create orderParams for RELIANCE buy order (let buy-order route calculate quantity)
-        const orderParams = {
-            exchange: 'NSE',
-            tradingsymbol: 'RELIANCE',
-            transaction_type: 'BUY',
-            price: currentPrice,
-            product: 'MIS', // Will be enforced in buy-order route
-            order_type: 'MARKET',
-            validity: 'DAY'
-            // Quantity intentionally omitted - buy-order route will calculate based on available funds
-        };
-
-        console.log('🧪 Test order params:', orderParams);
-        
-        // Call the existing buy-order route internally
-        const buyOrderRequest = {
-            body: {
-                orderParams: orderParams,
-                ltp: currentPrice,
-                access_token: access_token
-            },
-            headers: {
-                authorization: authHeader
-            }
-        };
-        
-        // Create a mock response object to capture buy-order route response
-        let buyOrderResponse = null;
-        const mockRes = {
-            status: (code) => ({
-                json: (data) => {
-                    buyOrderResponse = { statusCode: code, ...data };
-                    return mockRes;
+        symbols.forEach(symbol => {
+            const token = symbolMappings.symbolMappings[symbol];
+            if (token) {
+                const tokenInt = parseInt(token);
+                if (!currentlySubscribed.has(tokenInt)) {
+                    tokensToSubscribe.push(tokenInt);
+                    currentlySubscribed.add(tokenInt);
+                    subscribeResults.push({
+                        symbol: symbol,
+                        token: tokenInt,
+                        status: 'subscribed'
+                    });
+                } else {
+                    subscribeResults.push({
+                        symbol: symbol,
+                        token: tokenInt,
+                        status: 'already_subscribed'
+                    });
                 }
-            }),
-            json: (data) => {
-                buyOrderResponse = { statusCode: 200, ...data };
-                return mockRes;
+            } else {
+                subscribeResults.push({
+                    symbol: symbol,
+                    token: null,
+                    status: 'token_not_found'
+                });
             }
-        };
+        });
         
-        // Call the existing buy order route logic
-        console.log('📞 Placing test order directly via KiteConnect...');
+        console.log(`🟢 Subscribing to ${tokensToSubscribe.length} new tokens:`, tokensToSubscribe);
         
-        console.log('⚠️ TEST ORDER: Direct KiteConnect placement for testing purposes');
-        
-        const result = await kite.placeOrder('regular', orderParams);
-        
-        if (result && result.order_id) {
-            console.log('✅ Test RELIANCE buy order placed:', result);
-            
-            // Return test-specific response with additional context
-            res.json({
-                success: true,
-                message: '🧪 RELIANCE Test Buy Order Executed',
-                testType: 'RELIANCE_BUY_ORDER',
-                symbol: 'RELIANCE',
-                currentPrice: currentPrice,
-                order_id: result.order_id,
-                orderResult: {
-                    success: true,
-                    order_id: result.order_id,
-                    symbol: 'RELIANCE',
-                    quantity: finalQuantity,
-                    price: currentPrice,
-                    order_type: 'MARKET'
-                },
-                executedAt: new Date().toISOString(),
-                note: 'This was a test order using direct KiteConnect with auto-calculated quantity'
-            });
-        } else {
-            throw new Error('KiteConnect test order placement failed');
+        // Initialize KiteTicker if needed
+        if (!globalTicker && global.initializeKiteTicker) {
+            console.log('🔌 Initializing KiteTicker for subscriptions...');
+            try {
+                await global.initializeKiteTicker();
+                console.log('✅ KiteTicker initialized successfully');
+            } catch (tickerError) {
+                console.error('❌ Failed to initialize KiteTicker:', tickerError);
+                return res.status(500).json({
+                    success: false,
+                    error: 'Failed to initialize KiteTicker',
+                    details: tickerError.message
+                });
+            }
         }
+        
+        // Perform subscription
+        if (tokensToSubscribe.length > 0 && globalTicker) {
+            globalTicker.subscribe(tokensToSubscribe);
+            console.log(`✅ Successfully subscribed to ${tokensToSubscribe.length} new symbols`);
+            console.log(`📊 Total subscriptions: ${currentlySubscribed.size}`);
+            
+            // Broadcast subscription update
+            broadcastSubscriptionUpdate();
+        } else if (tokensToSubscribe.length > 0 && !globalTicker) {
+            console.warn('⚠️ No active ticker connection, but tokens were added to subscription set');
+        }
+        
+        res.json({
+            success: true,
+            message: `Subscribe operation completed`,
+            subscribedCount: tokensToSubscribe.length,
+            totalSubscriptions: currentlySubscribed.size,
+            results: subscribeResults,
+            timestamp: new Date().toISOString()
+        });
         
     } catch (error) {
-        console.error('❌ Error in test RELIANCE buy:', error);
+        console.error('❌ Error in manual subscribe:', error);
         res.status(500).json({
             success: false,
             error: error.message,
-            testType: 'RELIANCE_BUY_ORDER',
-            message: 'Test order failed'
+            message: 'Failed to subscribe to symbols'
         });
     }
 });
 
-// MANUAL UNSUBSCRIBE ENDPOINT
 router.post('/unsubscribe', async (req, res) => {
     try {
         console.log('🔴 Manual unsubscribe request received:', req.body);
@@ -4316,117 +4625,8 @@ router.post('/unsubscribe', async (req, res) => {
     }
 });
 
-// Check if we're in RELIANCE fallback mode (only RELIANCE subscribed)
-router.get('/fallback-status', (req, res) => {
-    try {
-        const isRelianceFallback = currentlySubscribed.size === 1 && 
-                                  currentlySubscribed.has(738561) && 
-                                  scanTypeTracker.get(738561) === 'FALLBACK';
-        
-        res.json({
-            success: true,
-            isRelianceFallback: isRelianceFallback,
-            currentSubscriptions: currentlySubscribed.size,
-            relianceSubscribed: currentlySubscribed.has(738561),
-            relianceScanType: scanTypeTracker.get(738561),
-            subscriptionDetails: Array.from(currentlySubscribed).map(token => ({
-                token: token,
-                symbol: getSymbolFromToken(token),
-                scanType: scanTypeTracker.get(token)
-            })),
-            timestamp: new Date().toISOString()
-        });
-    } catch (error) {
-        console.error('❌ Error checking fallback status:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
 
-// RELIANCE Buy/Sell endpoints for fallback mode
-router.post('/reliance-buy-scan', async (req, res) => {
-    try {
-        console.log('🏛️ RELIANCE Buy Scan requested');
-        
-        // Check if RELIANCE is currently subscribed
-        const isRelianceSubscribed = currentlySubscribed.has(738561);
-        
-        if (!isRelianceSubscribed) {
-            return res.status(400).json({
-                success: false,
-                error: 'RELIANCE buy scan only available when RELIANCE is subscribed',
-                currentState: 'RELIANCE not subscribed'
-            });
-        }
-        
-        // Update RELIANCE scan type to BUY_SCAN
-        scanTypeTracker.set(738561, 'BUY_SCAN');
-        console.log('🟢 RELIANCE marked as BUY_SCAN symbol');
-        
-        // Broadcast subscription update
-        broadcastSubscriptionUpdate();
-        
-        res.json({
-            success: true,
-            message: 'RELIANCE set as Buy Scan symbol',
-            symbol: 'RELIANCE',
-            token: 738561,
-            scanType: 'BUY_SCAN',
-            note: 'Orders will only be placed if ALL 13 buy conditions are met',
-            timestamp: new Date().toISOString()
-        });
-        
-    } catch (error) {
-        console.error('❌ Error in RELIANCE buy scan:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
 
-router.post('/reliance-sell-scan', async (req, res) => {
-    try {
-        console.log('🏛️ RELIANCE Sell Scan requested');
-        
-        // Check if RELIANCE is currently subscribed
-        const isRelianceSubscribed = currentlySubscribed.has(738561);
-        
-        if (!isRelianceSubscribed) {
-            return res.status(400).json({
-                success: false,
-                error: 'RELIANCE sell scan only available when RELIANCE is subscribed',
-                currentState: 'RELIANCE not subscribed'
-            });
-        }
-        
-        // Update RELIANCE scan type to SELL_SCAN
-        scanTypeTracker.set(738561, 'SELL_SCAN');
-        console.log('🔴 RELIANCE marked as SELL_SCAN symbol');
-        
-        // Broadcast subscription update
-        broadcastSubscriptionUpdate();
-        
-        res.json({
-            success: true,
-            message: 'RELIANCE set as Sell Scan symbol',
-            symbol: 'RELIANCE',
-            token: 738561,
-            scanType: 'SELL_SCAN',
-            note: 'Orders will only be placed if ALL 13 sell conditions are met',
-            timestamp: new Date().toISOString()
-        });
-        
-    } catch (error) {
-        console.error('❌ Error in RELIANCE sell scan:', error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
-    }
-});
 
 // TARGET BUY ORDER ROUTE - For SELL positions (negative quantity)
 router.post('/target-buy-order', async (req, res) => {
