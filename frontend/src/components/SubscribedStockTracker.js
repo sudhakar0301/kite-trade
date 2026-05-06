@@ -675,8 +675,28 @@ const SubscribedStockTracker = ({
 
     // Fetch every 10 seconds to keep in sync
     const interval = setInterval(fetchSubscribedSymbols, 10000);
+    
+    // ✅ Listen for subscription updates via WebSocket to immediately sync when symbols are unsubscribed
+    const handleWebSocketMessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'subscription_update') {
+          console.log('🔄 Subscription update received, refetching subscription status immediately');
+          fetchSubscribedSymbols(); // Immediate refetch when subscriptions change
+        }
+      } catch (error) {
+        // Ignore non-JSON messages
+      }
+    };
 
-    return () => clearInterval(interval);
+    // Connect to WebSocket for real-time subscription updates
+    const websocket = new WebSocket('ws://localhost:5000');
+    websocket.addEventListener('message', handleWebSocketMessage);
+
+    return () => {
+      clearInterval(interval);
+      websocket.close();
+    };
   }, []);
 
   // Check fallback status periodically
@@ -1250,7 +1270,15 @@ const SubscribedStockTracker = ({
   // Fetch funds data from backend (same as scanner logic)
   const fetchFundsData = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/get-margins', {
+      // Get access token from localStorage
+      const token = localStorage.getItem('kite_access_token');
+      
+      if (!token) {
+        console.error('❌ No access token found for funds fetch');
+        return null;
+      }
+      
+      const response = await fetch(`http://localhost:5000/api/get-margins?access_token=${encodeURIComponent(token)}`, {
         method: 'GET',
         headers: { 'Content-Type': 'application/json' }
       });
@@ -1260,24 +1288,23 @@ const SubscribedStockTracker = ({
         return null;
       }
       
-      const margins = await response.json();
-      console.log('📊 Margins data for subscribed table:', margins);
+      const result = await response.json();
+      console.log('📊 Margins data for subscribed table:', result);
       
-      if (margins?.equity?.available?.cash) {
-        const availableFunds = parseFloat(margins.equity.available.cash);
-        const leverageFunds = availableFunds * 5; // 5x leverage
-        const usableFunds = leverageFunds * 0.95; // 95% usable
-        
+      if (result.success && result.availableFunds !== undefined) {
         const fundsInfo = {
-          availableFunds,
-          leverageFunds,
-          usableFunds,
-          lastUpdated: new Date().toISOString()
+          availableFunds: result.availableFunds,
+          leverageFunds: result.leverageFunds,
+          usableFunds: result.usableFunds,
+          lastUpdated: result.lastUpdated
         };
         
         setFundsData(fundsInfo);
         console.log('💰 Updated subscribed table funds:', fundsInfo);
         return fundsInfo;
+      } else {
+        console.error('❌ Funds fetch failed:', result.error || 'Unknown error');
+        console.log('📊 Full response:', result);
       }
     } catch (error) {
       console.error('❌ Error fetching funds for subscribed table:', error);
@@ -1285,16 +1312,16 @@ const SubscribedStockTracker = ({
     return null;
   };
 
-  // Calculate quantity based on funds (same as scanner logic)
+  // Calculate quantity based on funds (using leveraged funds for max possible quantity)
   const calculateQuantityFromFunds = (price) => {
-    if (!price || !fundsData?.usableFunds || fundsData.usableFunds <= 0) {
+    if (!price || !fundsData?.leverageFunds || fundsData.leverageFunds <= 0) {
       return 0;
     }
     
-    const investment = fundsData.usableFunds;
+    const investment = fundsData.leverageFunds; // Use full leveraged funds (5x)
     const quantity = Math.floor(investment / price);
     
-    console.log(`📊 Funds-based calc for price ${price}: investment=${investment}, quantity=${quantity}`);
+    console.log(`📊 Funds-based calc for price ${price}: leveraged_investment=${investment}, quantity=${quantity}`);
     return quantity;
   };
 

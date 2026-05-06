@@ -227,13 +227,19 @@ router.get('/get-margins', async (req, res) => {
 
 function broadcastSubscriptionUpdate() {
     if (global.broadcastLiveData) {
+        // Convert tokens back to symbols for frontend
+        const subscribedSymbols = Array.from(currentlySubscribed).map(token => {
+            return getSymbolFromToken(token);
+        }).filter(symbol => symbol !== 'Unknown'); // Filter out unknown symbols
+        
         const subscriptionData = {
             type: 'subscription_update',
             subscribed_count: currentlySubscribed.size,
-            // REMOVED: subscribed_tokens - prevents automatic chart opening for new subscriptions
+            subscribed_symbols: subscribedSymbols, // ✅ RE-ADDED: Include actual symbols for frontend state sync
+            subscribed_tokens: Array.from(currentlySubscribed), // Include tokens for debugging
             timestamp: new Date().toISOString()
         };
-        console.log(`📡 Broadcasting subscription update: ${currentlySubscribed.size} subscriptions`);
+        console.log(`📡 Broadcasting subscription update: ${currentlySubscribed.size} subscriptions, symbols: [${subscribedSymbols.join(', ')}]`);
         global.broadcastLiveData(subscriptionData);
     }
 }
@@ -1249,8 +1255,7 @@ async function initializeKiteTicker(access_token) {
 
 // Initialize RELIANCE subscription (called when first API endpoint is accessed with valid token)
 // REMOVED: initializeRelianceSubscription function
-// RELIANCE and all stocks are now only subscribed when found in scan results
-// No more permanent/default subscriptions
+// NO DEFAULT SUBSCRIPTIONS: All stocks are only subscribed when found in scan results
 
 /*
 async function initializeRelianceSubscription(access_token) {
@@ -1695,7 +1700,7 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
         console.log('🔍 Current subscribed tokens:', Array.from(currentlySubscribed));
         console.log('🔍 New tokens from scan:', Array.from(newTokens));
         
-        // Always initialize ticker if needed - required for fallback subscription
+        // Always initialize ticker if needed - required for dynamic subscriptions
         if (!globalTicker) {
             console.log('🚀 Initializing global KiteTicker...');
             globalTicker = new KiteTicker({
@@ -1727,7 +1732,7 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
                     }
                 }, 2000);
             } else {
-                console.log('🔧 Ticker initialized - ready for fallback subscription');
+                console.log('🔧 Ticker initialized - ready for dynamic subscriptions');
             }
         } else if (globalTicker) {
             // Ticker exists, manage subscriptions (even if no new tokens)
@@ -1789,27 +1794,9 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
                 console.log('✅ No new tokens to subscribe');
             }
             
-            // Special case: If no scan results at all, subscribe to RELIANCE fallback
+            // ✅ NO DEFAULT SUBSCRIPTIONS: If no scan results, keep subscriptions empty
             if (newTokens.size === 0 && currentlySubscribed.size === 0) {
-                console.log('📭 No scan results and no active subscriptions - subscribing to RELIANCE fallback');
-                
-                // Subscribe to RELIANCE as fallback when no stocks are subscribed
-                const relianceToken = 738561; // RELIANCE token
-                
-                // Add delay to ensure ticker is connected (same as regular subscription)
-                setTimeout(async () => {
-                    try {
-                        console.log(`🏛️ Subscribing to RELIANCE fallback (${relianceToken})`);
-                        globalTicker.subscribe([relianceToken]);
-                        globalTicker.setMode(globalTicker.modeFull, [relianceToken]);
-                        currentlySubscribed.add(relianceToken);
-                        scanTypeTracker.set(relianceToken, 'FALLBACK'); // Mark as fallback, not scan result
-                        console.log('✅ RELIANCE fallback subscribed successfully');
-                        broadcastSubscriptionUpdate();
-                    } catch (error) {
-                        console.error('❌ Error subscribing to RELIANCE fallback:', error);
-                    }
-                }, 2000);
+                console.log('📭 No scan results and no active subscriptions - keeping empty (no fallback)');
             } else if (newTokens.size === 0 && currentlySubscribed.size > 0) {
                 // ✅ AUTO-UNSUBSCRIBE: No scan results means unsubscribe from all
                 console.log(`📊 No scan results - unsubscribing from all ${currentlySubscribed.size} existing subscriptions`);
@@ -1964,8 +1951,8 @@ function setupTickerEventHandlers() {
                     // 3. Target orders = ₹1500 profit for existing positions
                     // ==================================================================== 
                     
-                    // Execution criteria: levels <= 3 AND slippage <= 0.08%
-                    const maxLevels = 3;
+                    // Execution criteria: levels <= 2 AND slippage <= 0.08%
+                    const maxLevels = 2;
                     const maxSlippage = 0.08; // 0.08%
                     
                     console.log(`📊 ${symbol} Impact Analysis:`);
@@ -2070,99 +2057,170 @@ function setupTickerEventHandlers() {
                     }
                     
                     // ====================================================================
-                    // STEP 2: MARKET ORDER EXECUTION (Only when no active positions exist)
+                    // STEP 2: ENHANCED MARKET ORDER EXECUTION (Only when no active positions exist)
                     // ====================================================================
                     
+                    // ✅ FIRST: Check if auto trading is enabled
+                    if (!autoTradingActive) {
+                        console.log(`🚫 AUTO TRADING DISABLED: Skipping execution for ${symbol}`);
+                        return;
+                    }
+                    
+                    console.log(`✅ AUTO TRADING ENABLED: Proceeding with enhanced execution criteria for ${symbol}`);
+                    
                     // ====================================================================
-                    // LIVE LTP VERIFICATION: Re-verify scanner conditions with live tick data
+                    // ENHANCED LIVE LTP VERIFICATION: Enhanced scanner conditions with live tick data
                     // ====================================================================
                     const buyCandidate = buyCandidates.get(token);
                     const sellCandidate = sellCandidates.get(token);
                     let liveBuyConditionsValid = false;
                     let liveSellConditionsValid = false;
                     
-                    // Verify BUY conditions with live LTP
+                    // 🔵 ENHANCED BUY CONDITIONS: ltp < ema3(15min) AND ltp > ema5(5min)
                     if (buyCandidate && scanType === 'BUY_SCAN') {
-                        const liveLtpBelowEma3_5 = ltp < buyCandidate.ema3_5;
-                        liveBuyConditionsValid = liveLtpBelowEma3_5;
+                        const liveLtpBelowEma3_15 = ltp < buyCandidate.ema3_15;  // LTP < EMA3 (15min)
+                        const liveLtpAboveEma5_5 = ltp > buyCandidate.ema5_5;   // LTP > EMA5 (5min)
+                        liveBuyConditionsValid = liveLtpBelowEma3_15 && liveLtpAboveEma5_5;
                         
-                        console.log(`🔄 LIVE BUY VERIFICATION for ${symbol}:`);
+                        console.log(`🔄 ENHANCED BUY VERIFICATION for ${symbol}:`);
                         console.log(`   Live LTP: ₹${ltp}`);
-                        console.log(`   EMA3(5min): ₹${buyCandidate.ema3_5} | LTP < EMA3: ${liveLtpBelowEma3_5}`);
-                        console.log(`   ✅ Live BUY conditions: ${liveBuyConditionsValid}`);
+                        console.log(`   EMA3(15min): ₹${buyCandidate.ema3_15} | LTP < EMA3(15min): ${liveLtpBelowEma3_15}`);
+                        console.log(`   EMA5(5min): ₹${buyCandidate.ema5_5} | LTP > EMA5(5min): ${liveLtpAboveEma5_5}`);
+                        console.log(`   ✅ Enhanced BUY conditions: ${liveBuyConditionsValid}`);
                     }
                     
-                    // Verify SELL conditions with live LTP  
+                    // 🔴 ENHANCED SELL CONDITIONS: ltp < ema5(5min) AND ltp > ema3(15min)
                     if (sellCandidate && scanType === 'SELL_SCAN') {
-                        const liveLtpAboveEma3_15 = ltp > sellCandidate.ema3_15;
-                        const liveLtpAboveEma5_5 = ltp > sellCandidate.ema5_5;
-                        liveSellConditionsValid = liveLtpAboveEma3_15 && liveLtpAboveEma5_5;
+                        const liveLtpBelowEma5_5 = ltp < sellCandidate.ema5_5;   // LTP < EMA5 (5min)
+                        const liveLtpAboveEma3_15 = ltp > sellCandidate.ema3_15; // LTP > EMA3 (15min)
+                        liveSellConditionsValid = liveLtpBelowEma5_5 && liveLtpAboveEma3_15;
                         
-                        console.log(`🔄 LIVE SELL VERIFICATION for ${symbol}:`);
+                        console.log(`🔄 ENHANCED SELL VERIFICATION for ${symbol}:`);
                         console.log(`   Live LTP: ₹${ltp}`);
-                        console.log(`   EMA3(15min): ₹${sellCandidate.ema3_15} | LTP > EMA3: ${liveLtpAboveEma3_15}`);
-                        console.log(`   EMA5(5min): ₹${sellCandidate.ema5_5} | LTP > EMA5: ${liveLtpAboveEma5_5}`);
-                        console.log(`   ✅ Live SELL conditions: ${liveSellConditionsValid}`);
+                        console.log(`   EMA5(5min): ₹${sellCandidate.ema5_5} | LTP < EMA5(5min): ${liveLtpBelowEma5_5}`);
+                        console.log(`   EMA3(15min): ₹${sellCandidate.ema3_15} | LTP > EMA3(15min): ${liveLtpAboveEma3_15}`);
+                        console.log(`   ✅ Enhanced SELL conditions: ${liveSellConditionsValid}`);
                     }
                     
-                    // Check BUY execution criteria (for BUY_SCAN or favorable buy conditions)
-                    if (// MARKET IMPACT CONDITIONS COMMENTED OUT FOR TESTING
-                        // buyImpact.impactedLevels > 0 && 
-                        // buyImpact.impactedLevels <= maxLevels && 
-                        // Math.abs(buyImpact.totalSlippage || 0) <= maxSlippage &&
+                    // 📊 ENHANCED EXECUTION CRITERIA: levels <= 2 AND slippage <= 0.08%
+                    // maxLevels and maxSlippage already declared above
+                    
+                    // 🔵 CHECK ENHANCED BUY EXECUTION CRITERIA
+                    if (buyImpact.impactedLevels > 0 && 
+                        buyImpact.impactedLevels <= maxLevels && 
+                        Math.abs(buyImpact.totalSlippage || 0) <= maxSlippage &&
                         !processedOrders.has(`${symbol}_MARKET_BUY`) &&
-                        (scanType === 'BUY_SCAN' ? liveBuyConditionsValid : true)) { // Add live verification for BUY_SCAN
+                        (scanType === 'BUY_SCAN' ? liveBuyConditionsValid : false)) { // Enhanced BUY verification required
                         
-                        console.log(`🚀 NEW MARKET BUY EXECUTION: ${symbol} (No active positions)`);
-                        // console.log(`   ✅ Levels: ${buyImpact.impactedLevels} <= ${maxLevels}`);
-                        // console.log(`   ✅ Slippage: ${Math.abs(buyImpact.totalSlippage || 0).toFixed(4)}% <= ${maxSlippage}%`);
+                        console.log(`🚀 ✅ ENHANCED BUY EXECUTION CRITERIA MET: ${symbol}`);
+                        console.log(`   ✅ Auto Trading: ${autoTradingActive}`);
+                        console.log(`   ✅ LTP < EMA3(15min): ${ltp} < ${buyCandidate.ema3_15}`);
+                        console.log(`   ✅ LTP > EMA5(5min): ${ltp} > ${buyCandidate.ema5_5}`);
+                        console.log(`   ✅ Levels: ${buyImpact.impactedLevels} <= ${maxLevels}`);
+                        console.log(`   ✅ Slippage: ${Math.abs(buyImpact.totalSlippage || 0).toFixed(4)}% <= ${maxSlippage}%`);
                         console.log(`   💰 Live LTP: ₹${ltp}`);
-                        console.log(`   ⚠️ MARKET IMPACT ANALYSIS DISABLED FOR TESTING`);
                         
                         // Mark as processed to avoid duplicates
                         processedOrders.add(`${symbol}_MARKET_BUY`);
                         
-                        // 🚫 REMOVED: Direct order execution to prevent duplicates
-                        // Orders will be executed via frontend routes instead
-                        console.log(`📋 BUY SIGNAL IDENTIFIED: ${symbol} @ ₹${ltp} - Ready for frontend execution`);
-                        
+                        // 🎯 EXECUTE BUY ORDER: Enhanced criteria verified
                         if (accessToken !== 'demo_token') {
-                            // Orders are now handled by frontend via /api/buy-order route
-                            console.log(`🎯 BUY order will be handled by frontend route`);
-                            orderExecuted = false; // No direct execution
+                            try {
+                                console.log(`🚀 EXECUTING ENHANCED BUY ORDER: ${symbol} @ ₹${ltp}`);
+                                const buyResult = await callSeparateBuyOrderRoute(accessToken, symbol, ltp);
+                                
+                                if (buyResult.success) {
+                                    console.log(`✅ ENHANCED BUY ORDER SUCCESS: ${buyResult.order_id} for ${symbol}`);
+                                    orderExecuted = true;
+                                    
+                                    // Process position after order placement
+                                    setTimeout(() => {
+                                        processNewPosition(accessToken, symbol, 'BUY');
+                                    }, 3000);
+                                    
+                                    // Broadcast order execution
+                                    if (global.broadcastLiveData) {
+                                        global.broadcastLiveData({
+                                            type: 'enhanced_buy_order_executed',
+                                            symbol: symbol,
+                                            ltp: ltp,
+                                            order_id: buyResult.order_id,
+                                            criteria: {
+                                                autoTrading: autoTradingActive,
+                                                ltpBelowEma3_15min: ltp < buyCandidate.ema3_15,
+                                                ltpAboveEma5_5min: ltp > buyCandidate.ema5_5,
+                                                levelsImpacted: buyImpact.impactedLevels,
+                                                slippage: Math.abs(buyImpact.totalSlippage || 0).toFixed(4) + '%'
+                                            },
+                                            timestamp: new Date().toISOString()
+                                        });
+                                    }
+                                } else {
+                                    console.log(`❌ Enhanced BUY order failed: ${buyResult.error}`);
+                                }
+                            } catch (error) {
+                                console.error(`❌ Error executing enhanced BUY order for ${symbol}:`, error.message);
+                            }
                         } else {
-                            console.log(`📋 DEMO MODE: BUY signal detected for ${symbol} @ ₹${ltp} - Frontend will handle execution`);
+                            console.log(`📋 DEMO MODE: Enhanced BUY criteria met for ${symbol} @ ₹${ltp}`);
                         }
                     }
                     
-                    // Check SELL execution criteria (for SELL_SCAN or favorable sell conditions)
+                    // 🔴 CHECK SELL EXECUTION CRITERIA (existing logic with enhanced levels)
                     if (!orderExecuted && 
-                        // MARKET IMPACT CONDITIONS COMMENTED OUT FOR TESTING
-                        // sellImpact.impactedLevels > 0 && 
-                        // sellImpact.impactedLevels <= maxLevels && 
-                        // Math.abs(sellImpact.totalSlippage || 0) <= maxSlippage &&
+                        sellImpact.impactedLevels > 0 && 
+                        sellImpact.impactedLevels <= maxLevels && 
+                        Math.abs(sellImpact.totalSlippage || 0) <= maxSlippage &&
                         !processedOrders.has(`${symbol}_MARKET_SELL`) &&
-                        (scanType === 'SELL_SCAN' ? liveSellConditionsValid : true)) { // Add live verification for SELL_SCAN
+                        (scanType === 'SELL_SCAN' ? liveSellConditionsValid : false)) {
                         
-                        console.log(`🚀 NEW MARKET SELL EXECUTION: ${symbol} (No active positions)`);
-                        // console.log(`   ✅ Levels: ${sellImpact.impactedLevels} <= ${maxLevels}`);
-                        // console.log(`   ✅ Slippage: ${Math.abs(sellImpact.totalSlippage || 0).toFixed(4)}% <= ${maxSlippage}%`);
+                        console.log(`🚀 ✅ ENHANCED SELL EXECUTION CRITERIA MET: ${symbol}`);
+                        console.log(`   ✅ Auto Trading: ${autoTradingActive}`);
+                        console.log(`   ✅ Levels: ${sellImpact.impactedLevels} <= ${maxLevels}`);
+                        console.log(`   ✅ Slippage: ${Math.abs(sellImpact.totalSlippage || 0).toFixed(4)}% <= ${maxSlippage}%`);
                         console.log(`   💰 Live LTP: ₹${ltp}`);
-                        console.log(`   ⚠️ MARKET IMPACT ANALYSIS DISABLED FOR TESTING`);
                         
                         // Mark as processed to avoid duplicates
                         processedOrders.add(`${symbol}_MARKET_SELL`);
                         
-                        // 🚫 REMOVED: Direct order execution to prevent duplicates  
-                        // Orders will be executed via frontend routes instead
-                        console.log(`📋 SELL SIGNAL IDENTIFIED: ${symbol} @ ₹${ltp} - Ready for frontend execution`);
-                        
+                        // 🎯 EXECUTE SELL ORDER: Enhanced criteria verified
                         if (accessToken !== 'demo_token') {
-                            // Orders are now handled by frontend via /api/sell-order route
-                            console.log(`🎯 SELL order will be handled by frontend route`);
-                            orderExecuted = false; // No direct execution
+                            try {
+                                console.log(`🚀 EXECUTING ENHANCED SELL ORDER: ${symbol} @ ₹${ltp}`);
+                                const sellResult = await callSeparateSellOrderRoute(accessToken, symbol, ltp);
+                                
+                                if (sellResult.success) {
+                                    console.log(`✅ ENHANCED SELL ORDER SUCCESS: ${sellResult.order_id} for ${symbol}`);
+                                    orderExecuted = true;
+                                    
+                                    // Process position after order placement
+                                    setTimeout(() => {
+                                        processNewPosition(accessToken, symbol, 'SELL');
+                                    }, 3000);
+                                    
+                                    // Broadcast order execution
+                                    if (global.broadcastLiveData) {
+                                        global.broadcastLiveData({
+                                            type: 'enhanced_sell_order_executed',
+                                            symbol: symbol,
+                                            ltp: ltp,
+                                            order_id: sellResult.order_id,
+                                            criteria: {
+                                                autoTrading: autoTradingActive,
+                                                levelsImpacted: sellImpact.impactedLevels,
+                                                slippage: Math.abs(sellImpact.totalSlippage || 0).toFixed(4) + '%'
+                                            },
+                                            timestamp: new Date().toISOString()
+                                        });
+                                    }
+                                } else {
+                                    console.log(`❌ Enhanced SELL order failed: ${sellResult.error}`);
+                                }
+                            } catch (error) {
+                                console.error(`❌ Error executing enhanced SELL order for ${symbol}:`, error.message);
+                            }
                         } else {
-                            console.log(`📋 DEMO MODE: SELL signal detected for ${symbol} @ ₹${ltp} - Frontend will handle execution`);
+                            console.log(`📋 DEMO MODE: Enhanced SELL criteria met for ${symbol} @ ₹${ltp}`);
                         }
                     }
                     
@@ -2618,8 +2676,7 @@ router.post('/low-price-scanners', async (req, res) => {
             };
         };
 
-        // 💰 Use global funds for quantity pre-calculation  
-        const globalFunds = getGlobalFunds();
+        // 💰 Use global funds for quantity pre-calculation (already declared earlier)
         let fundsCalculationError = null;
         
         if (globalFunds.error) {
@@ -2660,7 +2717,7 @@ router.post('/low-price-scanners', async (req, res) => {
         let conditionStats = {
             total_stocks: 0,
             buy_condition_passes: Array(12).fill(0),
-            sell_condition_passes: Array(11).fill(0),
+            sell_condition_passes: Array(12).fill(0),
             ema_1min_issues: [],
             orders_attempted: 0,
             orders_successful: 0,
@@ -2673,28 +2730,28 @@ router.post('/low-price-scanners', async (req, res) => {
             // BUY CONDITIONS:
             // Multi-timeframe conditions:
             // 1. EMA5 (5min) < EMA3 (15min)
-            // 2. +DI > ADX (on 5min) - modified from OR condition
+            // 2. (+DI > ADX) OR (ADX > 25 && -DI < 15) (on 5min) - enhanced momentum
             // 3. ADX > -DI (on 5min)
             // 4. MACD > Signal (5min)
             // 5. MACD > Signal (15min)
             // 6. MACD > 0 (5min)
-            // 7. MACD > 0 (1min) 
-            // 8. EMA9 > VWAP (1min)
-            // 9. Open < EMA3 (5min)
+            // 7. MACD > 0 (15min)
+            // 8. MACD > 0 (1min)
+            // 9. EMA9 > VWAP (1min)
             // 10. ADX > 25 (1min) - NEW
             // 11. MACD > Signal (1min) - NEW
             // 12. EMA3 > EMA5 (1min) - NEW
             
             const buyConditions = [
                 stock.ema5_5 < stock.ema3_15, // EMA5 (5min) < EMA3 (15min)
-                stock.plusDI5 > stock.adx5, // +DI > ADX on 5min only
+                (stock.plusDI5 > stock.adx5) || (stock.adx5 > 25 && stock.minusDI5 < 15), // (+DI > ADX) OR (ADX > 25 && -DI < 15) on 5min
                 stock.adx5 > stock.minusDI5, // ADX > -DI on 5min
                 stock.macd5 > stock.signal5, // MACD > Signal on 5min
                 stock.macd15 > stock.signal15, // MACD > Signal on 15min
                 stock.macd5 > 0, // MACD > 0 on 5min
+                stock.macd15 > 0, // MACD > 0 on 15min - NEW
                 stock.macd1 > 0, // MACD > 0 on 1min
                 stock.ema9_1 > stock.vwap1, // EMA9 > VWAP on 1min
-                stock.open5 < stock.ema3_5, // Open < EMA3 on 5min
                 stock.adx1 > 25, // ADX > 25 on 1min (NEW)
                 stock.macd1 > stock.signal1, // MACD > Signal on 1min (NEW)
                 stock.ema3_1 > stock.ema5_1 // EMA3 > EMA5 on 1min (NEW)
@@ -2723,28 +2780,28 @@ router.post('/low-price-scanners', async (req, res) => {
             // SELL CONDITIONS (exact opposite of buy conditions):
             // Multi-timeframe conditions:
             // 1. EMA5 (5min) > EMA3 (15min) - opposite of buy condition 1
-            // 2. -DI > ADX (5min) - opposite of buy condition 2 (+DI > ADX)
-            // 3. ADX < -DI (5min) - opposite of buy condition 3 (ADX > -DI)
+            // 2. (-DI > ADX) OR (ADX > 25 && +DI < 15) (5min) - enhanced momentum
+            // 3. ADX > +DI (5min) - opposite of buy condition 3
             // 4. MACD < Signal (5min) - opposite of buy condition 4
             // 5. MACD < Signal (15min) - opposite of buy condition 5
             // 6. MACD < 0 (5min) - opposite of buy condition 6
-            // 7. MACD < 0 (1min) - opposite of buy condition 7
-            // 8. EMA9 < VWAP (1min) - opposite of buy condition 8
-            // 9. Open > EMA3 (5min) - opposite of buy condition 9 (Open < EMA3)
-            // 10. ADX < 25 (1min) - opposite of buy condition 10 (ADX > 25)
+            // 7. MACD < 0 (15min) - opposite of buy condition 7
+            // 8. MACD < 0 (1min) - opposite of buy condition 8
+            // 9. EMA9 < VWAP (1min) - opposite of buy condition 9
+            // 10. ADX > 25 (1min) - same as buy (strong trend required)
             // 11. MACD < Signal (1min) - opposite of buy condition 11
             // 12. EMA3 < EMA5 (1min) - opposite of buy condition 12
             
             const sellConditions = [
                 stock.ema5_5 > stock.ema3_15, // EMA5 (5min) > EMA3 (15min)
-                stock.minusDI5 > stock.adx5, // -DI > ADX on 5min (opposite of +DI > ADX)
+                (stock.minusDI5 > stock.adx5) || (stock.adx5 > 25 && stock.plusDI5 < 15), // (-DI > ADX) OR (ADX > 25 && +DI < 15) on 5min
                 stock.adx5 > stock.plusDI5, // ADX > +DI on 5min (changed from ADX < -DI)
                 stock.macd5 < stock.signal5, // MACD < Signal on 5min
                 stock.macd15 < stock.signal15, // MACD < Signal on 15min
                 stock.macd5 < 0, // MACD < 0 on 5min
+                stock.macd15 < 0, // MACD < 0 on 15min - NEW
                 stock.macd1 < 0, // MACD < 0 on 1min
                 stock.ema9_1 < stock.vwap1, // EMA9 < VWAP on 1min
-                stock.open5 > stock.ema3_5, // Open > EMA3 on 5min (opposite of Open < EMA3)
                 stock.adx1 > 25, // ADX > 25 on 1min (changed from ADX < 25)
                 stock.macd1 < stock.signal1, // MACD < Signal on 1min
                 stock.ema3_1 < stock.ema5_1 // EMA3 < EMA5 on 1min
@@ -2843,10 +2900,9 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Print condition statistics
         console.log('🔍 CONDITION ANALYSIS:');
         const conditionLabels = [
-            'EMA5 (5min) < EMA3 (15min)', '+DI > ADX (5min)', 'ADX > -DI (5min)', 
-            'MACD > Signal (5min)', 'MACD > Signal (15min)', 'MACD > 0 (5min)', 'MACD > 0 (1min)', 
-            'EMA9 > VWAP (1min)', 'Open < EMA3 (5min)', 'ADX > 25 (1min)', 'MACD > Signal (1min)', 
-            'EMA3 > EMA5 (1min)'
+            'EMA5 (5min) < EMA3 (15min)', '(+DI > ADX) OR (ADX > 25 && -DI < 15) (5min)', 'ADX > -DI (5min)', 
+            'MACD > Signal (5min)', 'MACD > Signal (15min)', 'MACD > 0 (5min)', 'MACD > 0 (15min)', 'MACD > 0 (1min)', 
+            'EMA9 > VWAP (1min)', 'ADX > 25 (1min)', 'MACD > Signal (1min)', 'EMA3 > EMA5 (1min)'
         ];
        
     
@@ -2861,8 +2917,42 @@ router.post('/low-price-scanners', async (req, res) => {
         currentSellStocks = sellStocks;
         lastScanTimestamp = new Date().toISOString();
         
-        // NO SUBSCRIPTION CALL - autoSubscribeToResults() removed
-        console.log(`✅ SCAN COMPLETE - Direct execution mode (no subscription)`);
+        // ✅ RE-ENABLED: Auto-subscription to manage unsubscribing old symbols
+        console.log(`🔄 Managing subscriptions for ${buyStocks.length} buy + ${sellStocks.length} sell signals...`);
+        
+        // ✅ FORCE CLEANUP: If no signals, ensure complete cleanup
+        if (buyStocks.length === 0 && sellStocks.length === 0 && currentlySubscribed.size > 0) {
+            console.log('🧹 FORCE CLEANUP: No signals detected, clearing all subscriptions immediately');
+            console.log(`   - Current subscriptions: ${currentlySubscribed.size}`);
+            console.log(`   - Ticker exists: ${globalTicker ? 'YES' : 'NO'}`);
+            try {
+                const allTokens = Array.from(currentlySubscribed);
+                console.log(`   - Tokens to clear: [${allTokens.join(', ')}]`);
+                
+                if (globalTicker && allTokens.length > 0) {
+                    console.log('   - Calling globalTicker.unsubscribe()...');
+                    globalTicker.unsubscribe(allTokens);
+                } else if (!globalTicker) {
+                    console.log('   - No ticker connection, clearing tracking only');
+                } else {
+                    console.log('   - No tokens to unsubscribe from ticker');
+                }
+                
+                currentlySubscribed.clear();
+                scanTypeTracker.clear();
+                console.log(`✅ Force cleared ${allTokens.length} subscriptions`);
+                console.log(`   - Remaining subscriptions: ${currentlySubscribed.size}`);
+                broadcastSubscriptionUpdate();
+            } catch (error) {
+                console.error('❌ Error in force cleanup:', error);
+            }
+        } else {
+            console.log(`🔍 No force cleanup needed: buyStocks=${buyStocks.length}, sellStocks=${sellStocks.length}, subscriptions=${currentlySubscribed.size}`);
+        }
+        
+        await autoSubscribeToResults(buyStocks, sellStocks, req.body.access_token);
+        
+        console.log(`✅ SCAN COMPLETE - Direct execution with subscription management`);
 
         // 🎯 POSITION & ORDER CHECK: Check after every scan (MONITORING ONLY)
         console.log(`🔍 Access token check: ${global.lastAccessToken ? 'Available' : 'Missing'}, Token: ${global.lastAccessToken || 'undefined'}`);
@@ -3133,6 +3223,10 @@ router.post('/subscribe-signal-stocks', async (req, res) => {
         currentBuyStocks = signalStocksByType.buySignals;
         currentSellStocks = signalStocksByType.sellSignals;
         lastScanTimestamp = new Date().toISOString();
+        
+        // ✅ RE-ENABLED: Auto-subscription management for manual signal subscriptions
+        console.log(`🔄 Managing subscriptions for ${signalStocksByType.buySignals.length} buy + ${signalStocksByType.sellSignals.length} sell signals...`);
+        await autoSubscribeToResults(signalStocksByType.buySignals, signalStocksByType.sellSignals, req.body.access_token);
         
         console.log('🎯 Signal stocks subscription completed successfully');
         console.log(`   - Buy signals: ${signalStocksByType.buySignals.length}`);
@@ -4529,6 +4623,46 @@ router.post('/subscribe', async (req, res) => {
             success: false,
             error: error.message,
             message: 'Failed to subscribe to symbols'
+        });
+    }
+});
+
+// Clear all subscriptions (manual cleanup)
+router.post('/clear-all-subscriptions', async (req, res) => {
+    try {
+        console.log('🧹 MANUAL CLEAR: Clearing all subscriptions...');
+        
+        const clearedCount = currentlySubscribed.size;
+        
+        if (globalTicker && currentlySubscribed.size > 0) {
+            const allTokens = Array.from(currentlySubscribed);
+            globalTicker.unsubscribe(allTokens);
+            console.log(`🔴 Unsubscribed from ${allTokens.length} tokens`);
+        }
+        
+        // Clear all tracking
+        currentlySubscribed.clear();
+        scanTypeTracker.clear();
+        
+        // Clear global storage
+        currentBuyStocks = [];
+        currentSellStocks = [];
+        
+        console.log('✅ All subscriptions cleared');
+        broadcastSubscriptionUpdate();
+        
+        res.json({
+            success: true,
+            message: `Cleared ${clearedCount} subscriptions`,
+            cleared_count: clearedCount,
+            remaining_subscriptions: currentlySubscribed.size
+        });
+        
+    } catch (error) {
+        console.error('❌ Error clearing all subscriptions:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message
         });
     }
 });
