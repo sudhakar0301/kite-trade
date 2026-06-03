@@ -759,6 +759,7 @@ const SubscribedStockTracker = ({
     console.log('🔍 📊 SYMBOL DETECTION EFFECT TRIGGERED');
     const subscribedStocks = getSubscribedStocks();
     const allAvailableSymbols = getAllAvailableSymbols();
+    const newSymbolsSet = new Set(allAvailableSymbols);
     console.log('🔍 Currently subscribed stocks:', subscribedStocks);
     console.log('🔍 All available symbols:', allAvailableSymbols);
     
@@ -814,7 +815,6 @@ const SubscribedStockTracker = ({
     }
     
     // Update previous symbols set
-    const newSymbolsSet = new Set(allAvailableSymbols);
     console.log('🔍 Updating previousSymbolsRef from:', Array.from(previousSymbolsRef.current), 'to:', Array.from(newSymbolsSet));
     previousSymbolsRef.current = newSymbolsSet;
     

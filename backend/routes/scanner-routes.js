@@ -91,6 +91,223 @@ function getGlobalFunds() {
     };
 }
 
+    // LOW PRICE CROSSOVER ROUTE: EMA3|1 crosses above EMA3|5
+    router.post('/stocks-crossover', async (req, res) => {
+        try {
+            console.log('🚀 Processing CROSSOVER scanner request (EMA3|1 crosses above EMA3|5)...');
+
+            // Keep global funds fresh to match low-price scanner behavior
+            await updateGlobalFunds(req.body.access_token);
+
+            const crossoverPayload = buildLowPriceScannerPayload([
+                { "left": "EMA3|1", "operation": "crosses_above", "right": "EMA3|5" }
+            ]);
+
+            const scannerResult = await makeScannorCall(crossoverPayload, 'low-price-crossover-scan', req.body);
+            const allStocks = extractTradingViewStocks(scannerResult);
+            const enrichedStocks = allStocks.map(enrichLowPriceStockData);
+
+            // Final guard condition in app code
+            const crossoverStocks = enrichedStocks.filter(stock => stock.ema3_1 > stock.ema3_5);
+
+            currentBuyStocks = crossoverStocks;
+            currentSellStocks = [];
+            lastScanTimestamp = new Date().toISOString();
+
+            res.json({
+                success: true,
+                timestamp: new Date().toISOString(),
+                scanType: 'low-price-crossover',
+                condition: 'ema3_1 crosses above ema3_5',
+                totalScanned: enrichedStocks.length,
+                crossoverCount: crossoverStocks.length,
+                crossoverStocks: crossoverStocks
+            });
+        } catch (error) {
+            console.error('❌ Error in stocks-crossover route:', error);
+            res.json({
+                success: false,
+                error: error.message,
+                timestamp: new Date().toISOString(),
+                crossoverStocks: []
+            });
+        }
+    });
+
+    // LOW PRICE CROSSDOWN ROUTE: EMA3|1 crosses below EMA3|5
+    router.post('/stocks-crossdown', async (req, res) => {
+        try {
+            console.log('🚀 Processing CROSSDOWN scanner request (EMA3|1 crosses below EMA3|5)...');
+
+            // Keep global funds fresh to match low-price scanner behavior
+            await updateGlobalFunds(req.body.access_token);
+
+            const crossdownPayload = buildLowPriceScannerPayload([
+                { "left": "EMA3|1", "operation": "crosses_below", "right": "EMA3|5" }
+            ]);
+
+            const scannerResult = await makeScannorCall(crossdownPayload, 'low-price-crossdown-scan', req.body);
+            const allStocks = extractTradingViewStocks(scannerResult);
+            const enrichedStocks = allStocks.map(enrichLowPriceStockData);
+
+            // Final guard condition in app code
+            const crossdownStocks = enrichedStocks.filter(stock => stock.ema3_1 < stock.ema3_5);
+
+            currentBuyStocks = [];
+            currentSellStocks = crossdownStocks;
+            lastScanTimestamp = new Date().toISOString();
+
+            res.json({
+                success: true,
+                timestamp: new Date().toISOString(),
+                scanType: 'low-price-crossdown',
+                condition: 'ema3_1 crosses below ema3_5',
+                totalScanned: enrichedStocks.length,
+                crossdownCount: crossdownStocks.length,
+                crossdownStocks: crossdownStocks
+            });
+        } catch (error) {
+            console.error('❌ Error in stocks-crossdown route:', error);
+            res.json({
+                success: false,
+                error: error.message,
+                timestamp: new Date().toISOString(),
+                crossdownStocks: []
+            });
+        }
+    });
+
+
+
+    // Shared scanner config/helpers reused by low-price and crossover/crossdown routes
+    function getLowPriceScannerCommonSettings() {
+        return {
+            "ignore_unknown_fields": false,
+            "options": { "lang": "en" },
+            "range": [0, 500],
+            "sort": { "sortBy": "market_cap_basic", "sortOrder": "asc" },
+            "symbols": { "symbolset": ["SYML:NSE;CNX500"] },
+            "markets": ["india"],
+            "filter2": {
+                "operator": "and",
+                "operands": [
+                    {
+                        "operation": {
+                            "operator": "or",
+                            "operands": [
+                                {
+                                    "operation": {
+                                        "operator": "and",
+                                        "operands": [
+                                            {
+                                                "expression": {
+                                                    "left": "type",
+                                                    "operation": "equal",
+                                                    "right": "stock"
+                                                }
+                                            },
+                                            {
+                                                "expression": {
+                                                    "left": "typespecs",
+                                                    "operation": "has",
+                                                    "right": ["common"]
+                                                }
+                                            }
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "expression": {
+                            "left": "typespecs",
+                            "operation": "has_none_of",
+                            "right": ["pre-ipo"]
+                        }
+                    }
+                ]
+            }
+        };
+    }
+
+    function getLowPriceScannerCommonColumns() {
+        return [
+            "close", "open|60", "EMA5|60", "VWAP|60", "open|15", "MACD.macd|15",
+            "MACD.signal|15", "EMA5|15", "EMA9|15", "MACD.macd|5", "MACD.signal|5",
+            "ADX|5", "MACD.macd|1", "MACD.signal|1", "ADX+DI|1", "ADX-DI|1",
+            "EMA5|5", "EMA9|5", "ADX+DI|5", "ADX-DI|5", "ADX|1", "open|5",
+            "EMA5|1", "EMA9|1", "VWAP|5", "BB.basis|1", "VWAP|1", "BB.upper|5", "BB.lower|5",
+            "low|15", "high|15", "EMA3|15", "EMA3|5", "ADX|15", "ADX+DI|15", "ADX-DI|15", "EMA3|1"
+        ];
+    }
+
+    function buildLowPriceBaseFilters() {
+        return [
+            { "left": "is_blacklisted", "operation": "equal", "right": false },
+            { "left": "close|1", "operation": "eless", "right": 4000 },
+            { "left": "average_volume_10d_calc", "operation": "greater", "right": 500000 }
+        ];
+    }
+
+    function buildLowPriceScannerPayload(extraFilters = []) {
+        return {
+            "columns": getLowPriceScannerCommonColumns(),
+            "filter": [...buildLowPriceBaseFilters(), ...extraFilters],
+            ...getLowPriceScannerCommonSettings()
+        };
+    }
+
+    function extractTradingViewStocks(scannerResult) {
+        return scannerResult.success && scannerResult.data && scannerResult.data.data
+            ? scannerResult.data.data.map(stock => ({ s: stock.s, d: stock.d }))
+            : [];
+    }
+
+    function enrichLowPriceStockData(stock) {
+        const symbol = stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : null;
+        const token = symbol && symbolMappings.symbolMappings[symbol] ? symbolMappings.symbolMappings[symbol] : null;
+
+        const data = stock.d || [];
+        return {
+            symbol: symbol,
+            token: parseInt(token) || null,
+            instrument_token: parseInt(token) || null,
+            s: stock.s,
+            d: stock.d,
+            ltp: data[0] || 0,
+            open60: data[1] || 0,
+            ema5_60: data[2] || 0,
+            vwap60: data[3] || 0,
+            open15: data[4] || 0,
+            macd15: data[5] || 0,
+            signal15: data[6] || 0,
+            ema5_15: data[7] || 0,
+            ema9_15: data[8] || 0,
+            macd5: data[9] || 0,
+            signal5: data[10] || 0,
+            adx5: data[11] || 0,
+            macd1: data[12] || 0,
+            signal1: data[13] || 0,
+            plusDI1: data[14] || 0,
+            minusDI1: data[15] || 0,
+            ema5_5: data[16] || 0,
+            ema9_5: data[17] || 0,
+            plusDI5: data[18] || 0,
+            minusDI5: data[19] || 0,
+            adx1: data[20] || 0,
+            open5: data[21] || 0,
+            ema5_1: data[22] || 0,
+            ema9_1: data[23] || 0,
+            vwap1: data[26] || 0,
+            ema3_15: data[31] || 0,
+            ema3_5: data[32] || 0,
+            adx15: data[33] || 0,
+            plusDI15: data[34] || 0,
+            minusDI15: data[35] || 0,
+            ema3_1: data[36] || 0
+        };
+    }
 
 // Simple token to symbol mapping
 function getSymbolFromToken(token) {
@@ -725,7 +942,7 @@ function enhanceDepthTo20Levels(existingDepth, lastPrice, scanType = null, apply
         // ONLY apply market impact calculations if this is the live tracker symbol
         if (applyLiveTrackerMasking) {
             console.log('🎯 BACKEND: MASKING ACTIVE - Calculating market impact for ₹490,000 order');
-            const impact = calculateMarketImpact(result, lastPrice, 'BUY_SCAN'); // Use BUY_SCAN for live display
+            const impact = calculateMarketImpact(result, lastPrice, 'BUY_SCAN', globalUsableFunds); // Use BUY_SCAN for live display
             result.marketImpact = impact;
             result.liveTrackerMasking = true;
 
@@ -847,7 +1064,7 @@ function enhanceDepthTo20Levels(existingDepth, lastPrice, scanType = null, apply
     // ONLY calculate market impact if this is the live tracker symbol
     if (applyLiveTrackerMasking) {
         console.log('🎯 BACKEND: EXISTING DEPTH MASKING - Calculating market impact for existing depth');
-        const impact = calculateMarketImpact(result, lastPrice, 'BUY_SCAN');
+        const impact = calculateMarketImpact(result, lastPrice, 'BUY_SCAN', globalUsableFunds);
         result.marketImpact = impact;
         result.liveTrackerMasking = true;
 
@@ -1450,6 +1667,7 @@ async function callSeparateBuyOrderRoute(accessToken, symbol, ltp, requestedQuan
             quantity: finalQuantity,
             product: productType,
             order_type: 'MARKET',
+            market_protection: -1,
             validity: 'DAY'
         };
         
@@ -1527,6 +1745,7 @@ async function callSeparateSellOrderRoute(accessToken, symbol, ltp, requestedQua
             price: roundedPrice,
             product: productType,
             order_type: 'MARKET',
+            market_protection: -1,
             validity: 'DAY'
         };
         
@@ -2288,8 +2507,8 @@ function setupTickerEventHandlers() {
                     }
                 });
                 
-                const buyImpact = calculateMarketImpact(fullDepth, tick.last_price, 'BUY_SCAN');
-                const sellImpact = calculateMarketImpact(fullDepth, tick.last_price, 'SELL_SCAN');
+                const buyImpact = calculateMarketImpact(fullDepth, tick.last_price, 'BUY_SCAN', globalUsableFunds);
+                const sellImpact = calculateMarketImpact(fullDepth, tick.last_price, 'SELL_SCAN', globalUsableFunds);
                 
                 // Create structured tick data with 20-LEVEL DEPTH + RAW TICK DATA
                 const structuredTick = {
@@ -2374,8 +2593,8 @@ function setupTickerEventHandlers() {
                     
                     // Enhance to 20 levels for ALL symbols (no masking, just depth extension)
                     const fullDepth = enhanceDepthTo20Levels(tick.depth, tick.last_price, scanType, false);
-                    const buyImpact = calculateMarketImpact(fullDepth, tick.last_price, 'BUY_SCAN');
-                    const sellImpact = calculateMarketImpact(fullDepth, tick.last_price, 'SELL_SCAN');
+                    const buyImpact = calculateMarketImpact(fullDepth, tick.last_price, 'BUY_SCAN', globalUsableFunds);
+                    const sellImpact = calculateMarketImpact(fullDepth, tick.last_price, 'SELL_SCAN', globalUsableFunds);
                     
                     return {
                         symbol: symbol,
@@ -2476,41 +2695,7 @@ router.post('/low-price-scanners', async (req, res) => {
         console.log(`📊 Market status: ${isMarketOpen ? 'OPEN' : 'CLOSED'} (Weekend: ${isWeekend})`);
         console.log(`📊 15min candle minute position: ${candleMinute} (0-14 range)`);
         
-        // Block scanning during last 2 minutes of candle (minutes 13-14) - Allow first minute for low price
-        // BUT ONLY during market hours
-        const isLastTwoMinutes = candleMinute >= 13;
-        const shouldApplyCandleBlocks = isMarketOpen; // Only block during market hours
-        
-        if (shouldApplyCandleBlocks && isLastTwoMinutes) {
-            console.log('⏸️ LOW PRICE SCAN BLOCKED: Last 2 minutes of 15min candle (minutes 13-14) - Market hours only');
-            
-            // Unsubscribe all tokens during blocked period
-            if (globalTicker && currentlySubscribed.size > 0) {
-                console.log(`📤 Unsubscribing ${currentlySubscribed.size} tokens during blocked period`);
-                const tokensArray = Array.from(currentlySubscribed);
-                globalTicker.unsubscribe(tokensArray);
-                currentlySubscribed.clear();
-                console.log('✅ All subscriptions cleared during last 2 minutes block');
-                broadcastSubscriptionUpdate();
-            }
-            
-            return res.json({
-                success: false,
-                message: 'Low price scanning blocked during last 2 minutes of 15-minute candle',
-                reason: 'last_two_minutes_block',
-                candlePosition: candleMinute,
-                nextScanAllowedAt: `next candle minute 0`,
-                timestamp: new Date().toISOString(),
-                buyStocks: [],
-                sellStocks: []
-            });
-        }
-        
-        if (!shouldApplyCandleBlocks && isLastTwoMinutes) {
-            console.log('✅ SCAN ALLOWED: Last 2 minutes block bypassed - Market closed');
-        }
-        
-        console.log(`✅ LOW PRICE SCAN ALLOWED: 15min candle minute ${candleMinute} (safe window: 0-12)`);
+        console.log(`✅ LOW PRICE SCAN ALLOWED: 15min candle minute ${candleMinute} (no blocking window)`);
         
         // Set autoTrade from request body
         if (req.body.autoTrade !== undefined) {
@@ -2539,77 +2724,7 @@ router.post('/low-price-scanners', async (req, res) => {
         const globalFunds = getGlobalFunds();
         console.log(`💰 Using global funds: Available=₹${globalFunds.availableFunds.toLocaleString('en-IN')}, Leveraged=₹${globalFunds.leverageFunds.toLocaleString('en-IN')}, Usable=₹${globalFunds.usableFunds.toLocaleString('en-IN')}`);
 
-        // Common settings for NSE 500 stocks  
-        const commonSettings = {
-            "ignore_unknown_fields": false,
-            "options": { "lang": "en" },
-            "range": [0, 500],
-            "sort": { "sortBy": "market_cap_basic", "sortOrder": "asc" },
-            "symbols": { "symbolset": ["SYML:NSE;CNX500"] },
-            "markets": ["india"],
-            "filter2": {
-                "operator": "and",
-                "operands": [
-                    {
-                        "operation": {
-                            "operator": "or",
-                            "operands": [
-                                {
-                                    "operation": {
-                                        "operator": "and",
-                                        "operands": [
-                                            {
-                                                "expression": {
-                                                    "left": "type",
-                                                    "operation": "equal",
-                                                    "right": "stock"
-                                                }
-                                            },
-                                            {
-                                                "expression": {
-                                                    "left": "typespecs",
-                                                    "operation": "has",
-                                                    "right": ["common"]
-                                                }
-                                            }
-                                        ]
-                                    }
-                                }
-                            ]
-                        }
-                    },
-                    {
-                        "expression": {
-                            "left": "typespecs",
-                            "operation": "has_none_of",
-                            "right": ["pre-ipo"]
-                        }
-                    }
-                ]
-            }
-        };
-
-        // Use same columns as all-scanners route to get all technical indicators
-        const commonColumns = [
-            "close", "open|60", "EMA5|60", "VWAP|60", "open|15", "MACD.macd|15", 
-            "MACD.signal|15", "EMA5|15", "EMA9|15", "MACD.macd|5", "MACD.signal|5", 
-            "ADX|5", "MACD.macd|1", "MACD.signal|1", "ADX+DI|1", "ADX-DI|1", 
-            "EMA5|5", "EMA9|5", "ADX+DI|5", "ADX-DI|5", "ADX|1", "open|5", 
-            "EMA5|1", "EMA9|1", "VWAP|5", "BB.basis|1", "VWAP|1", "BB.upper|5", "BB.lower|5",
-            "low|15", "high|15", "EMA3|15", "EMA3|5", "ADX|15", "ADX+DI|15", "ADX-DI|15", "EMA3|1"
-        ];
-
-        // Get ALL low-price stocks with full technical data
-        const stocksPayload = {
-            "columns": commonColumns,
-            "filter": [
-                { "left": "is_blacklisted", "operation": "equal", "right": false },
-                // ONLY FILTER: close <= 4000
-                { "left": "close|1", "operation": "eless", "right": 4000 },
-                { "left": "average_volume_10d_calc", "operation": "greater", "right": 500000 } // Ensure some volume
-            ],
-            ...commonSettings
-        };
+        const stocksPayload = buildLowPriceScannerPayload();
 
         // Execute single scanner call
         const stocksResult = await makeScannorCall(stocksPayload, 'low-price-stocks-scan', req.body);
@@ -2618,63 +2733,9 @@ router.post('/low-price-scanners', async (req, res) => {
         console.log(`⚡ Low price stocks scanner completed in ${duration}ms`);
 
         // Extract and transform data from TradingView response
-        const allStocks = stocksResult.success && stocksResult.data && stocksResult.data.data ? 
-            stocksResult.data.data.map(stock => ({ 
-                s: stock.s, // Symbol
-                d: stock.d  // Data array
-            })) : [];
+        const allStocks = extractTradingViewStocks(stocksResult);
 
         console.log(`📊 Low Price Scanner Results: ${allStocks.length} stocks (≤₹4000)`);
-
-        // Helper function to enrich stock data with technical indicators
-        const enrichStockData = (stock) => {
-            const symbol = stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : null;
-            const token = symbol && symbolMappings.symbolMappings[symbol] ? 
-                symbolMappings.symbolMappings[symbol] : null;
-            
-            const data = stock.d || [];
-            return {
-                symbol: symbol,
-                token: parseInt(token) || null,
-                instrument_token: parseInt(token) || null,
-                s: stock.s,  // Keep original for reference
-                d: stock.d,  // Keep original data array
-                
-                // Technical indicators from data array (same mapping as all-scanners)  
-                ltp: data[0] || 0, // close
-                open60: data[1] || 0, // open|60
-                ema5_60: data[2] || 0, // EMA5|60
-                vwap60: data[3] || 0, // VWAP|60
-                open15: data[4] || 0, // open|15
-                macd15: data[5] || 0, // MACD.macd|15
-                signal15: data[6] || 0, // MACD.signal|15
-                ema5_15: data[7] || 0, // EMA5|15
-                ema9_15: data[8] || 0, // EMA9|15
-                macd5: data[9] || 0, // MACD.macd|5
-                signal5: data[10] || 0, // MACD.signal|5
-                adx5: data[11] || 0, // ADX|5
-                macd1: data[12] || 0, // MACD.macd|1
-                signal1: data[13] || 0, // MACD.signal|1
-                plusDI1: data[14] || 0, // ADX+DI|1
-                minusDI1: data[15] || 0, // ADX-DI|1
-                ema5_5: data[16] || 0, // EMA5|5  
-                ema9_5: data[17] || 0, // EMA9|5
-                plusDI5: data[18] || 0, // ADX+DI|5
-                minusDI5: data[19] || 0, // ADX-DI|5
-                adx1: data[20] || 0, // ADX|1
-                open5: data[21] || 0, // open|5
-                ema5_1: data[22] || 0, // EMA5|1 - position 22 ✓
-                ema9_1: data[23] || 0, // EMA9|1 - position 23 ✓
-                vwap1: data[26] || 0, // VWAP|1 - position 26 ✓
-                // ... more fields from columns
-                ema3_15: data[31] || 0, // EMA3|15 - position 31 ✓
-                ema3_5: data[32] || 0, // EMA3|5 - position 32 ✓
-                adx15: data[33] || 0, // ADX|15 - position 33 ✓
-                plusDI15: data[34] || 0, // ADX+DI|15 - position 34 ✓
-                minusDI15: data[35] || 0, // ADX-DI|15 - position 35 ✓
-                ema3_1: data[36] || 0 // EMA3|1 - position 36 ✓
-            };
-        };
 
         // 💰 Use global funds for quantity pre-calculation (already declared earlier)
         let fundsCalculationError = null;
@@ -2693,12 +2754,41 @@ router.post('/low-price-scanners', async (req, res) => {
         // Enhanced scanner processing with pre-calculated quantities
         
         // Enrich all stocks with technical data
-        const enrichedStocks = allStocks.map(enrichStockData);
+        const enrichedStocks = allStocks.map(enrichLowPriceStockData);
+
+        // Also run crossover/crossdown scans when low-price scan is called
+        const crossoverPayload = buildLowPriceScannerPayload([
+            { "left": "EMA3|1", "operation": "crosses_above", "right": "EMA3|5" }
+        ]);
+        const crossdownPayload = buildLowPriceScannerPayload([
+            { "left": "EMA3|1", "operation": "crosses_below", "right": "EMA3|5" }
+        ]);
+
+        const [crossoverResult, crossdownResult] = await Promise.all([
+            makeScannorCall(crossoverPayload, 'low-price-crossover-scan', req.body),
+            makeScannorCall(crossdownPayload, 'low-price-crossdown-scan', req.body)
+        ]);
+
+        const crossoverStocks = extractTradingViewStocks(crossoverResult)
+            .map(enrichLowPriceStockData)
+            .filter(stock => stock.ema3_1 > stock.ema3_5);
+
+        const crossdownStocks = extractTradingViewStocks(crossdownResult)
+            .map(enrichLowPriceStockData)
+            .filter(stock => stock.ema3_1 < stock.ema3_5);
+
+        const crossoverSymbols = new Set(crossoverStocks.map(stock => stock.symbol));
+        const crossdownSymbols = new Set(crossdownStocks.map(stock => stock.symbol));
+
+        console.log(`📈 Crossover scan results: ${crossoverStocks.length}`);
+        console.log(`📉 Crossdown scan results: ${crossdownStocks.length}`);
 
     
         // Classify stocks into buy/sell based on conditions
         const buyStocks = [];
         const sellStocks = [];
+        const buyWithoutCrossoverStocks = [];
+        const sellWithoutCrossdownStocks = [];
         
         // Clear previous candidates for fresh scan
         buyCandidates.clear();
@@ -2732,28 +2822,25 @@ router.post('/low-price-scanners', async (req, res) => {
             // 1. EMA5 (5min) < EMA3 (15min)
             // 2. (+DI > ADX) OR (ADX > 25 && -DI < 15) (on 5min) - enhanced momentum
             // 3. ADX > -DI (on 5min)
-            // 4. MACD > Signal (5min)
-            // 5. MACD > Signal (15min)
-            // 6. MACD > 0 (5min)
-            // 7. MACD > 0 (15min)
-            // 8. MACD > 0 (1min)
-            // 9. EMA9 > VWAP (1min)
-            // 10. ADX > 25 (1min) - NEW
-            // 11. MACD > Signal (1min) - NEW
-            // 12. EMA3 > EMA5 (1min) - NEW
+            // 4. MACD > Signal (15min)
+            // 5. MACD > 0 (5min)
+            // 6. MACD > 0 (15min)
+            // 7. MACD > 0 (1min)
+            // 8. EMA9 > VWAP (1min)
+            // 9. ADX > 25 (1min) - NEW
+            // 10. MACD > Signal (1min) - NEW
+            // 11. EMA3 > EMA5 (1min) - NEW
             
             const buyConditions = [
                 stock.ema5_5 < stock.ema3_15, // EMA5 (5min) < EMA3 (15min)
-                (stock.plusDI5 > stock.adx5) || (stock.adx5 > 25 && stock.minusDI5 < 15), // (+DI > ADX) OR (ADX > 25 && -DI < 15) on 5min
+                stock.plusDI5 > 25 && stock.adx5 > 25 && stock.minusDI5 < 15, // +DI5 > 25 AND ADX5 > 25 AND -DI5 < 15 on 5min
                 stock.adx5 > stock.minusDI5, // ADX > -DI on 5min
-                stock.macd5 > stock.signal5, // MACD > Signal on 5min
                 stock.macd15 > stock.signal15, // MACD > Signal on 15min
                 stock.macd5 > 0, // MACD > 0 on 5min
                 stock.macd15 > 0, // MACD > 0 on 15min - NEW
                 stock.macd1 > 0, // MACD > 0 on 1min
                 stock.ema9_1 > stock.vwap1, // EMA9 > VWAP on 1min
                 stock.adx1 > 25, // ADX > 25 on 1min (NEW)
-                stock.macd1 > stock.signal1, // MACD > Signal on 1min (NEW)
                 stock.ema3_1 > stock.ema5_1 // EMA3 > EMA5 on 1min (NEW)
             ];
 
@@ -2780,30 +2867,27 @@ router.post('/low-price-scanners', async (req, res) => {
             // SELL CONDITIONS (exact opposite of buy conditions):
             // Multi-timeframe conditions:
             // 1. EMA5 (5min) > EMA3 (15min) - opposite of buy condition 1
-            // 2. (-DI > ADX) OR (ADX > 25 && +DI < 15) (5min) - enhanced momentum
+            // 2. -DI5 > 25 AND ADX5 > 25 AND +DI5 < 15 (5min) - strict bearish momentum
             // 3. ADX > +DI (5min) - opposite of buy condition 3
-            // 4. MACD < Signal (5min) - opposite of buy condition 4
-            // 5. MACD < Signal (15min) - opposite of buy condition 5
-            // 6. MACD < 0 (5min) - opposite of buy condition 6
-            // 7. MACD < 0 (15min) - opposite of buy condition 7
-            // 8. MACD < 0 (1min) - opposite of buy condition 8
-            // 9. EMA9 < VWAP (1min) - opposite of buy condition 9
-            // 10. ADX > 25 (1min) - same as buy (strong trend required)
-            // 11. MACD < Signal (1min) - opposite of buy condition 11
-            // 12. EMA3 < EMA5 (1min) - opposite of buy condition 12
+            // 4. MACD < Signal (15min) - opposite of buy condition 5
+            // 5. MACD < 0 (5min) - opposite of buy condition 6
+            // 6. MACD < 0 (15min) - opposite of buy condition 7
+            // 7. MACD < 0 (1min) - opposite of buy condition 8
+            // 8. EMA9 < VWAP (1min) - opposite of buy condition 9
+            // 9. ADX > 25 (1min) - same as buy (strong trend required)
+            // 10. MACD < Signal (1min) - opposite of buy condition 11
+            // 11. EMA3 < EMA5 (1min) - opposite of buy condition 12
             
             const sellConditions = [
                 stock.ema5_5 > stock.ema3_15, // EMA5 (5min) > EMA3 (15min)
-                (stock.minusDI5 > stock.adx5) || (stock.adx5 > 25 && stock.plusDI5 < 15), // (-DI > ADX) OR (ADX > 25 && +DI < 15) on 5min
+                stock.minusDI5 > 25 && stock.adx5 > 25 && stock.plusDI5 < 15, // -DI5 > 25 AND ADX5 > 25 AND +DI5 < 15 on 5min
                 stock.adx5 > stock.plusDI5, // ADX > +DI on 5min (changed from ADX < -DI)
-                stock.macd5 < stock.signal5, // MACD < Signal on 5min
                 stock.macd15 < stock.signal15, // MACD < Signal on 15min
                 stock.macd5 < 0, // MACD < 0 on 5min
                 stock.macd15 < 0, // MACD < 0 on 15min - NEW
                 stock.macd1 < 0, // MACD < 0 on 1min
                 stock.ema9_1 < stock.vwap1, // EMA9 < VWAP on 1min
                 stock.adx1 > 25, // ADX > 25 on 1min (changed from ADX < 25)
-                stock.macd1 < stock.signal1, // MACD < Signal on 1min
                 stock.ema3_1 < stock.ema5_1 // EMA3 < EMA5 on 1min
             ];
             
@@ -2811,7 +2895,7 @@ router.post('/low-price-scanners', async (req, res) => {
             const isBuySignal = buyConditions.every(condition => condition);
             const isSellSignal = sellConditions.every(condition => condition);
             
-            if (isBuySignal) {
+            if (isBuySignal && crossoverSymbols.has(stock.symbol)) {
                 // 💰 Pre-calculate quantity based on global funds
                 let preCalculatedQuantity = 1; // Default testing quantity
                 let maxPossibleQuantity = 0;
@@ -2848,7 +2932,12 @@ router.post('/low-price-scanners', async (req, res) => {
                 
                 // NO LONGER STORING FOR TICK-BASED EXECUTION - Direct execution only
                 // buyCandidates.set() removed
-            } else if (isSellSignal) {
+            } else if (isBuySignal) {
+                // Buy signal that did not match crossover intersection
+                buyWithoutCrossoverStocks.push(stock);
+            }
+
+            if (isSellSignal && crossdownSymbols.has(stock.symbol)) {
                 // 💰 Pre-calculate quantity for SELL orders based on global funds
                 let preCalculatedQuantity = 1; // Default testing quantity
                 let maxPossibleQuantity = 0;
@@ -2894,6 +2983,9 @@ router.post('/low-price-scanners', async (req, res) => {
                 if (stock.orderExecuted !== undefined) {
                     conditionStats.orders_attempted++;
                 }
+            } else if (isSellSignal) {
+                // Sell signal that did not match crossdown intersection
+                sellWithoutCrossdownStocks.push(stock);
             }
             // If neither buy nor sell conditions are met, stock is ignored
         });
@@ -2990,6 +3082,40 @@ router.post('/low-price-scanners', async (req, res) => {
             token: symbolMappings.symbolMappings[stock.symbol] || null
         }));
 
+        const crossoverTableData = crossoverStocks.map(stock => ({
+            symbol: stock.symbol,
+            ltp: stock.ltp,
+            ema3_1: stock.ema3_1,
+            ema3_5: stock.ema3_5,
+            token: symbolMappings.symbolMappings[stock.symbol] || null
+        }));
+
+        const crossdownTableData = crossdownStocks.map(stock => ({
+            symbol: stock.symbol,
+            ltp: stock.ltp,
+            ema3_1: stock.ema3_1,
+            ema3_5: stock.ema3_5,
+            token: symbolMappings.symbolMappings[stock.symbol] || null
+        }));
+
+        const buyWithoutIntersectionTableData = buyWithoutCrossoverStocks.map(stock => ({
+            symbol: stock.symbol,
+            ltp: stock.ltp,
+            ema3_5: stock.ema3_5,
+            triggerMet: stock.ltp < stock.ema3_5,
+            orderExecuted: stock.orderExecuted || false,
+            orderError: stock.orderError || null,
+            token: symbolMappings.symbolMappings[stock.symbol] || null
+        }));
+
+        const sellWithoutIntersectionTableData = sellWithoutCrossdownStocks.map(stock => ({
+            symbol: stock.symbol,
+            ltp: stock.ltp,
+            orderExecuted: stock.orderExecuted || false,
+            orderError: stock.orderError || null,
+            token: symbolMappings.symbolMappings[stock.symbol] || null
+        }));
+
         // Return comprehensive response for new UI structure
         const consolidatedResponse = {
             success: true,
@@ -3003,11 +3129,17 @@ router.post('/low-price-scanners', async (req, res) => {
             // NEW: Simplified table data for UI
             buyTable: buyTableData,
             sellTable: sellTableData,
+            crossoverTable: crossoverTableData,
+            crossdownTable: crossdownTableData,
+            buyWithoutIntersectionTable: buyWithoutIntersectionTableData,
+            sellWithoutIntersectionTable: sellWithoutIntersectionTableData,
             
             // Legacy data (for compatibility)
             totalStocks: enrichedStocks.length,
             buyStocks: buyStocks,
             sellStocks: sellStocks,
+            crossoverStocks: crossoverStocks,
+            crossdownStocks: crossdownStocks,
             allStocks: enrichedStocks,
             
             message: `Found ${buyStocks.length} buy and ${sellStocks.length} sell signals from ${enrichedStocks.length} low-price stocks. ${conditionStats.orders_attempted} orders attempted, ${conditionStats.orders_successful} successful.`,
@@ -3374,6 +3506,7 @@ router.post('/buy-order', async (req, res) => {
             price: ltp,
             product: 'MIS',
             order_type: 'MARKET',  // ✅ Changed from LIMIT to MARKET (Zerodha API requirement)
+            market_protection: -1,
             validity: 'DAY'
         };
         
@@ -3532,18 +3665,18 @@ router.post('/buy-order', async (req, res) => {
             return res.status(400).json({
                 success: false,
                 error: `Insufficient leveraged funds. Need ₹${minLeveragedAmount.toLocaleString('en-IN')}, have ₹${globalFunds.leverageFunds.toLocaleString('en-IN')}`,
-                availableFunds: availableFunds,
-                leverageFunds: leverageFunds,
+                availableFunds: globalFunds.availableFunds,
+                leverageFunds: globalFunds.leverageFunds,
                 minRequired: minLeveragedAmount,
                 order_category: 'BUY',
                 symbol: orderParams.tradingsymbol
             });
         }
-        console.log(`✅ Leveraged Amount Check: ₹${leverageFunds.toLocaleString('en-IN')} > ₹${minLeveragedAmount.toLocaleString('en-IN')}`);
+        console.log(`✅ Leveraged Amount Check: ₹${globalFunds.leverageFunds.toLocaleString('en-IN')} > ₹${minLeveragedAmount.toLocaleString('en-IN')}`);
         
         // STEP 3: Calculate optimal quantity based on available funds
         pricePerShare = ltp || orderParams.price; // Assign to existing let variable
-        const maxQuantity = Math.floor(usableFunds / pricePerShare);
+        const maxQuantity = Math.floor(globalFunds.usableFunds / pricePerShare);
         
         // Use either requested quantity or calculated max quantity (whichever is smaller)
         // If no quantity provided, use calculated max quantity
@@ -3551,9 +3684,9 @@ router.post('/buy-order', async (req, res) => {
         finalQuantity = Math.min(requestedQuantity, maxQuantity); // Assign to existing let variable
         
         console.log(`\n📊 BUY ORDER QUANTITY CALCULATION:`);
-        console.log(`💰 Available Funds: ₹${availableFunds.toLocaleString('en-IN')}`);
-        console.log(`⚡ Leveraged Funds (5x): ₹${leverageFunds.toLocaleString('en-IN')}`);
-        console.log(`� Usable Funds (95%): ₹${usableFunds.toLocaleString('en-IN')}`);
+        console.log(`💰 Available Funds: ₹${globalFunds.availableFunds.toLocaleString('en-IN')}`);
+        console.log(`⚡ Leveraged Funds (5x): ₹${globalFunds.leverageFunds.toLocaleString('en-IN')}`);
+        console.log(`🔒 Usable Funds (95%): ₹${globalFunds.usableFunds.toLocaleString('en-IN')}`);
         console.log(`💵 Price per share: ₹${pricePerShare}`);
         console.log(`🔢 Max possible quantity: ${maxQuantity}`);
         console.log(`📋 Requested quantity: ${orderParams.quantity || 'auto-calculated'}`);
@@ -3569,10 +3702,10 @@ router.post('/buy-order', async (req, res) => {
         if (finalQuantity <= 0) {
             return res.status(400).json({
                 success: false,
-                error: `Insufficient funds for even 1 share. Need ₹${pricePerShare}, have ₹${usableFunds}`,
-                availableFunds: availableFunds,
-                leverageFunds: leverageFunds,
-                usableFunds: usableFunds,
+                error: `Insufficient funds for even 1 share. Need ₹${pricePerShare}, have ₹${globalFunds.usableFunds}`,
+                availableFunds: globalFunds.availableFunds,
+                leverageFunds: globalFunds.leverageFunds,
+                usableFunds: globalFunds.usableFunds,
                 pricePerShare: pricePerShare
             });
         }
@@ -3726,7 +3859,8 @@ router.post('/buy-order', async (req, res) => {
             ...orderParams,
             price: roundedPrice,
             product: forcedProductType,
-            quantity: finalQuantity  // Use calculated quantity
+            quantity: finalQuantity,  // Use calculated quantity
+            ...(String(orderParams.order_type || '').toUpperCase() === 'MARKET' ? { market_protection: -1 } : {})
         };
         
         console.log('🚀 STEP 5: Placing enhanced BUY order:', finalOrderParams);
@@ -3768,10 +3902,10 @@ router.post('/buy-order', async (req, res) => {
                 order_category: 'BUY',
                 ltp: ltp,
                 funds: {
-                    available: availableFunds,
-                    leveraged: leverageFunds,
+                    available: globalFunds.availableFunds,
+                    leveraged: globalFunds.leverageFunds,
                     used: finalOrderParams.quantity * roundedPrice,
-                    remaining: leverageFunds - (finalOrderParams.quantity * roundedPrice)
+                    remaining: globalFunds.leverageFunds - (finalOrderParams.quantity * roundedPrice)
                 },
                 calculatedData: {
                     originalPrice: orderParams.price,
@@ -3999,6 +4133,7 @@ router.post('/sell-order', async (req, res) => {
             price: ltp,
             product: 'MIS', 
             order_type: 'MARKET',  // ✅ Changed from LIMIT to MARKET (Zerodha API requirement)
+            market_protection: -1,
             validity: 'DAY'
         };
         
@@ -4247,7 +4382,8 @@ router.post('/sell-order', async (req, res) => {
             ...orderParams,
             price: roundedPrice,
             product: forcedProductType,
-            quantity: finalQuantity  // Use calculated quantity
+            quantity: finalQuantity,  // Use calculated quantity
+            ...(String(orderParams.order_type || '').toUpperCase() === 'MARKET' ? { market_protection: -1 } : {})
         };
         
         console.log('🚀 STEP 5: Placing enhanced MIS SELL (short) order:', finalOrderParams);
@@ -4301,10 +4437,10 @@ router.post('/sell-order', async (req, res) => {
                     }))
                 },
                 funds: {
-                    available: availableFunds,
-                    leveraged: leverageFunds,
+                    available: globalFunds.availableFunds,
+                    leveraged: globalFunds.leverageFunds,
                     marginUsed: marginRequired,
-                    remaining: leverageFunds - marginRequired
+                    remaining: globalFunds.leverageFunds - marginRequired
                 },
                 calculatedData: {
                     originalPrice: orderParams.price,

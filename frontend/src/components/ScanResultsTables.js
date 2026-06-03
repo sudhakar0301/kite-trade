@@ -163,7 +163,14 @@ const TriggerInfo = styled.div`
   font-weight: 500;
 `;
 
-const ScanResultsTables = ({ buyStocks = [], sellStocks = [], autoTrade = false, onSymbolClick }) => {
+const ScanResultsTables = ({
+  buyStocks = [],
+  sellStocks = [],
+  autoTrade = false,
+  onSymbolClick,
+  buyTitle = '🟢 Buy Signals',
+  sellTitle = '🔴 Sell Signals'
+}) => {
   const handleSymbolClick = (symbol) => {
     if (onSymbolClick) {
       // Use the parent's openNamedChart function
@@ -213,7 +220,7 @@ const ScanResultsTables = ({ buyStocks = [], sellStocks = [], autoTrade = false,
       {/* Buy Stocks Table */}
       <TableWrapper>
         <TableHeader className="buy-header">
-          🟢 Buy Signals ({buyStocks.length})
+          {buyTitle} ({buyStocks.length})
         </TableHeader>
         <TableContent>
           {buyStocks.length === 0 ? (
@@ -227,7 +234,7 @@ const ScanResultsTables = ({ buyStocks = [], sellStocks = [], autoTrade = false,
       {/* Sell Stocks Table */}
       <TableWrapper>
         <TableHeader className="sell-header">
-          🔴 Sell Signals ({sellStocks.length})
+          {sellTitle} ({sellStocks.length})
         </TableHeader>
         <TableContent>
           {sellStocks.length === 0 ? (

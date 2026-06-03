@@ -466,12 +466,8 @@ const TradingControlPanel = ({
   }, [logData]);
 
   const handleToggleAutoTrading = useCallback(() => {
-    if (kiteLoginStatus !== 'logged-in') {
-      onKiteLogin();
-    } else {
-      onToggleAutoTrading();
-    }
-  }, [kiteLoginStatus, onKiteLogin, onToggleAutoTrading]);
+    onToggleAutoTrading();
+  }, [onToggleAutoTrading]);
 
   const handleViewOrder = useCallback(() => {
     if (orderNotification?.orderId) {
