@@ -2806,8 +2806,8 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Track condition pass counts
         let conditionStats = {
             total_stocks: 0,
-            buy_condition_passes: Array(12).fill(0),
-            sell_condition_passes: Array(12).fill(0),
+            buy_condition_passes: Array(14).fill(0),
+            sell_condition_passes: Array(14).fill(0),
             ema_1min_issues: [],
             orders_attempted: 0,
             orders_successful: 0,
@@ -2817,31 +2817,31 @@ router.post('/low-price-scanners', async (req, res) => {
         enrichedStocks.forEach(async (stock) => {
             conditionStats.total_stocks++;
             
-            // BUY CONDITIONS:
-            // Multi-timeframe conditions:
-            // 1. EMA5 (5min) < EMA3 (15min)
-            // 2. (+DI > ADX) OR (ADX > 25 && -DI < 15) (on 5min) - enhanced momentum
-            // 3. ADX > -DI (on 5min)
-            // 4. MACD > Signal (15min)
-            // 5. MACD > 0 (5min)
-            // 6. MACD > 0 (15min)
-            // 7. MACD > 0 (1min)
-            // 8. EMA9 > VWAP (1min)
-            // 9. ADX > 25 (1min) - NEW
-            // 10. MACD > Signal (1min) - NEW
-            // 11. EMA3 > EMA5 (1min) - NEW
+            // BUY CONDITIONS (as requested):
+            // 1) EMA3(15m) > EMA3(5m)
+            // 2) EMA3 > EMA5 on 1m, 5m, 15m
+            // 3) MACD > Signal on 1m, 5m, 15m
+            // 4) MACD > 0 on 1m, 5m
+            // 5) -DI < 15 on 5m OR 15m
+            // 6) ADX > 25 on 1m OR 5m OR 15m
+            // 7) +DI > 25 on 5m OR 15m
+            // 8) +DI(1m) > ADX(1m) and ADX(1m) > 25
             
             const buyConditions = [
-                stock.ema5_5 < stock.ema3_15, // EMA5 (5min) < EMA3 (15min)
-                stock.plusDI5 > 25 && stock.adx5 > 25 && stock.minusDI5 < 15, // +DI5 > 25 AND ADX5 > 25 AND -DI5 < 15 on 5min
-                stock.adx5 > stock.minusDI5, // ADX > -DI on 5min
-                stock.macd15 > stock.signal15, // MACD > Signal on 15min
-                stock.macd5 > 0, // MACD > 0 on 5min
-                stock.macd15 > 0, // MACD > 0 on 15min - NEW
-                stock.macd1 > 0, // MACD > 0 on 1min
-                stock.ema9_1 > stock.vwap1, // EMA9 > VWAP on 1min
-                stock.adx1 > 25, // ADX > 25 on 1min (NEW)
-                stock.ema3_1 > stock.ema5_1 // EMA3 > EMA5 on 1min (NEW)
+                stock.ema3_15 > stock.ema3_5, // EMA3(15m) > EMA3(5m)
+                stock.ema3_1 > stock.ema5_1,  // EMA3(1m) > EMA5(1m)
+                stock.ema3_5 > stock.ema5_5,  // EMA3(5m) > EMA5(5m)
+                stock.ema3_15 > stock.ema5_15, // EMA3(15m) > EMA5(15m)
+                stock.macd1 > stock.signal1,   // MACD(1m) > Signal(1m)
+                stock.macd5 > stock.signal5,   // MACD(5m) > Signal(5m)
+                stock.macd15 > stock.signal15, // MACD(15m) > Signal(15m)
+                stock.macd1 > 0,               // MACD(1m) > 0
+                stock.macd5 > 0,               // MACD(5m) > 0
+                (stock.minusDI5 < 15 || stock.minusDI15 < 15), // -DI < 15 on 5m or 15m
+                (stock.adx1 > 25 || stock.adx5 > 25 || stock.adx15 > 25), // ADX > 25 on 1m or 5m or 15m
+                (stock.plusDI5 > 25 || stock.plusDI15 > 25), // +DI > 25 on 5m or 15m
+                stock.plusDI1 > stock.adx1,    // +DI(1m) > ADX(1m)
+                stock.adx1 > 25                // ADX(1m) > 25
             ];
 
             // Track condition pass counts
@@ -2864,31 +2864,23 @@ router.post('/low-price-scanners', async (req, res) => {
                 });
             }
             
-            // SELL CONDITIONS (exact opposite of buy conditions):
-            // Multi-timeframe conditions:
-            // 1. EMA5 (5min) > EMA3 (15min) - opposite of buy condition 1
-            // 2. -DI5 > 25 AND ADX5 > 25 AND +DI5 < 15 (5min) - strict bearish momentum
-            // 3. ADX > +DI (5min) - opposite of buy condition 3
-            // 4. MACD < Signal (15min) - opposite of buy condition 5
-            // 5. MACD < 0 (5min) - opposite of buy condition 6
-            // 6. MACD < 0 (15min) - opposite of buy condition 7
-            // 7. MACD < 0 (1min) - opposite of buy condition 8
-            // 8. EMA9 < VWAP (1min) - opposite of buy condition 9
-            // 9. ADX > 25 (1min) - same as buy (strong trend required)
-            // 10. MACD < Signal (1min) - opposite of buy condition 11
-            // 11. EMA3 < EMA5 (1min) - opposite of buy condition 12
+            // SELL CONDITIONS (exact opposite of the BUY conditions above)
             
             const sellConditions = [
-                stock.ema5_5 > stock.ema3_15, // EMA5 (5min) > EMA3 (15min)
-                stock.minusDI5 > 25 && stock.adx5 > 25 && stock.plusDI5 < 15, // -DI5 > 25 AND ADX5 > 25 AND +DI5 < 15 on 5min
-                stock.adx5 > stock.plusDI5, // ADX > +DI on 5min (changed from ADX < -DI)
-                stock.macd15 < stock.signal15, // MACD < Signal on 15min
-                stock.macd5 < 0, // MACD < 0 on 5min
-                stock.macd15 < 0, // MACD < 0 on 15min - NEW
-                stock.macd1 < 0, // MACD < 0 on 1min
-                stock.ema9_1 < stock.vwap1, // EMA9 < VWAP on 1min
-                stock.adx1 > 25, // ADX > 25 on 1min (changed from ADX < 25)
-                stock.ema3_1 < stock.ema5_1 // EMA3 < EMA5 on 1min
+                stock.ema3_15 < stock.ema3_5, // opposite of EMA3(15m) > EMA3(5m)
+                stock.ema3_1 < stock.ema5_1,  // opposite of EMA3(1m) > EMA5(1m)
+                stock.ema3_5 < stock.ema5_5,  // opposite of EMA3(5m) > EMA5(5m)
+                stock.ema3_15 < stock.ema5_15, // opposite of EMA3(15m) > EMA5(15m)
+                stock.macd1 < stock.signal1,   // opposite of MACD(1m) > Signal(1m)
+                stock.macd5 < stock.signal5,   // opposite of MACD(5m) > Signal(5m)
+                stock.macd15 < stock.signal15, // opposite of MACD(15m) > Signal(15m)
+                stock.macd1 < 0,               // opposite of MACD(1m) > 0
+                stock.macd5 < 0,               // opposite of MACD(5m) > 0
+                (stock.plusDI5 < 15 || stock.plusDI15 < 15), // swapped from buy: +DI < 15 on 5m or 15m
+                (stock.adx1 > 25 || stock.adx5 > 25 || stock.adx15 > 25), // ADX > 25 on 1m or 5m or 15m
+                (stock.minusDI5 > 25 || stock.minusDI15 > 25), // swapped from buy: -DI > 25 on 5m or 15m
+                stock.minusDI1 > stock.adx1,   // swapped from buy: -DI(1m) > ADX(1m)
+                stock.adx1 > 25                // ADX(1m) > 25
             ];
             
             
@@ -2992,9 +2984,20 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Print condition statistics
         console.log('🔍 CONDITION ANALYSIS:');
         const conditionLabels = [
-            'EMA5 (5min) < EMA3 (15min)', '(+DI > ADX) OR (ADX > 25 && -DI < 15) (5min)', 'ADX > -DI (5min)', 
-            'MACD > Signal (5min)', 'MACD > Signal (15min)', 'MACD > 0 (5min)', 'MACD > 0 (15min)', 'MACD > 0 (1min)', 
-            'EMA9 > VWAP (1min)', 'ADX > 25 (1min)', 'MACD > Signal (1min)', 'EMA3 > EMA5 (1min)'
+            'EMA3 (15m) > EMA3 (5m)',
+            'EMA3 (1m) > EMA5 (1m)',
+            'EMA3 (5m) > EMA5 (5m)',
+            'EMA3 (15m) > EMA5 (15m)',
+            'MACD (1m) > Signal (1m)',
+            'MACD (5m) > Signal (5m)',
+            'MACD (15m) > Signal (15m)',
+            'MACD (1m) > 0',
+            'MACD (5m) > 0',
+            '-DI < 15 (5m OR 15m)',
+            'ADX > 25 (1m OR 5m OR 15m)',
+            '+DI > 25 (5m OR 15m)',
+            '+DI (1m) > ADX (1m)',
+            'ADX (1m) > 25'
         ];
        
     
