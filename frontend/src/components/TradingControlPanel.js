@@ -20,7 +20,7 @@ const ControlPanel = styled.div`
   position: sticky;
   top: 20px;
   width: 100%;
-  max-width: 320px;
+  max-width: none;
   min-height: 800px;
   background: rgba(0, 0, 0, 0.9);
   backdrop-filter: blur(20px);
@@ -29,33 +29,33 @@ const ControlPanel = styled.div`
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
   z-index: 1000;
   overflow: hidden;
-  margin: 20px 0 20px 0;
+  margin: 0;
   
   /* Large laptop - adjust width and height */
   @media (max-width: 1600px) {
-    max-width: 300px;
+    max-width: none;
     min-height: 700px;
-    margin: 15px 0 15px 0;
+    margin: 0;
   }
   
   /* Standard laptop */
   @media (max-width: 1400px) {
-    max-width: 280px;
+    max-width: none;
     min-height: 650px;
     border-radius: 16px;
   }
   
   /* Smaller laptop */
   @media (max-width: 1200px) {
-    max-width: 260px;
+    max-width: none;
     min-height: 600px;
-    margin: 10px 0 10px 0;
+    margin: 0;
     border-radius: 14px;
   }
   
   /* Tablet landscape - smaller panel */
   @media (min-width: 769px) and (max-width: 1024px) {
-    max-width: 240px;
+    max-width: none;
     min-height: 550px;
     border-radius: 12px;
   }
@@ -444,6 +444,7 @@ const TradingControlPanel = ({
   pollInterval = 15,
   onChangePollInterval,
   subscribedStocksCount = 0,
+  marginsData = { availableFunds: 0, leverageFunds: 0, usableFunds: 0 },
   accessToken, // Add access token prop
   orderExecutions = [], // Add order executions prop
   onUpdateOrderExecutions, // Add order executions updater prop
@@ -474,6 +475,17 @@ const TradingControlPanel = ({
       window.open(`https://kite.zerodha.com/orders`, '_blank');
     }
   }, [orderNotification?.orderId]);
+
+  const handleShowFunds = useCallback(async () => {
+    const availableFunds = Number(marginsData?.availableFunds || 0);
+    const usableFunds = Number(marginsData?.usableFunds || 0);
+    alert(`Funds\n\nAvailable: ₹${availableFunds.toLocaleString('en-IN')}\nUsable: ₹${usableFunds.toLocaleString('en-IN')}`);
+  }, [marginsData]);
+
+  const handleShowLeveragedFunds = useCallback(async () => {
+    const leverageFunds = Number(marginsData?.leverageFunds || 0);
+    alert(`Leveraged Funds\n\n₹${leverageFunds.toLocaleString('en-IN')}`);
+  }, [marginsData]);
 
   const handleTestRelianceBuy = useCallback(async () => {
     if (!accessToken || kiteLoginStatus !== 'logged-in') {
@@ -706,121 +718,23 @@ const TradingControlPanel = ({
             }}
             disabled={!onToggleVoice}
           >
-            {voiceEnabled ? '🔊' : '🔇'} Voice {voiceEnabled ? 'ON' : 'OFF'}
+            {voiceEnabled ? '🔊 Voice' : '🔇 Voice'}
           </QuickActionButton>
-          <QuickActionButton 
-            onClick={handleTestRelianceBuy}
+          <QuickActionButton
+            onClick={handleShowFunds}
             style={{
-              background: isTestingOrder
-                ? 'linear-gradient(135deg, #f59e0b, #d97706)' 
-                : autoTradingEnabled 
-                  ? 'linear-gradient(135deg, #8b5cf6, #7c3aed)'
-                  : 'linear-gradient(135deg, #6b7280, #4b5563)',
-              fontSize: '11px',
-              opacity: autoTradingEnabled ? 1 : 0.6
-            }}
-            disabled={isTestingOrder || kiteLoginStatus !== 'logged-in' || !autoTradingEnabled}
-          >
-            {isTestingOrder ? '⏳ Testing...' : '🦩 Test RELIANCE'}
-          </QuickActionButton>
-          <QuickActionButton 
-            onClick={() => {
-              console.log('🎯 [TEST] Test Order Panel button clicked');
-              if (onOpenOrderPanel) {
-                onOpenOrderPanel();
-                console.log('🎯 [TEST] Order panel opened via test button');
-              }
-            }}
-            style={{
-              background: 'linear-gradient(135deg, #06b6d4, #0891b2)',
-              fontSize: '10px'
+              background: 'linear-gradient(135deg, #0ea5e9, #0369a1)'
             }}
           >
-            📋 Test Panel
+            💰 Funds ₹{Number(marginsData?.availableFunds || 0).toLocaleString('en-IN')}
           </QuickActionButton>
-          <QuickActionButton 
-            onClick={() => {
-              console.log('🧪 [TEST] Add Fake Order button clicked');
-              if (!autoTradingEnabled) {
-                alert('Please enable Auto Trading first to test order tracking');
-                return;
-              }
-              if (onUpdateOrderExecutions && onOpenOrderPanel) {
-                const fakeOrder = {
-                  id: Date.now(),
-                  symbol: 'TEST_STOCK',
-                  type: 'BUY (FAKE)',
-                  status: 'SUCCESS',
-                  timestamp: new Date().toISOString(),
-                  completedAt: new Date().toISOString(),
-                  ltp: 1234.56,
-                  price: 1234.56,
-                  quantity: 10,
-                  orderId: 'TEST_' + Date.now(),
-                  route: '/api/test-fake-order',
-                  message: 'Fake order for testing'
-                };
-                
-                onUpdateOrderExecutions(prev => [...prev, fakeOrder]);
-                onOpenOrderPanel();
-                console.log('🧪 [TEST] Fake order added and panel opened');
-              } else {
-                console.log('❌ [TEST] Missing required props for fake order test');
-              }
-            }}
+          <QuickActionButton
+            onClick={handleShowLeveragedFunds}
             style={{
-              background: autoTradingEnabled 
-                ? 'linear-gradient(135deg, #f59e0b, #d97706)'
-                : 'linear-gradient(135deg, #6b7280, #4b5563)',
-              fontSize: '10px',
-              opacity: autoTradingEnabled ? 1 : 0.6
+              background: 'linear-gradient(135deg, #14b8a6, #0f766e)'
             }}
-            disabled={!autoTradingEnabled}
           >
-            🧪 Add Order
-          </QuickActionButton>
-          <QuickActionButton 
-            onClick={() => {
-              console.log('⚡ [TEST] Force Auto-Trade Test clicked');
-              if (!autoTradingEnabled) {
-                alert('Please enable Auto Trading first to test auto-trade orders');
-                return;
-              }
-              // Simulate auto-trading call by calling parent's auto-trade function directly
-              // This bypasses scanner and directly tests order placement
-              const fakeStock = {
-                s: 'NSE:TESTSTOCK',
-                symbol: 'TESTSTOCK',
-                d: [999.99, 0, 0] // [price, change, change%]
-              };
-              
-              if (onUpdateOrderExecutions && onOpenOrderPanel) {
-                console.log('⚡ [TEST] Simulating auto-trade order attempt...');
-                const orderAttempt = {
-                  id: Date.now(),
-                  symbol: 'NSE:TESTSTOCK',
-                  type: 'BUY (AUTO-TEST)',
-                  status: 'ATTEMPTING',
-                  timestamp: new Date().toISOString(),
-                  ltp: 999.99,
-                  route: '/api/auto-trade-test'
-                };
-                
-                onUpdateOrderExecutions(prev => [...prev, orderAttempt]);
-                onOpenOrderPanel();
-                console.log('⚡ [TEST] Auto-trade test order added and panel opened');
-              }
-            }}
-            style={{
-              background: autoTradingEnabled 
-                ? 'linear-gradient(135deg, #8b5cf6, #7c3aed)'
-                : 'linear-gradient(135deg, #6b7280, #4b5563)',
-              fontSize: '9px',
-              opacity: autoTradingEnabled ? 1 : 0.6
-            }}
-            disabled={!autoTradingEnabled}
-          >
-            ⚡ Auto-Trade
+            🏦 Leveraged ₹{Number(marginsData?.leverageFunds || 0).toLocaleString('en-IN')}
           </QuickActionButton>
         </QuickActionsSection>
 

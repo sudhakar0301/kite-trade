@@ -8,13 +8,19 @@ import SubscribedStockTracker from './components/SubscribedStockTracker';
 import ScanResultsTables from './components/ScanResultsTables'; // NEW: Scan results tables
 import PositionsOrdersTable from './components/PositionsOrdersTable'; // NEW: Positions and Orders display
 import TargetOrderDetails from './components/TargetOrderDetails'; // NEW: Target order details display
+import SignalFilterPlayground from './components/SignalFilterPlayground';
 // import AlgorithmTutorial from './components/AlgorithmTutorial';
 import {
   AppContainer,
-  ControlPanelWrapper,
   ContentWrapper,
   MainContent,
   ScannerSection,
+  SectionCard,
+  TopSectionsGrid,
+  SectionHeader,
+  SectionTitle,
+  SectionSubTitle,
+  SectionBody,
   ScanBlockNotification,
   ScanBlockHeader,
   ScanBlockDetails,
@@ -58,6 +64,15 @@ function App() {
   const [lastSpokenMessage, setLastSpokenMessage] = useState('');
   const [lastSpeakTime, setLastSpeakTime] = useState(0);
   const [realSubscriptionCount, setRealSubscriptionCount] = useState(0);
+  const [scannerMargins, setScannerMargins] = useState({
+    availableFunds: 0,
+    leverageFunds: 0,
+    usableFunds: 0
+  });
+  const [scannerSubscriptionData, setScannerSubscriptionData] = useState({
+    subscribedSymbols: [],
+    signalStocks: { buySignals: [], sellSignals: [] }
+  });
   
   // NEW: Scan results table data
   const [scanResults, setScanResults] = useState({
@@ -89,6 +104,8 @@ function App() {
     sellSignals: [],
     lastUpdate: null
   });
+  const [buyFilterChecks, setBuyFilterChecks] = useState({});
+  const [sellFilterChecks, setSellFilterChecks] = useState({});
 
   // Debug state changes
   useEffect(() => {
@@ -1317,6 +1334,38 @@ function App() {
         console.log('📊 Intersection Summary:', intersectionData);
         
         setLastUpdate(new Date().toLocaleTimeString());
+
+        // Shared scanner-time refresh only: subscription status + margins.
+        try {
+          const [subscriptionRes, marginsRes] = await Promise.all([
+            fetch('http://localhost:5000/api/subscription-status'),
+            fetch('http://localhost:5000/api/get-margins', {
+              headers: {
+                ...(accessToken && { 'Authorization': `Bearer ${accessToken}` })
+              }
+            })
+          ]);
+
+          if (subscriptionRes.ok) {
+            const subscriptionData = await subscriptionRes.json();
+            setRealSubscriptionCount(subscriptionData.subscribed_count || 0);
+            setScannerSubscriptionData({
+              subscribedSymbols: subscriptionData.subscribed_symbols || [],
+              signalStocks: subscriptionData.signal_stocks || { buySignals: [], sellSignals: [] }
+            });
+          }
+
+          if (marginsRes.ok) {
+            const marginsData = await marginsRes.json();
+            setScannerMargins({
+              availableFunds: Number(marginsData?.availableFunds || 0),
+              leverageFunds: Number(marginsData?.leverageFunds || 0),
+              usableFunds: Number(marginsData?.usableFunds || 0)
+            });
+          }
+        } catch (sharedFetchError) {
+          console.warn('⚠️ Scanner-shared subscription/margins refresh failed:', sharedFetchError.message);
+        }
         
         // 🎯 NEW ARCHITECTURE: STEP 2 - Subscribe signal stocks (no direct execution)
         console.log(`📡 Step 2: Subscribing signal stocks for tick-driven execution...`);
@@ -1585,23 +1634,6 @@ function App() {
 
     websocket.connect();
 
-    // Get initial subscription status
-    const fetchInitialSubscriptionStatus = async () => {
-      try {
-        const response = await fetch('http://localhost:5000/api/subscription-status');
-        if (response.ok) {
-          const data = await response.json();
-          console.log('📊 Initial subscription status:', data);
-          setRealSubscriptionCount(data.subscribed_count || 0);
-        }
-      } catch (error) {
-        console.log('ℹ️ Backend not ready for subscription status check:', error.message);
-        // Silent fail - backend might not be ready yet
-      }
-    };
-
-    fetchInitialSubscriptionStatus();
-
     return () => {
       websocket.disconnect();
     };
@@ -1826,17 +1858,41 @@ function App() {
       <MainContent>
         {/* Algorithm Tutorial - Commented out */}
         {/* <AlgorithmTutorial /> */}
-        
-        {/* LIVE STOCK TRACKER: Showing Subscribed Signal Stocks with Real-time Ticks */}
-        <SubscribedStockTracker 
-          tickData={tickData}
-          onOpenChart={openNamedChart}
-          subscribedCount={realSubscriptionCount}
-          buySignalsCount={signalStocks.buySignals.length}
-          sellSignalsCount={signalStocks.sellSignals.length}
-          pollCountdown={pollCountdown}
-        />
-        
+
+        <TopSectionsGrid>
+
+        <SectionCard>
+          <SectionHeader>
+            <SectionTitle>Live Subscribed Stock Tracker</SectionTitle>
+            <SectionSubTitle>Real-time tick feed and active signal stock monitoring</SectionSubTitle>
+          </SectionHeader>
+          <SectionBody>
+            <SubscribedStockTracker 
+              tickData={tickData}
+              onOpenChart={openNamedChart}
+              subscribedCount={realSubscriptionCount}
+              buySignalsCount={signalStocks.buySignals.length}
+              sellSignalsCount={signalStocks.sellSignals.length}
+              pollCountdown={pollCountdown}
+              subscribedSymbols={scannerSubscriptionData.subscribedSymbols}
+              signalStocks={scannerSubscriptionData.signalStocks}
+              marginsData={scannerMargins}
+            />
+
+            <SignalFilterPlayground
+              buyData={buySignals}
+              sellData={sellSignals}
+              showFilters={true}
+              showTables={false}
+              title="Signal Filters"
+              buyChecks={buyFilterChecks}
+              sellChecks={sellFilterChecks}
+              onBuyChecksChange={setBuyFilterChecks}
+              onSellChecksChange={setSellFilterChecks}
+            />
+          </SectionBody>
+        </SectionCard>
+
         {/* TEMPORARILY HIDDEN: Scan Results Tables */}
         {/* 
         <ScanResultsTables 
@@ -1847,19 +1903,26 @@ function App() {
         />
         */}
 
-        {/* Main table split into intersection and non-intersection groups */}
-        <div style={{ margin: '10px 20px 0', color: '#c9d1d9', fontSize: '14px', fontWeight: 600 }}>
-          Intersection of Crossover/Crossdown (Matched Main Signals)
-        </div>
-        <ScanResultsTables
-          buyStocks={scanResults.buyTable}
-          sellStocks={scanResults.sellTable}
-          autoTrade={scanResults.autoTrade}
-          onSymbolClick={openNamedChart}
-          buyTitle="🟢 Buy Signals (With Intersection)"
-          sellTitle="🔴 Sell Signals (With Intersection)"
-        />
+        {/*
+        <SectionCard>
+          <SectionHeader>
+            <SectionTitle>Matched Signal Results</SectionTitle>
+            <SectionSubTitle>Intersection of crossover and crossdown with main signal conditions</SectionSubTitle>
+          </SectionHeader>
+          <SectionBody>
+            <ScanResultsTables
+              buyStocks={scanResults.buyTable}
+              sellStocks={scanResults.sellTable}
+              autoTrade={scanResults.autoTrade}
+              onSymbolClick={openNamedChart}
+              buyTitle="🟢 Buy Signals (With Intersection)"
+              sellTitle="🔴 Sell Signals (With Intersection)"
+            />
+          </SectionBody>
+        </SectionCard>
+        */}
 
+        {/*
         <div style={{ margin: '10px 20px 0', color: '#c9d1d9', fontSize: '14px', fontWeight: 600 }}>
           Without Intersection (Buy without Crossover / Sell without Crossdown)
         </div>
@@ -1871,7 +1934,9 @@ function App() {
           buyTitle="🟢 Buy Signals (Without Intersection)"
           sellTitle="🔴 Sell Signals (Without Intersection)"
         />
+        */}
 
+        {/*
         <div style={{ margin: '10px 20px 0', color: '#c9d1d9', fontSize: '14px', fontWeight: 600 }}>
           Other Table: Only Crossover/Crossdown Stocks
         </div>
@@ -1883,23 +1948,123 @@ function App() {
           buyTitle="🟢 Crossover Stocks (Buy)"
           sellTitle="🔴 Crossdown Stocks (Sell)"
         />
+        */}
         
-        {/* NEW: Positions and Orders Tables */}
-        <PositionsOrdersTable 
-          positions={positionsData}
-          orders={ordersData}
-          loading={positionsOrdersLoading}
-          error={positionsOrdersError}
-          lastUpdated={lastPositionsOrdersUpdate}
-          onRefresh={fetchPositionsAndOrders}
-        />
-        
-        {/* NEW: Target Order Details */}
-        <TargetOrderDetails 
-          targetOrders={targetOrderDetails}
-          isVisible={showTargetOrderDetails}
-          onClose={() => setShowTargetOrderDetails(false)}
-        />
+        <SectionCard>
+          <SectionHeader>
+            <SectionTitle>Positions, Orders, and Targets</SectionTitle>
+            <SectionSubTitle>Open positions, pending orders, and target order tracking</SectionSubTitle>
+          </SectionHeader>
+          <SectionBody>
+            <PositionsOrdersTable 
+              positions={positionsData}
+              orders={ordersData}
+              loading={positionsOrdersLoading}
+              error={positionsOrdersError}
+              lastUpdated={lastPositionsOrdersUpdate}
+              onRefresh={fetchPositionsAndOrders}
+            />
+
+            <div style={{ marginTop: '12px', padding: '14px', borderRadius: '12px', background: 'rgba(15, 23, 42, 0.8)', border: '1px solid rgba(148, 163, 184, 0.35)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', gap: '8px', flexWrap: 'wrap' }}>
+                <div style={{ fontWeight: 800, fontSize: '14px', color: '#f1f5f9' }}>
+                  Signal Conditions
+                </div>
+                <div style={{ fontSize: '11px', color: '#93c5fd', fontWeight: 700 }}>
+                  All listed conditions must pass
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                <div style={{ padding: '10px', borderRadius: '10px', background: 'rgba(20, 83, 45, 0.28)', border: '1px solid rgba(74, 222, 128, 0.35)' }}>
+                  <div style={{ fontWeight: 800, fontSize: '12px', color: '#86efac', marginBottom: '8px' }}>
+                    Buy Conditions
+                  </div>
+                  <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
+                    <li>EMA3(15m) &gt; EMA3(5m)</li>
+                    <li>EMA3 &gt; EMA5 on 1m, 5m, and 15m</li>
+                    <li>MACD &gt; Signal on 1m, 5m, and 15m</li>
+                    <li>MACD(1m) &gt; 0 and MACD(5m) &gt; 0</li>
+                    <li>-DI(5m) &lt; 15 OR -DI(15m) &lt; 15</li>
+                    <li>ADX &gt; 25 on 1m OR 5m OR 15m</li>
+                    <li>+DI(5m) &gt; 25 OR +DI(15m) &gt; 25</li>
+                    <li>+DI(1m) &gt; ADX(1m) and ADX(1m) &gt; 25</li>
+                  </ol>
+                </div>
+
+                <div style={{ padding: '10px', borderRadius: '10px', background: 'rgba(127, 29, 29, 0.28)', border: '1px solid rgba(248, 113, 113, 0.35)' }}>
+                  <div style={{ fontWeight: 800, fontSize: '12px', color: '#fca5a5', marginBottom: '8px' }}>
+                    Sell Conditions
+                  </div>
+                  <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
+                    <li>EMA3(15m) &lt; EMA3(5m)</li>
+                    <li>EMA3 &lt; EMA5 on 1m, 5m, and 15m</li>
+                    <li>MACD &lt; Signal on 1m, 5m, and 15m</li>
+                    <li>MACD(1m) &lt; 0 and MACD(5m) &lt; 0</li>
+                    <li>+DI(5m) &lt; 15 OR +DI(15m) &lt; 15</li>
+                    <li>ADX &gt; 25 on 1m OR 5m OR 15m</li>
+                    <li>-DI(5m) &gt; 25 OR -DI(15m) &gt; 25</li>
+                    <li>-DI(1m) &gt; ADX(1m) and ADX(1m) &gt; 25</li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+
+            <SignalFilterPlayground
+              buyData={allStocks}
+              sellData={allStocks}
+              showFilters={false}
+              showTables={true}
+              title="Filtered Tables (Based on Buy/Sell Conditions)"
+              onSymbolClick={openNamedChart}
+              buyChecks={buyFilterChecks}
+              sellChecks={sellFilterChecks}
+              onBuyChecksChange={setBuyFilterChecks}
+              onSellChecksChange={setSellFilterChecks}
+            />
+
+            <TargetOrderDetails 
+              targetOrders={targetOrderDetails}
+              isVisible={showTargetOrderDetails}
+              onClose={() => setShowTargetOrderDetails(false)}
+            />
+          </SectionBody>
+        </SectionCard>
+
+        <SectionCard>
+          <SectionHeader>
+            <SectionTitle>Trading Control Panel</SectionTitle>
+            <SectionSubTitle>Auto trade, polling, execution updates, and account controls</SectionSubTitle>
+          </SectionHeader>
+          <SectionBody>
+            <TradingControlPanel
+              autoTradingEnabled={autoTradingEnabled}
+              onToggleAutoTrading={toggleAutoTrading}
+              buySignals={buySignals}
+              sellSignals={sellSignals}
+              orderNotification={orderNotification}
+              onClearOrderNotification={clearOrderNotification}
+              kiteLoginStatus={kiteLoginStatus}
+              onKiteLogin={openKiteLogin}
+              lastUpdate={lastUpdate}
+              voiceEnabled={voiceEnabled}
+              onToggleVoice={handleToggleVoice}
+              isPolling={isPolling}
+              pollCountdown={pollCountdown}
+              onTogglePolling={togglePolling}
+              orderExecutions={orderExecutions}
+              onUpdateOrderExecutions={handleUpdateOrderExecutions}
+              onOpenOrderPanel={handleOpenOrderPanel}
+              accessToken={accessToken}
+              pollInterval={pollInterval}
+              onChangePollInterval={handleChangePollInterval}
+              subscribedStocksCount={realSubscriptionCount}
+              marginsData={scannerMargins}
+            />
+          </SectionBody>
+        </SectionCard>
+
+        </TopSectionsGrid>
         
         {/* TEMPORARILY HIDDEN: Live Stock Tracker (now shown above) */}
         {/* 
@@ -1913,33 +2078,41 @@ function App() {
         />
         */}
         
-        {/* Trading Dashboard with Scan Stocks Table */}
-        <ScannerSection>
-          {/* Scan Blocking Notification */}
-          {scanBlockInfo.isBlocked && (
-            <ScanBlockNotification>
-              <ScanBlockHeader>
-                ⏸️ Scanner Temporarily Blocked
-              </ScanBlockHeader>
-              <ScanBlockDetails>
-                {scanBlockInfo.message}
-              </ScanBlockDetails>
-              <ScanBlockTiming>
-                Current 15min candle position: minute {scanBlockInfo.candlePosition} • Next scan allowed: {scanBlockInfo.nextScanAllowedAt}
-              </ScanBlockTiming>
-            </ScanBlockNotification>
-          )}
-          
-          <TradingDashboard 
-            allStocks={allStocks}
-            onOpenChart={openNamedChart}
-            crossoverBuyStocks={crossoverBuyStocks}
-            crossbelowSellStocks={crossbelowSellStocks}
-            finalBuyStocks={buySignals}
-            finalSellStocks={sellSignals}
-            intersectionSummary={intersectionSummary}
-          />
-        </ScannerSection>
+        {/*
+        <SectionCard>
+          <SectionHeader>
+            <SectionTitle>Scanner Workspace</SectionTitle>
+            <SectionSubTitle>Full scanner output, stock universe, and crossover/crossdown context</SectionSubTitle>
+          </SectionHeader>
+          <SectionBody>
+            <ScannerSection>
+              {scanBlockInfo.isBlocked && (
+                <ScanBlockNotification>
+                  <ScanBlockHeader>
+                    ⏸️ Scanner Temporarily Blocked
+                  </ScanBlockHeader>
+                  <ScanBlockDetails>
+                    {scanBlockInfo.message}
+                  </ScanBlockDetails>
+                  <ScanBlockTiming>
+                    Current 15min candle position: minute {scanBlockInfo.candlePosition} • Next scan allowed: {scanBlockInfo.nextScanAllowedAt}
+                  </ScanBlockTiming>
+                </ScanBlockNotification>
+              )}
+              
+              <TradingDashboard 
+                allStocks={allStocks}
+                onOpenChart={openNamedChart}
+                crossoverBuyStocks={crossoverBuyStocks}
+                crossbelowSellStocks={crossbelowSellStocks}
+                finalBuyStocks={buySignals}
+                finalSellStocks={sellSignals}
+                intersectionSummary={intersectionSummary}
+              />
+            </ScannerSection>
+          </SectionBody>
+        </SectionCard>
+        */}
       </MainContent>
       
       {/* TEMPORARILY HIDDEN: Order Execution Panel */}
@@ -1952,32 +2125,6 @@ function App() {
       />
       */}
       </ContentWrapper>
-      
-      <ControlPanelWrapper>
-        <TradingControlPanel
-          autoTradingEnabled={autoTradingEnabled}
-          onToggleAutoTrading={toggleAutoTrading}
-          buySignals={buySignals}
-          sellSignals={sellSignals}
-          orderNotification={orderNotification}
-          onClearOrderNotification={clearOrderNotification}
-          kiteLoginStatus={kiteLoginStatus}
-          onKiteLogin={openKiteLogin}
-          lastUpdate={lastUpdate}
-          voiceEnabled={voiceEnabled}
-          onToggleVoice={handleToggleVoice}
-          isPolling={isPolling}
-          pollCountdown={pollCountdown}
-          onTogglePolling={togglePolling}
-          orderExecutions={orderExecutions}
-          onUpdateOrderExecutions={handleUpdateOrderExecutions}
-          onOpenOrderPanel={handleOpenOrderPanel}
-          accessToken={accessToken}
-          pollInterval={pollInterval}
-          onChangePollInterval={handleChangePollInterval}
-          subscribedStocksCount={realSubscriptionCount}
-        />
-      </ControlPanelWrapper>
     </AppContainer>
   );
 }

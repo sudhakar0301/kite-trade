@@ -8,72 +8,43 @@ export const AppContainer = styled.div`
   font-family: 'Inter', 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
   position: relative;
   overflow-x: hidden;
-  display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
   
   /* Large laptop adjustments */
-  @media (max-width: 1600px) {
-    grid-template-columns: 1fr 300px;
-    gap: 16px;
-  }
-  
-  /* Standard laptop */
-  @media (max-width: 1400px) {
-    grid-template-columns: 1fr 280px;
-    gap: 12px;
-  }
-  
-  /* Smaller laptop */
   @media (max-width: 1200px) {
-    grid-template-columns: 1fr 260px;
+    padding: 10px;
     gap: 10px;
   }
-  
-  /* Tablet landscape - side by side */
-  @media (min-width: 769px) and (max-width: 1024px) {
-    grid-template-columns: 1fr 240px;
-    gap: 8px;
-  }
-  
-  /* Mobile and tablet portrait - stack vertically */
+
   @media (max-width: 768px) {
-    display: block;
-    padding-bottom: 0;
+    padding: 8px;
+    gap: 8px;
   }
 `;
 
 export const ControlPanelWrapper = styled.div`
-  /* Desktop - sticky position in grid */
-  @media (min-width: 769px) {
-    order: 2;
-    padding: 20px;
-    display: flex;
-    justify-content: center;
-  }
-  
-  /* Mobile - let TradingControlPanel handle fixed positioning */
-  @media (max-width: 768px) {
-    order: 1;
-    padding: 0;
-  }
+  order: 1;
+  width: 100%;
+  padding: 0;
 `;
 
 export const ContentWrapper = styled.div`
+  order: 2;
   width: 100%;
-  min-height: 100vh;
+  min-height: auto;
   display: flex;
   flex-direction: column;
-  
-  /* Mobile - full width */
-  @media (max-width: 768px) {
-    order: 2;
-  }
 `;
 
 export const MainContent = styled.main`
   padding: 20px;
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   
   /* Mobile adjustments */
   @media (max-width: 768px) {
@@ -197,4 +168,56 @@ export const ScanBlockTiming = styled.div`
   font-size: 12px;
   opacity: 0.8;
   font-style: italic;
+`;
+
+export const SectionCard = styled.section`
+  background: rgba(255, 255, 255, 0.04);
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+`;
+
+export const SectionHeader = styled.div`
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02));
+`;
+
+export const SectionTitle = styled.h3`
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #e6edf7;
+  letter-spacing: 0.2px;
+`;
+
+export const SectionSubTitle = styled.p`
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #9fb0c6;
+`;
+
+export const SectionBody = styled.div`
+  padding: 8px;
+
+  @media (max-width: 768px) {
+    padding: 6px;
+  }
+`;
+
+export const TopSectionsGrid = styled.div`
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  align-items: start;
+
+  @media (max-width: 1400px) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  @media (max-width: 900px) {
+    grid-template-columns: 1fr;
+  }
 `;

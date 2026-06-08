@@ -58,11 +58,11 @@ const dataStream = keyframes`
 const MaskingBadge = styled.span`
   margin-left: 10px;
   padding: 4px 8px;
-  background: linear-gradient(45deg, rgba(255, 215, 0, 0.2), rgba(255, 165, 0, 0.1));
-  border: 1px solid rgba(255, 215, 0, 0.6);
+  background: linear-gradient(45deg, rgba(245, 158, 11, 0.22), rgba(249, 115, 22, 0.14));
+  border: 1px solid rgba(251, 191, 36, 0.65);
   border-radius: 12px;
   font-size: 10px;
-  color: #ffd700;
+  color: #fde68a;
   font-weight: 600;
   display: inline-flex;
   align-items: center;
@@ -75,6 +75,9 @@ const TrackerContainer = styled.div`
   flex-direction: column;
   gap: 8px;
   width: 100%;
+  padding: 4px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(2, 6, 23, 0.75), rgba(15, 23, 42, 0.55));
   font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', 'Monaco', 'Cascadia Code', 'Roboto Mono', monospace;
   font-feature-settings: "liga", "tnum", "zero", "ss01", "locl";
   font-variant-numeric: tabular-nums;
@@ -98,11 +101,11 @@ const TrackerContainer = styled.div`
 `;
 
 const AccordionSection = styled.div`
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(148, 163, 184, 0.28);
   border-radius: 12px;
-  background: rgba(0, 0, 0, 0.4);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.86), rgba(17, 24, 39, 0.82));
   overflow: hidden;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.35);
 `;
 
 const AccordionHeader = styled.div`
@@ -111,16 +114,16 @@ const AccordionHeader = styled.div`
   align-items: center;
   padding: 12px 16px;
   background: ${props => props.primary 
-    ? 'linear-gradient(135deg, #1e3c72 0%, #2a5298 100%)' 
-    : 'rgba(255, 215, 0, 0.1)'};
+    ? 'linear-gradient(135deg, #0f766e 0%, #115e59 100%)' 
+    : 'linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(51, 65, 85, 0.92))'};
   cursor: pointer;
   transition: all 0.2s;
-  border-bottom: ${props => props.isExpanded ? '1px solid rgba(255, 255, 255, 0.1)' : 'none'};
+  border-bottom: ${props => props.isExpanded ? '1px solid rgba(148, 163, 184, 0.28)' : 'none'};
   
   &:hover {
     background: ${props => props.primary 
-      ? 'linear-gradient(135deg, #2a5298 0%, #3a6bc8 100%)' 
-      : 'rgba(255, 215, 0, 0.15)'};
+      ? 'linear-gradient(135deg, #0d9488 0%, #0f766e 100%)' 
+      : 'linear-gradient(135deg, rgba(51, 65, 85, 0.95), rgba(71, 85, 105, 0.93))'};
   }
 `;
 
@@ -129,12 +132,12 @@ const AccordionTitle = styled.div`
   align-items: center;
   gap: 10px;
   font-weight: 600;
-  color: ${props => props.primary ? 'white' : '#ffd700'};
+  color: ${props => props.primary ? '#f8fafc' : '#e2e8f0'};
   font-size: 14px;
 `;
 
 const AccordionIcon = styled.div`
-  color: ${props => props.primary ? 'white' : '#ffd700'};
+  color: ${props => props.primary ? '#f8fafc' : '#cbd5e1'};
   font-size: 14px;
   transition: transform 0.2s;
   transform: ${props => props.isExpanded ? 'rotate(90deg)' : 'rotate(0deg)'};
@@ -149,8 +152,8 @@ const AccordionContent = styled.div`
 `;
 
 const TrackerHeader = styled.div`
-  background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-  color: white;
+  background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%);
+  color: #eff6ff;
   padding: 15px 20px;
   font-weight: 600;
   font-size: 14px;
@@ -204,11 +207,11 @@ const OrderLevel = styled.div.withConfig({
   align-items: center;
   padding: ${props => props.isBest ? '8px 10px' : '6px 10px'};
   background: ${props => props.isBest ? 
-    `rgba(${props.side === 'buy' ? '0, 255, 0' : '255, 107, 107'}, 0.15)` : 
-    'rgba(255, 255, 255, 0.05)'};
+    `rgba(${props.side === 'buy' ? '16, 185, 129' : '239, 68, 68'}, 0.20)` : 
+    'rgba(30, 41, 59, 0.62)'};
   border: 1px solid ${props => props.isBest ? 
-    `rgba(${props.side === 'buy' ? '0, 255, 0' : '255, 107, 107'}, 0.4)` : 
-    'rgba(255, 255, 255, 0.08)'};
+    `rgba(${props.side === 'buy' ? '52, 211, 153' : '248, 113, 113'}, 0.55)` : 
+    'rgba(100, 116, 139, 0.32)'};
   border-radius: 4px;
   font-size: ${props => props.isBest ? '14px' : '13px'};
   font-weight: ${props => props.isBest ? '700' : '600'};
@@ -216,8 +219,8 @@ const OrderLevel = styled.div.withConfig({
   
   &:hover {
     background: ${props => props.isBest ? 
-      `rgba(${props.side === 'buy' ? '0, 255, 0' : '255, 107, 107'}, 0.25)` : 
-      'rgba(255, 255, 255, 0.1)'};
+      `rgba(${props.side === 'buy' ? '16, 185, 129' : '239, 68, 68'}, 0.28)` : 
+      'rgba(51, 65, 85, 0.72)'};
   }
   
   /* Mobile adjustments */
@@ -240,7 +243,7 @@ const BestLabel = styled.div.withConfig({
   shouldForwardProp: (prop) => prop !== 'side',
 })`
   font-size: 10px;
-  color: ${props => props.side === 'buy' ? '#00ff88' : '#ff5555'};
+  color: ${props => props.side === 'buy' ? '#34d399' : '#f87171'};
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -258,7 +261,7 @@ const LevelIndex = styled.div`
 const LevelPrice = styled.div.withConfig({
   shouldForwardProp: (prop) => prop !== 'side',
 })`
-  color: ${props => props.side === 'buy' ? '#00ff88' : '#ff5555'};
+  color: ${props => props.side === 'buy' ? '#6ee7b7' : '#fca5a5'};
   font-weight: 700;
   font-size: 13px;
   flex: 1;
@@ -277,29 +280,16 @@ const LevelQuantity = styled.div`
 
 
 
-const NoDataMessage = styled.div`
-  text-align: center;
-  color: #ff6b6b;
-  font-size: 15px;
-  padding: 20px;
-  background: rgba(255, 107, 107, 0.1);
-  border: 1px solid rgba(255, 107, 107, 0.3);
-  border-radius: 8px;
-  margin: 10px;
-  font-family: "Segoe UI", "Roboto", "Inter", system-ui, -apple-system, sans-serif;
-  line-height: 1.5;
-  font-weight: 500;
-`;
-
-
-
 const SubscribedStockTracker = ({ 
   tickData, 
   onOpenChart, // Add onOpenChart prop
   subscribedCount = 0,
   buySignalsCount = 0,
   sellSignalsCount = 0,
-  pollCountdown = 0
+  pollCountdown = 0,
+  subscribedSymbols = [],
+  signalStocks = { buySignals: [], sellSignals: [] },
+  marginsData = null
 }) => {
   // State to track currently selected stock symbol
   const [selectedSymbol, setSelectedSymbol] = useState(null);
@@ -407,16 +397,27 @@ const SubscribedStockTracker = ({
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Fetch funds data on component mount and periodically
+  // Sync subscription and funds state from scanner-driven App props.
   useEffect(() => {
-    // Initial fetch
-    fetchFundsData();
-    
-    // Refresh funds every 30 seconds
-    const fundsInterval = setInterval(fetchFundsData, 30000);
-    
-    return () => clearInterval(fundsInterval);
-  }, []);
+    setRealSubscribedSymbols(Array.isArray(subscribedSymbols) ? [...new Set(subscribedSymbols)] : []);
+  }, [subscribedSymbols]);
+
+  useEffect(() => {
+    const buy = signalStocks?.buySignals || [];
+    const sell = signalStocks?.sellSignals || [];
+    setBuyStocks([...new Set(buy)]);
+    setSellStocks([...new Set(sell)]);
+  }, [signalStocks]);
+
+  useEffect(() => {
+    if (!marginsData) return;
+    setFundsData({
+      availableFunds: Number(marginsData.availableFunds || 0),
+      leverageFunds: Number(marginsData.leverageFunds || 0),
+      usableFunds: Number(marginsData.usableFunds || 0),
+      lastUpdated: new Date().toISOString()
+    });
+  }, [marginsData]);
   
   // Function to handle unsubscribing a stock
   const handleUnsubscribe = async (symbol) => {
@@ -630,74 +631,7 @@ const SubscribedStockTracker = ({
     return chartUrl;
   }, [getSymbolToTokenMap]);
 
-  // Fetch real subscribed symbols from backend API
-  useEffect(() => {
-    const fetchSubscribedSymbols = async () => {
-      try {
-        const response = await fetch('http://localhost:5000/api/subscription-status');
-        if (response.ok) {
-          const data = await response.json();
-          const subscribedSymbols = data.subscribed_symbols || [];
-          console.log('🔍 Real subscribed symbols from backend:', subscribedSymbols);
-          console.log('🔍 Full subscription-status response:', data); // DEBUG: Log full response
-          
-          // ✅ DEDUPLICATE symbols at source to prevent table duplicates
-          const uniqueSubscribedSymbols = [...new Set(subscribedSymbols)];
-          console.log('🔍 Deduplication at source: original length', subscribedSymbols.length, '→ unique length', uniqueSubscribedSymbols.length);
-          setRealSubscribedSymbols(uniqueSubscribedSymbols);
-          
-          // NEW: Use enhanced signal stocks data from subscription-status
-          if (data.signal_stocks) {
-            const buySignals = data.signal_stocks.buySignals || [];
-            const sellSignals = data.signal_stocks.sellSignals || [];
-            console.log('📊 Signal stocks from subscription-status:', { buySignals: buySignals.length, sellSignals: sellSignals.length });
-            console.log('📊 Buy signals data:', buySignals); // DEBUG: Log buy signals
-            console.log('📊 Sell signals data:', sellSignals); // DEBUG: Log sell signals
-            
-            // ✅ DEDUPLICATE signal stocks as well
-            const uniqueBuySignals = [...new Set(buySignals)];
-            const uniqueSellSignals = [...new Set(sellSignals)];
-            setBuyStocks(uniqueBuySignals);
-            setSellStocks(uniqueSellSignals);
-          } else {
-            console.log('⚠️ No signal_stocks found in response');
-          }
-        } else {
-          console.log('⚠️ Failed to get subscription status from backend');
-        }
-      } catch (error) {
-        console.log('❌ Error fetching subscription status:', error);
-      }
-    };
-
-    // Fetch initially
-    fetchSubscribedSymbols();
-
-    // Fetch every 10 seconds to keep in sync
-    const interval = setInterval(fetchSubscribedSymbols, 10000);
-    
-    // ✅ Listen for subscription updates via WebSocket to immediately sync when symbols are unsubscribed
-    const handleWebSocketMessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.type === 'subscription_update') {
-          console.log('🔄 Subscription update received, refetching subscription status immediately');
-          fetchSubscribedSymbols(); // Immediate refetch when subscriptions change
-        }
-      } catch (error) {
-        // Ignore non-JSON messages
-      }
-    };
-
-    // Connect to WebSocket for real-time subscription updates
-    const websocket = new WebSocket('ws://localhost:5000');
-    websocket.addEventListener('message', handleWebSocketMessage);
-
-    return () => {
-      clearInterval(interval);
-      websocket.close();
-    };
-  }, []);
+  // subscription-status is now supplied by App scanner flow only.
 
   // Check fallback status periodically
   // DISABLED: fallback-status route was removed
@@ -1267,50 +1201,7 @@ const SubscribedStockTracker = ({
     return qty.toString();
   };
 
-  // Fetch funds data from backend (same as scanner logic)
-  const fetchFundsData = async () => {
-    try {
-      // Get access token from localStorage
-      const token = localStorage.getItem('kite_access_token');
-      
-      if (!token) {
-        console.error('❌ No access token found for funds fetch');
-        return null;
-      }
-      
-      const response = await fetch(`http://localhost:5000/api/get-margins?access_token=${encodeURIComponent(token)}`, {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' }
-      });
-      
-      if (!response.ok) {
-        console.error('❌ Failed to fetch margins:', response.status);
-        return null;
-      }
-      
-      const result = await response.json();
-      console.log('📊 Margins data for subscribed table:', result);
-      
-      if (result.success && result.availableFunds !== undefined) {
-        const fundsInfo = {
-          availableFunds: result.availableFunds,
-          leverageFunds: result.leverageFunds,
-          usableFunds: result.usableFunds,
-          lastUpdated: result.lastUpdated
-        };
-        
-        setFundsData(fundsInfo);
-        console.log('💰 Updated subscribed table funds:', fundsInfo);
-        return fundsInfo;
-      } else {
-        console.error('❌ Funds fetch failed:', result.error || 'Unknown error');
-        console.log('📊 Full response:', result);
-      }
-    } catch (error) {
-      console.error('❌ Error fetching funds for subscribed table:', error);
-    }
-    return null;
-  };
+  // get-margins is now supplied by App scanner flow only.
 
   // Calculate quantity based on funds (using leveraged funds for max possible quantity)
   const calculateQuantityFromFunds = (price) => {
@@ -2288,39 +2179,7 @@ const SubscribedStockTracker = ({
           };
           
           if (!rawDepth || !rawDepth.buy || !rawDepth.sell) {
-            return (
-              <div style={{
-                marginTop: '20px',
-                padding: '24px',
-                background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.05), rgba(139, 92, 246, 0.05))',
-                border: '1px solid rgba(99, 102, 241, 0.15)',
-                borderRadius: '12px',
-                textAlign: 'center'
-              }}>
-                <div style={{
-                  fontSize: '48px',
-                  marginBottom: '16px',
-                  opacity: '0.6'
-                }}>
-                  📊
-                </div>
-                <div style={{
-                  fontSize: '16px',
-                  fontWeight: '600',
-                  color: '#6366f1',
-                  marginBottom: '8px'
-                }}>
-                  Select a Symbol
-                </div>
-                <div style={{
-                  fontSize: '14px',
-                  color: '#64748b',
-                  lineHeight: '1.5'
-                }}>
-                  Click on any symbol in the table above<br />to view its real-time order book data
-                </div>
-              </div>
-            );
+            return null;
           }
           
           return (
@@ -2695,77 +2554,9 @@ const SubscribedStockTracker = ({
           );
         })()}
         
-        {/* Empty State - No Symbol Selected */}
-        {!selectedSymbol && (
-          <div style={{
-            marginTop: '20px',
-            padding: '24px',
-            background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.05), rgba(139, 92, 246, 0.05))',
-            border: '1px solid rgba(99, 102, 241, 0.15)',
-            borderRadius: '12px',
-            textAlign: 'center'
-          }}>
-            <div style={{
-              fontSize: '48px',
-              marginBottom: '16px',
-              opacity: '0.6'
-            }}>
-              📊
-            </div>
-            <div style={{
-              fontSize: '16px',
-              fontWeight: '600',
-              color: '#6366f1',
-              marginBottom: '8px'
-            }}>
-              Select a Symbol
-            </div>
-            <div style={{
-              fontSize: '14px',
-              color: '#64748b',
-              lineHeight: '1.5'
-            }}>
-              Click on any symbol in the table above<br />to view its real-time order book data
-            </div>
-          </div>
-        )}
+        {/* Empty state prompt removed as requested */}
       </div>
       
-      {!stockData && !isWaitingForData && (
-        <div style={{
-          background: 'rgba(255, 107, 107, 0.1)',
-          border: '1px solid rgba(255, 107, 107, 0.3)',
-          borderRadius: '8px',
-          padding: '20px'
-        }}>
-          <NoDataMessage>
-            {hasSymbol ? (
-              <>
-                ⏳ Waiting for live data for {currentSymbol}... <br />
-                <small style={{ color: '#ffd700' }}>Symbol subscribed - first tick data loading...</small>
-              </>
-            ) : (
-              <>
-                📡 Waiting for subscribed stock data... <br />
-                <small>Start scanner to begin receiving tick updates</small>
-              </>
-            )}
-            {(() => {
-              const allSymbols = getAllAvailableSymbols();
-              const queuedSymbols = allSymbols.filter(symbol => symbol !== selectedSymbol);
-              
-              if (queuedSymbols.length > 0) {
-                return (
-                  <div style={{ marginTop: '10px', fontSize: '11px', color: '#ffd700' }}>
-                    🔄 Available symbols: {queuedSymbols.join(', ')}
-                  </div>
-                );
-              }
-              return null;
-            })()}
-          </NoDataMessage>
-        </div>
-      )}
     </TrackerContainer>
   );
 };
