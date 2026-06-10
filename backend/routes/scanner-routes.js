@@ -32,6 +32,26 @@ let globalUsableFunds = 0;
 let globalFundsLastUpdated = null;
 let globalFundsError = null;
 
+// Tick backpressure controls: keep API routes responsive under heavy tick load.
+let tickHandlerBusy = false;
+let lastTickHandledAt = 0;
+let droppedTickBatches = 0;
+const TICK_PROCESS_INTERVAL_MS = 400;
+const ENABLE_VERBOSE_TICK_LOGS = false;
+const ENABLE_VERBOSE_SCAN_LOGS = false;
+const ENABLE_VERBOSE_MARKET_IMPACT_LOGS = false;
+const ENABLE_TICK_BATCH_BROADCAST = false;
+
+// Target-order dedupe guards (across all placement paths)
+const targetOrderPlacementInFlight = new Set();
+const recentTargetOrderPlacements = new Map(); // key -> { ts, orderId }
+const TARGET_ORDER_DEDUPE_WINDOW_MS = 15000;
+
+// Tick precheck throttling: avoid repeated positions/orders/margins calls on rapid ticks.
+const orderPrecheckInFlight = new Set(); // key: symbol_scanType
+const orderPrecheckLastRunAt = new Map(); // key -> epoch ms
+const ORDER_PRECHECK_COOLDOWN_MS = 30000;
+
 // Function to update global funds from Kite margins API
 async function updateGlobalFunds(accessToken) {
     try {
@@ -523,28 +543,72 @@ function calculateTargetPrice(avgPrice, quantity, side) {
 
 // Place target order
 async function placeTargetOrder(accessToken, symbol, quantity, targetPrice, side) {
+    let targetKey = null;
     try {
         // side is already the correct target side we want (no need to flip)
         const targetAction = side; // Use the side parameter directly
         const product = 'MIS'; // MIS for intraday
+        const normalizedQty = Math.abs(parseInt(quantity || 0));
+        const roundedTargetPrice = Number(targetPrice || 0).toFixed(2);
+        targetKey = `${symbol}|${targetAction}|${normalizedQty}|${roundedTargetPrice}`;
+
+        if (normalizedQty <= 0 || !Number.isFinite(Number(roundedTargetPrice))) {
+            return { success: false, error: 'Invalid target order quantity/price' };
+        }
+
+        if (targetOrderPlacementInFlight.has(targetKey)) {
+            console.log(`⏸️ Target placement already in-flight for ${targetKey} - skipping duplicate attempt`);
+            return { success: true, skippedDuplicate: true, reason: 'in_flight_duplicate' };
+        }
+
+        const recent = recentTargetOrderPlacements.get(targetKey);
+        if (recent && (Date.now() - recent.ts) < TARGET_ORDER_DEDUPE_WINDOW_MS) {
+            console.log(`⏸️ Target placement deduped by recent window for ${targetKey} (${Date.now() - recent.ts}ms)`);
+            return { success: true, skippedDuplicate: true, reason: 'recent_duplicate', orderId: recent.orderId || null };
+        }
+
+        targetOrderPlacementInFlight.add(targetKey);
         
         // Initialize KiteConnect
         const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
         kite.setAccessToken(accessToken);
+
+        // Broker-side dedupe: if matching open target exists, do not place another.
+        const existingOrders = await kite.getOrders();
+        const matchingOpenTarget = (existingOrders || []).find(order =>
+            order.tradingsymbol === symbol &&
+            order.transaction_type === targetAction &&
+            Math.abs(parseInt(order.quantity || 0)) === normalizedQty &&
+            (order.status === 'OPEN' || order.status === 'TRIGGER PENDING' || order.status === 'MODIFY_PENDING') &&
+            (String(order.tag || '').startsWith('TGT_') || Number(order.price || 0).toFixed(2) === roundedTargetPrice)
+        );
+
+        if (matchingOpenTarget) {
+            targetOrders.set(symbol, {
+                orderId: matchingOpenTarget.order_id,
+                targetPrice: parseFloat(matchingOpenTarget.price || roundedTargetPrice),
+                quantity: normalizedQty,
+                side: targetAction,
+                placedAt: matchingOpenTarget.order_timestamp || new Date().toISOString()
+            });
+            recentTargetOrderPlacements.set(targetKey, { ts: Date.now(), orderId: matchingOpenTarget.order_id });
+            console.log(`✅ Matching open target already exists for ${symbol}: ${matchingOpenTarget.order_id} - deduped`);
+            return { success: true, orderId: matchingOpenTarget.order_id, alreadyExists: true };
+        }
         
         const orderParams = {
             exchange: 'NSE',
             tradingsymbol: symbol,
             transaction_type: targetAction, // Use targetAction directly
             order_type: 'LIMIT',
-            quantity: Math.abs(quantity),
-            price: targetPrice.toFixed(2),
+            quantity: normalizedQty,
+            price: roundedTargetPrice,
             product: product,
             validity: 'DAY',
             tag: `TGT_${symbol.substring(0, 8)}` // Shortened tag to fit 20 char limit
         };
 
-        console.log(`🎯 Placing TARGET order: ${targetAction} ${Math.abs(quantity)} ${symbol} @ ₹${targetPrice.toFixed(2)}`);
+        console.log(`🎯 Placing TARGET order: ${targetAction} ${normalizedQty} ${symbol} @ ₹${roundedTargetPrice}`);
         
         const result = await kite.placeOrder('regular', orderParams);
 
@@ -554,11 +618,13 @@ async function placeTargetOrder(accessToken, symbol, quantity, targetPrice, side
             // Store target order info
             targetOrders.set(symbol, {
                 orderId: result.order_id,
-                targetPrice: targetPrice,
-                quantity: Math.abs(quantity),
+                targetPrice: Number(roundedTargetPrice),
+                quantity: normalizedQty,
                 side: targetAction,
                 placedAt: new Date().toISOString()
             });
+
+            recentTargetOrderPlacements.set(targetKey, { ts: Date.now(), orderId: result.order_id });
             
             return { success: true, orderId: result.order_id };
         } else {
@@ -568,6 +634,10 @@ async function placeTargetOrder(accessToken, symbol, quantity, targetPrice, side
     } catch (error) {
         console.error(`❌ TARGET ORDER ERROR for ${symbol}:`, error.message);
         return { success: false, error: error.message };
+    } finally {
+        if (targetKey) {
+            targetOrderPlacementInFlight.delete(targetKey);
+        }
     }
 }
 
@@ -589,6 +659,7 @@ async function processNewPosition(accessToken, symbol, orderType) {
             const quantity = parseInt(position.quantity);
             const avgPrice = parseFloat(position.average_price || position.price);
             const side = quantity > 0 ? 'BUY' : 'SELL';
+            const targetSide = side === 'BUY' ? 'SELL' : 'BUY';
             
             console.log(`📊 Found position: ${symbol} Qty=${quantity}, AvgPrice=₹${avgPrice}, Side=${side}`);
             
@@ -613,7 +684,7 @@ async function processNewPosition(accessToken, symbol, orderType) {
             });
             
             // Place target order
-            const targetResult = await placeTargetOrder(accessToken, symbol, quantity, targetPrice, side);
+            const targetResult = await placeTargetOrder(accessToken, symbol, quantity, targetPrice, targetSide);
             
             if (targetResult.success) {
                 // Update active position with target order ID
@@ -653,10 +724,10 @@ async function processNewPosition(accessToken, symbol, orderType) {
     }
 }
 
-// 🎯 POSITION & ORDER CHECK - MONITORING ONLY, NO AUTOMATIC TARGET PLACEMENT
+// 🎯 POSITION & ORDER CHECK - backend reconciliation for missing target orders
 async function checkPositionsAndOrders(accessToken) {
     try {
-        console.log('🔍 === POSITION & ORDER CHECK (MONITORING ONLY) ===');
+        console.log('🔍 === POSITION & ORDER CHECK (TARGET RECONCILIATION) ===');
         console.log(`🔑 Using access token: ${accessToken ? accessToken.substring(0, 10) + '...' : 'undefined'}`);
         
         // STEP 1: Get current active positions
@@ -722,7 +793,7 @@ async function checkPositionsAndOrders(accessToken) {
             }))
         );
         
-        // STEP 3: Only analyze target coverage (NO AUTOMATIC PLACEMENT)
+        // STEP 3: Reconcile missing targets for active positions
         for (const position of activePositionsFiltered) {
             const symbol = position.tradingsymbol;
             const quantity = parseInt(position.quantity);
@@ -743,11 +814,36 @@ async function checkPositionsAndOrders(accessToken) {
             if (existingTargetOrder) {
                 console.log(`✅ Target order exists for ${symbol}: ${existingTargetOrder.order_id} (${targetSide} ${existingTargetOrder.quantity} @ ₹${existingTargetOrder.price})`);
             } else {
-                console.log(`⚠️ No target order found for ${symbol} - Frontend should place one via dedicated route`);
+                console.log(`🎯 No target order found for ${symbol} - placing missing target from backend`);
+
+                const targetPrice = calculateTargetPrice(avgPrice, Math.abs(quantity), positionSide);
+                const targetResult = await placeTargetOrder(accessToken, symbol, Math.abs(quantity), targetPrice, targetSide);
+
+                if (targetResult.success) {
+                    console.log(`✅ Missing target order placed for ${symbol}: ${targetResult.orderId}`);
+                    if (global.broadcastLiveData) {
+                        global.broadcastLiveData({
+                            type: 'target_order_placed',
+                            position: {
+                                symbol,
+                                quantity,
+                                avgPrice,
+                                side: positionSide,
+                                targetSide,
+                                targetPrice,
+                                targetOrderId: targetResult.orderId,
+                                targetProfit: 1500,
+                                timestamp: new Date().toISOString()
+                            }
+                        });
+                    }
+                } else {
+                    console.log(`❌ Failed to place missing target for ${symbol}: ${targetResult.error}`);
+                }
             }
         }
         
-        console.log('🎯 Position & order check complete - MONITORING ONLY (Frontend will place targets)');
+        console.log('🎯 Position & order check complete - backend target reconciliation applied');
         return { 
             allowMainOrders: false, 
             positionsFound: true, 
@@ -783,12 +879,17 @@ function shouldBlockNewOrders() {
     return false;
 }
 
-// Helper function to calculate market impact for 490K order
-function calculateMarketImpact(orderBookDepth, ltp, scanType, orderAmount = 490000) {
-    console.log(`🎯 calculateMarketImpact called: LTP=${ltp}, scanType='${scanType}', amount=${orderAmount}`);
+// Helper function to calculate market impact for derived funds-based order amount
+function calculateMarketImpact(orderBookDepth, ltp, scanType, orderAmount = null) {
+    const effectiveOrderAmount = Number(orderAmount) > 0 ? Number(orderAmount) : Number(globalUsableFunds || 0);
+    if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+        console.log(`🎯 calculateMarketImpact called: LTP=${ltp}, scanType='${scanType}', amount=${effectiveOrderAmount}`);
+    }
     
     if (!orderBookDepth || !ltp || !scanType) {
-        console.log(`❌ Missing data for market impact: depth=${!!orderBookDepth}, ltp=${ltp}, scanType='${scanType}'`);
+        if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+            console.log(`❌ Missing data for market impact: depth=${!!orderBookDepth}, ltp=${ltp}, scanType='${scanType}'`);
+        }
         return {
             quantity: 0,
             impactedLevels: 0,
@@ -797,14 +898,20 @@ function calculateMarketImpact(orderBookDepth, ltp, scanType, orderAmount = 4900
         };
     }
 
-    const quantity = Math.floor(orderAmount / ltp);
-    console.log(`💰 Market Impact Analysis: Amount=${orderAmount.toLocaleString()}, LTP=${ltp}, Quantity=${quantity.toLocaleString()}, Type=${scanType}`);
+    const quantity = Math.floor(effectiveOrderAmount / ltp);
+    if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+        console.log(`💰 Market Impact Analysis: Amount=${effectiveOrderAmount.toLocaleString('en-IN')}, LTP=${ltp}, Quantity=${quantity.toLocaleString('en-IN')}, Type=${scanType}`);
+    }
 
     if (scanType === 'BUY_SCAN') {
-        console.log(`📈 Processing BUY_SCAN - consuming ask levels`);
+        if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+            console.log(`📈 Processing BUY_SCAN - consuming ask levels`);
+        }
         // For buy orders, consume ask levels (sell side)
         const askLevels = orderBookDepth.sell || [];
-        console.log(`📊 Ask levels available: ${askLevels.length}`);
+        if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+            console.log(`📊 Ask levels available: ${askLevels.length}`);
+        }
         
         let remainingQty = quantity;
         let totalCost = 0;
@@ -819,7 +926,9 @@ function calculateMarketImpact(orderBookDepth, ltp, scanType, orderAmount = 4900
             remainingQty -= consumedQty;
             impactedLevels++;
             
-            console.log(`📊 BUY Level ${i + 1}: Price=${level.price}, AvailableQty=${availableQty}, ConsumedQty=${consumedQty}, RemainingQty=${remainingQty}`);
+            if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+                console.log(`📊 BUY Level ${i + 1}: Price=${level.price}, AvailableQty=${availableQty}, ConsumedQty=${consumedQty}, RemainingQty=${remainingQty}`);
+            }
         }
 
         const avgExecutionPrice = quantity > 0 ? totalCost / (quantity - remainingQty) : ltp;
@@ -834,14 +943,20 @@ function calculateMarketImpact(orderBookDepth, ltp, scanType, orderAmount = 4900
             impactSide: 'ask'
         };
         
-        console.log(`✅ BUY Impact Result:`, result);
+        if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+            console.log(`✅ BUY Impact Result:`, result);
+        }
         return result;
         
     } else if (scanType === 'SELL_SCAN') {
-        console.log(`📉 Processing SELL_SCAN - consuming bid levels`);
+        if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+            console.log(`📉 Processing SELL_SCAN - consuming bid levels`);
+        }
         // For sell orders, consume bid levels (buy side)
         const bidLevels = orderBookDepth.buy || [];
-        console.log(`📊 Bid levels available: ${bidLevels.length}`);
+        if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+            console.log(`📊 Bid levels available: ${bidLevels.length}`);
+        }
         
         let remainingQty = quantity;
         let totalValue = 0;
@@ -856,7 +971,9 @@ function calculateMarketImpact(orderBookDepth, ltp, scanType, orderAmount = 4900
             remainingQty -= consumedQty;
             impactedLevels++;
             
-            console.log(`📊 SELL Level ${i + 1}: Price=${level.price}, AvailableQty=${availableQty}, ConsumedQty=${consumedQty}, RemainingQty=${remainingQty}`);
+            if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+                console.log(`📊 SELL Level ${i + 1}: Price=${level.price}, AvailableQty=${availableQty}, ConsumedQty=${consumedQty}, RemainingQty=${remainingQty}`);
+            }
         }
 
         const avgExecutionPrice = quantity > 0 ? totalValue / (quantity - remainingQty) : ltp;
@@ -871,10 +988,14 @@ function calculateMarketImpact(orderBookDepth, ltp, scanType, orderAmount = 4900
             impactSide: 'bid'
         };
         
-        console.log(`✅ SELL Impact Result:`, result);
+        if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+            console.log(`✅ SELL Impact Result:`, result);
+        }
         return result;
     } else {
-        console.log(`⚠️ Unknown scanType: '${scanType}' - no masking applied`);
+        if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+            console.log(`⚠️ Unknown scanType: '${scanType}' - no masking applied`);
+        }
         return {
             quantity: 0,
             impactedLevels: 0,
@@ -886,19 +1007,20 @@ function calculateMarketImpact(orderBookDepth, ltp, scanType, orderAmount = 4900
 
 // Helper function to enhance depth to 20 levels with optional market impact masking
 function enhanceDepthTo20Levels(existingDepth, lastPrice, scanType = null, applyLiveTrackerMasking = false) {
-    console.log('🔧 enhanceDepthTo20Levels called:', {
-        hasExistingDepth: !!existingDepth,
-        existingBuyLevels: existingDepth?.buy?.length || 0,
-        existingSellLevels: existingDepth?.sell?.length || 0,
-        lastPrice: lastPrice,
-        scanType: scanType,
-        // CHECK IF KITETICKER ACTUALLY PROVIDES MORE THAN 5 LEVELS
-        rawDepthAnalysis: {
-            buyDepthComplete: existingDepth?.buy || [],
-            sellDepthComplete: existingDepth?.sell || [],
-            potentiallyMissing20Levels: (existingDepth?.buy?.length || 0) < 20
-        }
-    });
+    if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+        console.log('🔧 enhanceDepthTo20Levels called:', {
+            hasExistingDepth: !!existingDepth,
+            existingBuyLevels: existingDepth?.buy?.length || 0,
+            existingSellLevels: existingDepth?.sell?.length || 0,
+            lastPrice: lastPrice,
+            scanType: scanType,
+            rawDepthAnalysis: {
+                buyDepthComplete: existingDepth?.buy || [],
+                sellDepthComplete: existingDepth?.sell || [],
+                potentiallyMissing20Levels: (existingDepth?.buy?.length || 0) < 20
+            }
+        });
+    }
 
     if (!existingDepth || !lastPrice) {
         // No existing depth - create minimal structure with realistic varying quantities
@@ -941,7 +1063,9 @@ function enhanceDepthTo20Levels(existingDepth, lastPrice, scanType = null, apply
 
         // ONLY apply market impact calculations if this is the live tracker symbol
         if (applyLiveTrackerMasking) {
-            console.log('🎯 BACKEND: MASKING ACTIVE - Calculating market impact for ₹490,000 order');
+            if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+                console.log('🎯 BACKEND: MASKING ACTIVE - Calculating market impact for live tracker');
+            }
             const impact = calculateMarketImpact(result, lastPrice, 'BUY_SCAN', globalUsableFunds); // Use BUY_SCAN for live display
             result.marketImpact = impact;
             result.liveTrackerMasking = true;
@@ -961,20 +1085,22 @@ function enhanceDepthTo20Levels(existingDepth, lastPrice, scanType = null, apply
                 result.buy[i].impactOpacity = 0.5; // Fixed opacity for testing
             }
             
-            console.log(`💰 BACKEND: Live Tracker Masking Applied: ${levelsToMask} levels on both sides`);
-            console.log(`🎯 BACKEND: MASKING COMPLETE - Market impact data added to depth response`);
+            if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+                console.log(`💰 BACKEND: Live Tracker Masking Applied: ${levelsToMask} levels on both sides`);
+                console.log(`🎯 BACKEND: MASKING COMPLETE - Market impact data added to depth response`);
+            }
         }
 
-        console.log(`🔧 Created new 20-level depth with market impact (no existing data)`);
-        console.log(`📊 Final masking summary - Masked BID levels: ${result.buy.filter(o => o.masked).length}, Masked ASK levels: ${result.sell.filter(o => o.masked).length}`);
-        
-        // VERIFICATION: Log what we're returning (no existing depth case)
-        console.log('🔧 enhanceDepthTo20Levels NO-EXISTING-DEPTH RESULT:', {
-            buyLevelsCreated: result.buy?.length || 0,
-            sellLevelsCreated: result.sell?.length || 0,
-            level20Buy: result.buy?.[19] || 'MISSING LEVEL 20',
-            level20Sell: result.sell?.[19] || 'MISSING LEVEL 20'
-        });
+        if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+            console.log(`🔧 Created new 20-level depth with market impact (no existing data)`);
+            console.log(`📊 Final masking summary - Masked BID levels: ${result.buy.filter(o => o.masked).length}, Masked ASK levels: ${result.sell.filter(o => o.masked).length}`);
+            console.log('🔧 enhanceDepthTo20Levels NO-EXISTING-DEPTH RESULT:', {
+                buyLevelsCreated: result.buy?.length || 0,
+                sellLevelsCreated: result.sell?.length || 0,
+                level20Buy: result.buy?.[19] || 'MISSING LEVEL 20',
+                level20Sell: result.sell?.[19] || 'MISSING LEVEL 20'
+            });
+        }
         
         return result;
     }
@@ -1063,7 +1189,9 @@ function enhanceDepthTo20Levels(existingDepth, lastPrice, scanType = null, apply
 
     // ONLY calculate market impact if this is the live tracker symbol
     if (applyLiveTrackerMasking) {
-        console.log('🎯 BACKEND: EXISTING DEPTH MASKING - Calculating market impact for existing depth');
+        if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+            console.log('🎯 BACKEND: EXISTING DEPTH MASKING - Calculating market impact for existing depth');
+        }
         const impact = calculateMarketImpact(result, lastPrice, 'BUY_SCAN', globalUsableFunds);
         result.marketImpact = impact;
         result.liveTrackerMasking = true;
@@ -1083,19 +1211,23 @@ function enhanceDepthTo20Levels(existingDepth, lastPrice, scanType = null, apply
             result.buy[i].impactOpacity = 0.5; // Fixed opacity for testing
         }
         
-        console.log(`💰 BACKEND: Live Tracker Masking Applied to existing depth: ${levelsToMask} levels`);
-        console.log(`🎯 BACKEND: EXISTING DEPTH MASKING COMPLETE`);
+        if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+            console.log(`💰 BACKEND: Live Tracker Masking Applied to existing depth: ${levelsToMask} levels`);
+            console.log(`🎯 BACKEND: EXISTING DEPTH MASKING COMPLETE`);
+        }
     }
     
     // FINAL VERIFICATION: Log what we're returning
-    console.log('🔧 enhanceDepthTo20Levels RESULT:', {
-        buyLevelsReturned: result.buy?.length || 0,
-        sellLevelsReturned: result.sell?.length || 0,
-        firstBuyLevel: result.buy?.[0] || 'N/A',
-        lastBuyLevel: result.buy?.[result.buy?.length - 1] || 'N/A',
-        level20Buy: result.buy?.[19] || 'MISSING LEVEL 20',
-        level20Sell: result.sell?.[19] || 'MISSING LEVEL 20'
-    });
+    if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+        console.log('🔧 enhanceDepthTo20Levels RESULT:', {
+            buyLevelsReturned: result.buy?.length || 0,
+            sellLevelsReturned: result.sell?.length || 0,
+            firstBuyLevel: result.buy?.[0] || 'N/A',
+            lastBuyLevel: result.buy?.[result.buy?.length - 1] || 'N/A',
+            level20Buy: result.buy?.[19] || 'MISSING LEVEL 20',
+            level20Sell: result.sell?.[19] || 'MISSING LEVEL 20'
+        });
+    }
     
     return result;
 }
@@ -1219,7 +1351,7 @@ router.get('/debug-market-impact-execution', (req, res) => {
                 executionCriteria: {
                     maxLevels: 3,
                     maxSlippagePercent: 0.08,
-                    orderAmount: 490000
+                    orderAmount: globalUsableFunds
                 },
                 subscribedStocks: {
                     count: currentlySubscribed.size,
@@ -1617,6 +1749,40 @@ async function getOpenOrders(accessToken) {
     }
 }
 
+// Single precheck snapshot: call positions + open-orders + funds once per trigger.
+async function getTradePrecheckSnapshot(accessToken, options = {}) {
+    const { refreshFunds = false, context = 'generic' } = options;
+
+    if (!accessToken || accessToken === 'demo_token') {
+        return {
+            activePositions: [],
+            openOrders: [],
+            globalFunds: getGlobalFunds(),
+            fundsUpdated: false
+        };
+    }
+
+    let fundsUpdated = false;
+    if (refreshFunds) {
+        fundsUpdated = await updateGlobalFunds(accessToken);
+    }
+
+    const [activePositions, openOrders] = await Promise.all([
+        getActivePositions(accessToken),
+        getOpenOrders(accessToken)
+    ]);
+
+    const snapshot = {
+        activePositions: Array.isArray(activePositions) ? activePositions : [],
+        openOrders: Array.isArray(openOrders) ? openOrders : [],
+        globalFunds: getGlobalFunds(),
+        fundsUpdated
+    };
+
+    console.log(`📌 Precheck snapshot (${context}): positions=${snapshot.activePositions.length}, openOrders=${snapshot.openOrders.length}, usable=₹${Number(snapshot.globalFunds.usableFunds || 0).toLocaleString('en-IN')}`);
+    return snapshot;
+}
+
 
 
 // Helper functions to call SEPARATE order routes
@@ -1847,13 +2013,17 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
         // Extract tokens from both buy and sell stocks
         const newTokens = new Set();
         
-        console.log('🔍 DEBUG - buyStocks length:', buyStocks.length);
-        console.log('🔍 DEBUG - sellStocks length:', sellStocks.length);
-        console.log('🔍 DEBUG - First buyStock:', JSON.stringify(buyStocks[0], null, 2));
+        if (ENABLE_VERBOSE_SCAN_LOGS) {
+            console.log('🔍 DEBUG - buyStocks length:', buyStocks.length);
+            console.log('🔍 DEBUG - sellStocks length:', sellStocks.length);
+            console.log('🔍 DEBUG - First buyStock:', JSON.stringify(buyStocks[0], null, 2));
+        }
         
         // Process buy stocks
         buyStocks.forEach((stock, index) => {
-            console.log(`🔍 DEBUG - Processing buyStock[${index}]:`, JSON.stringify(stock, null, 2));
+            if (ENABLE_VERBOSE_SCAN_LOGS) {
+                console.log(`🔍 DEBUG - Processing buyStock[${index}]:`, JSON.stringify(stock, null, 2));
+            }
             
             // Extract symbol from TradingView format (NSE:SYMBOL)
             let symbol = null;
@@ -1861,17 +2031,25 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
             
             if (stock.s && typeof stock.s === 'string' && stock.s.includes(':')) {
                 symbol = stock.s.split(':')[1]; // Extract SYMBOL from "NSE:SYMBOL"
-                console.log(`🔍 Extracted symbol: "${symbol}" from "${stock.s}"`);
+                if (ENABLE_VERBOSE_SCAN_LOGS) {
+                    console.log(`🔍 Extracted symbol: "${symbol}" from "${stock.s}"`);
+                }
                 
                 if (symbol && symbolMappings.symbolMappings[symbol]) {
                     token = symbolMappings.symbolMappings[symbol];
-                    console.log(`✅ Found token for ${symbol}: ${token}`);
+                    if (ENABLE_VERBOSE_SCAN_LOGS) {
+                        console.log(`✅ Found token for ${symbol}: ${token}`);
+                    }
                 } else {
-                    console.log(`❌ No token mapping found for symbol: "${symbol}"`);
-                    console.log(`🔍 Available mappings sample:`, Object.keys(symbolMappings.symbolMappings).slice(0, 10));
+                    if (ENABLE_VERBOSE_SCAN_LOGS) {
+                        console.log(`❌ No token mapping found for symbol: "${symbol}"`);
+                        console.log(`🔍 Available mappings sample:`, Object.keys(symbolMappings.symbolMappings).slice(0, 10));
+                    }
                 }
             } else {
-                console.log(`❌ Invalid stock.s format:`, stock.s);
+                if (ENABLE_VERBOSE_SCAN_LOGS) {
+                    console.log(`❌ Invalid stock.s format:`, stock.s);
+                }
             }
             
             if (token && symbol) {
@@ -1879,13 +2057,17 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
                 scanTypeTracker.set(parseInt(token), 'BUY_SCAN');
                 console.log(`🟢 BUY ADDED: ${symbol} (${token}) -> BUY_SCAN tracked`);
             } else {
-                console.log(`❌ SKIPPED - No valid token for buyStock[${index}]`);
+                if (ENABLE_VERBOSE_SCAN_LOGS) {
+                    console.log(`❌ SKIPPED - No valid token for buyStock[${index}]`);
+                }
             }
         });
         
         // Process sell stocks  
         sellStocks.forEach((stock, index) => {
-            console.log(`🔍 DEBUG - Processing sellStock[${index}]:`, JSON.stringify(stock, null, 2));
+            if (ENABLE_VERBOSE_SCAN_LOGS) {
+                console.log(`🔍 DEBUG - Processing sellStock[${index}]:`, JSON.stringify(stock, null, 2));
+            }
             
             // Extract symbol from TradingView format (NSE:SYMBOL)
             let symbol = null;
@@ -1893,16 +2075,24 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
             
             if (stock.s && typeof stock.s === 'string' && stock.s.includes(':')) {
                 symbol = stock.s.split(':')[1]; // Extract SYMBOL from "NSE:SYMBOL"  
-                console.log(`🔍 Extracted symbol: "${symbol}" from "${stock.s}"`);
+                if (ENABLE_VERBOSE_SCAN_LOGS) {
+                    console.log(`🔍 Extracted symbol: "${symbol}" from "${stock.s}"`);
+                }
                 
                 if (symbol && symbolMappings.symbolMappings[symbol]) {
                     token = symbolMappings.symbolMappings[symbol];
-                    console.log(`✅ Found token for ${symbol}: ${token}`);
+                    if (ENABLE_VERBOSE_SCAN_LOGS) {
+                        console.log(`✅ Found token for ${symbol}: ${token}`);
+                    }
                 } else {
-                    console.log(`❌ No token mapping found for symbol: "${symbol}"`);
+                    if (ENABLE_VERBOSE_SCAN_LOGS) {
+                        console.log(`❌ No token mapping found for symbol: "${symbol}"`);
+                    }
                 }
             } else {
-                console.log(`❌ Invalid stock.s format:`, stock.s);
+                if (ENABLE_VERBOSE_SCAN_LOGS) {
+                    console.log(`❌ Invalid stock.s format:`, stock.s);
+                }
             }
             
             if (token && symbol) {
@@ -1910,7 +2100,9 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
                 scanTypeTracker.set(parseInt(token), 'SELL_SCAN');
                 console.log(`🔴 SELL ADDED: ${symbol} (${token}) -> SELL_SCAN tracked`);
             } else {
-                console.log(`❌ SKIPPED - No valid token for sellStock[${index}]`);
+                if (ENABLE_VERBOSE_SCAN_LOGS) {
+                    console.log(`❌ SKIPPED - No valid token for sellStock[${index}]`);
+                }
             }
         });
 
@@ -2061,10 +2253,31 @@ function setupTickerEventHandlers() {
     });
     
     globalTicker.on('ticks', async (ticks) => {
-        console.log(`📊 ✅ RECEIVED ${ticks.length} TICK UPDATES - DEBUGGING ENABLED`);
+        if (!Array.isArray(ticks) || ticks.length === 0) {
+            return;
+        }
+
+        const now = Date.now();
+        if (tickHandlerBusy) {
+            droppedTickBatches++;
+            return;
+        }
+
+        if (now - lastTickHandledAt < TICK_PROCESS_INTERVAL_MS) {
+            droppedTickBatches++;
+            return;
+        }
+
+        tickHandlerBusy = true;
+        lastTickHandledAt = now;
+
+        try {
+            if (ENABLE_VERBOSE_TICK_LOGS) {
+                console.log(`📊 ✅ RECEIVED ${ticks.length} TICK UPDATES (dropped=${droppedTickBatches})`);
+            }
         
         // Log first tick for debugging
-        if (ticks.length > 0) {
+        if (ENABLE_VERBOSE_TICK_LOGS && ticks.length > 0) {
             const firstTick = ticks[0];
             // Log COMPLETE tick object to see ALL available properties
             // console.log('📊 COMPLETE KITETICKER TICK OBJECT:', {
@@ -2157,11 +2370,13 @@ function setupTickerEventHandlers() {
                 }
                 
                 try {
-                    console.log(`🎯 MARKET IMPACT ANALYSIS: ${symbol} @ ₹${ltp} - ScanType: ${scanType}`);
+                    if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+                        console.log(`🎯 MARKET IMPACT ANALYSIS: ${symbol} @ ₹${ltp} - ScanType: ${scanType}`);
+                    }
                     
-                    // Calculate market impact for both BUY and SELL scenarios
-                    const buyImpact = calculateMarketImpact(tick.depth, ltp, 'BUY_SCAN', 490000);
-                    const sellImpact = calculateMarketImpact(tick.depth, ltp, 'SELL_SCAN', 490000);
+                    // Calculate market impact for both BUY and SELL scenarios using derived usable funds
+                    const buyImpact = calculateMarketImpact(tick.depth, ltp, 'BUY_SCAN', globalUsableFunds);
+                    const sellImpact = calculateMarketImpact(tick.depth, ltp, 'SELL_SCAN', globalUsableFunds);
                     
                     // ====================================================================
                     // POSITION-FIRST EXECUTION STRATEGY:
@@ -2170,13 +2385,37 @@ function setupTickerEventHandlers() {
                     // 3. Target orders = ₹1500 profit for existing positions
                     // ==================================================================== 
                     
-                    // Execution criteria: levels <= 2 AND slippage <= 0.08%
+                    // Execution criteria (both BUY and SELL): impactedLevels must be <= 2 and slippage <= 0.08%
                     const maxLevels = 2;
                     const maxSlippage = 0.08; // 0.08%
+
+                    // Early gate: only run expensive position/open-order checks when a market order is
+                    // actually close to execution eligibility by impact + scan-type + duplicate guards.
+                    if (!autoTradingActive) {
+                        return;
+                    }
+
+                    const potentialBuyByImpact =
+                        scanType === 'BUY_SCAN' &&
+                        buyImpact.impactedLevels <= maxLevels &&
+                        Math.abs(buyImpact.totalSlippage || 0) <= maxSlippage &&
+                        !processedOrders.has(`${symbol}_MARKET_BUY`);
+
+                    const potentialSellByImpact =
+                        scanType === 'SELL_SCAN' &&
+                        sellImpact.impactedLevels <= maxLevels &&
+                        Math.abs(sellImpact.totalSlippage || 0) <= maxSlippage &&
+                        !processedOrders.has(`${symbol}_MARKET_SELL`);
+
+                    if (!potentialBuyByImpact && !potentialSellByImpact) {
+                        return;
+                    }
                     
-                    console.log(`📊 ${symbol} Impact Analysis:`);
-                    console.log(`   BUY: Levels=${buyImpact.impactedLevels}, Slippage=${buyImpact.totalSlippage?.toFixed(4)}%`);
-                    console.log(`   SELL: Levels=${sellImpact.impactedLevels}, Slippage=${Math.abs(sellImpact.totalSlippage || 0).toFixed(4)}%`);
+                    if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+                        console.log(`📊 ${symbol} Impact Analysis:`);
+                        console.log(`   BUY: Levels=${buyImpact.impactedLevels}, Slippage=${buyImpact.totalSlippage?.toFixed(4)}%`);
+                        console.log(`   SELL: Levels=${sellImpact.impactedLevels}, Slippage=${Math.abs(sellImpact.totalSlippage || 0).toFixed(4)}%`);
+                    }
                     
                     let orderExecuted = false;
                     const accessToken = global.lastAccessToken || 'demo_token';
@@ -2188,9 +2427,33 @@ function setupTickerEventHandlers() {
                     console.log(`🔍 STEP 1: Checking existing positions for ${symbol}...`);
                     
                     if (accessToken !== 'demo_token') {
+                        const precheckKey = `${symbol}_${scanType}`;
+                        const now = Date.now();
+                        const lastRunAt = orderPrecheckLastRunAt.get(precheckKey) || 0;
+
+                        if (orderPrecheckInFlight.has(precheckKey)) {
+                            console.log(`⏸️ Skipping precheck for ${precheckKey} - precheck already in flight`);
+                            return;
+                        }
+
+                        if (now - lastRunAt < ORDER_PRECHECK_COOLDOWN_MS) {
+                            const remainingMs = ORDER_PRECHECK_COOLDOWN_MS - (now - lastRunAt);
+                            console.log(`⏸️ Skipping precheck for ${precheckKey} - cooldown ${Math.ceil(remainingMs / 1000)}s remaining`);
+                            return;
+                        }
+
+                        orderPrecheckInFlight.add(precheckKey);
+                        orderPrecheckLastRunAt.set(precheckKey, now);
+
                         try {
-                            const currentPositions = await getCurrentPositions(accessToken);
+                            const orderPrecheck = await getTradePrecheckSnapshot(accessToken, {
+                                refreshFunds: true,
+                                context: `tick-order-attempt-${symbol}`
+                            });
+                            const currentPositions = orderPrecheck.activePositions;
+                            const openOrders = orderPrecheck.openOrders;
                             const hasAnyPositions = currentPositions.some(pos => Math.abs(pos.quantity) > 0);
+                            const hasOpenOrders = Array.isArray(openOrders) && openOrders.length > 0;
                             
                             if (hasAnyPositions) {
                                 console.log(`📊 POSITIONS FOUND: Processing existing positions for target orders`);
@@ -2202,11 +2465,65 @@ function setupTickerEventHandlers() {
                                         const quantity = parseInt(position.quantity);
                                         const avgPrice = parseFloat(position.average_price || position.price);
                                         const side = quantity > 0 ? 'BUY' : 'SELL';
+                                        const targetSide = side === 'BUY' ? 'SELL' : 'BUY';
                                         
                                         console.log(`📊 Found position: ${posSymbol} Qty=${quantity}, AvgPrice=₹${avgPrice}, Side=${side}`);
+
+                                        // Broker-side guard: if a target order already exists, never place another one.
+                                        const existingTargetOrder = openOrders.find(order =>
+                                            order.tradingsymbol === posSymbol &&
+                                            (order.status === 'OPEN' || order.status === 'TRIGGER PENDING') &&
+                                            (
+                                                // Preferred match: tagged target order
+                                                String(order.tag || '').startsWith('TGT_') ||
+                                                // Fallback match: opposite-side order for same position quantity
+                                                (
+                                                    order.transaction_type === targetSide &&
+                                                    Math.abs(parseInt(order.quantity || 0)) === Math.abs(quantity)
+                                                )
+                                            )
+                                        );
+
+                                        if (existingTargetOrder) {
+                                            // Keep local maps synchronized so later ticks also skip placement.
+                                            if (!activePositions.has(posSymbol)) {
+                                                activePositions.set(posSymbol, {
+                                                    quantity: quantity,
+                                                    avgPrice: avgPrice,
+                                                    side: side,
+                                                    entryTime: new Date().toISOString(),
+                                                    targetOrderId: existingTargetOrder.order_id
+                                                });
+                                            }
+
+                                            if (!targetOrders.has(posSymbol)) {
+                                                targetOrders.set(posSymbol, {
+                                                    orderId: existingTargetOrder.order_id,
+                                                    targetPrice: parseFloat(existingTargetOrder.price || 0),
+                                                    quantity: Math.abs(parseInt(existingTargetOrder.quantity || quantity)),
+                                                    side: existingTargetOrder.transaction_type,
+                                                    placedAt: existingTargetOrder.order_timestamp || new Date().toISOString()
+                                                });
+                                            }
+
+                                            console.log(`✅ Existing target order found for ${posSymbol}: ${existingTargetOrder.order_id} - skipping new target placement`);
+                                            continue;
+                                        }
                                         
-                                        // Check if target order already exists for this symbol
-                                        if (!targetOrders.has(posSymbol) && !activePositions.has(posSymbol)) {
+                                        const trackedTarget = targetOrders.get(posSymbol);
+                                        const trackedTargetStillOpen = trackedTarget && openOrders.some(order =>
+                                            order.order_id === trackedTarget.orderId &&
+                                            (order.status === 'OPEN' || order.status === 'TRIGGER PENDING' || order.status === 'MODIFY_PENDING')
+                                        );
+
+                                        // If local map says target exists but broker says otherwise, clear stale map entry.
+                                        if (trackedTarget && !trackedTargetStillOpen) {
+                                            targetOrders.delete(posSymbol);
+                                            console.log(`♻️ Cleared stale target-order map entry for ${posSymbol}: ${trackedTarget.orderId}`);
+                                        }
+
+                                        // Place target order whenever broker has no live target and local map has no active target.
+                                        if (!existingTargetOrder && !targetOrders.has(posSymbol)) {
                                             console.log(`🎯 NO TARGET ORDER EXISTS for ${posSymbol} - Placing target order`);
                                             
                                             // Calculate target price for ₹1500 profit
@@ -2224,7 +2541,7 @@ function setupTickerEventHandlers() {
                                             });
                                             
                                             // Place target order
-                                            const targetResult = await placeTargetOrder(accessToken, posSymbol, quantity, targetPrice, side);
+                                            const targetResult = await placeTargetOrder(accessToken, posSymbol, quantity, targetPrice, targetSide);
                                             
                                             if (targetResult.success) {
                                                 const posData = activePositions.get(posSymbol);
@@ -2253,7 +2570,7 @@ function setupTickerEventHandlers() {
                                                 console.log(`❌ Failed to place target order for ${posSymbol}`);
                                             }
                                         } else {
-                                            console.log(`✅ Target order already exists for ${posSymbol} - Skipping`);
+                                            console.log(`✅ Target order already exists/tracked for ${posSymbol} - Skipping`);
                                         }
                                     }
                                 }
@@ -2262,6 +2579,12 @@ function setupTickerEventHandlers() {
                                 console.log(`🚫 BLOCKING NEW MARKET ORDERS: Active positions exist`);
                                 return;
                                 
+                            } else if (hasOpenOrders) {
+                                // No active positions, but there are pending/open orders.
+                                // Do not place new market orders until these are resolved.
+                                console.log(`🚫 BLOCKING NEW MARKET ORDERS: ${openOrders.length} open order(s) exist`);
+                                return;
+
                             } else {
                                 console.log(`✅ NO ACTIVE POSITIONS: Proceeding with market order logic for ${symbol}`);
                             }
@@ -2270,6 +2593,8 @@ function setupTickerEventHandlers() {
                             console.error(`❌ Error checking positions: ${error.message}`);
                             // In case of error, proceed with caution - don't place orders
                             return;
+                        } finally {
+                            orderPrecheckInFlight.delete(precheckKey);
                         }
                     } else {
                         console.log(`📝 DEMO MODE: Skipping position check, proceeding with demo logic`);
@@ -2325,8 +2650,7 @@ function setupTickerEventHandlers() {
                     // maxLevels and maxSlippage already declared above
                     
                     // 🔵 CHECK ENHANCED BUY EXECUTION CRITERIA
-                    if (buyImpact.impactedLevels > 0 && 
-                        buyImpact.impactedLevels <= maxLevels && 
+                    if (buyImpact.impactedLevels <= maxLevels &&
                         Math.abs(buyImpact.totalSlippage || 0) <= maxSlippage &&
                         !processedOrders.has(`${symbol}_MARKET_BUY`) &&
                         (scanType === 'BUY_SCAN' ? liveBuyConditionsValid : false)) { // Enhanced BUY verification required
@@ -2387,8 +2711,7 @@ function setupTickerEventHandlers() {
                     
                     // 🔴 CHECK SELL EXECUTION CRITERIA (existing logic with enhanced levels)
                     if (!orderExecuted && 
-                        sellImpact.impactedLevels > 0 && 
-                        sellImpact.impactedLevels <= maxLevels && 
+                        sellImpact.impactedLevels <= maxLevels &&
                         Math.abs(sellImpact.totalSlippage || 0) <= maxSlippage &&
                         !processedOrders.has(`${symbol}_MARKET_SELL`) &&
                         (scanType === 'SELL_SCAN' ? liveSellConditionsValid : false)) {
@@ -2478,7 +2801,9 @@ function setupTickerEventHandlers() {
                 // Get scan type for this token
                 const scanType = scanTypeTracker.get(tick.instrument_token) || 'UNKNOWN';
                 
-                console.log(`📡 BROADCASTING FULL 20-LEVEL TICK DATA: ${symbol} @ ₹${tick.last_price}`);
+                if (ENABLE_VERBOSE_TICK_LOGS) {
+                    console.log(`📡 BROADCASTING FULL 20-LEVEL TICK DATA: ${symbol} @ ₹${tick.last_price}`);
+                }
                 
                 // CAPTURE ORIGINAL UNTOUCHED DEPTH BEFORE ANY MODIFICATIONS
                 const originalUntouchedDepth = tick.depth ? JSON.parse(JSON.stringify(tick.depth)) : { buy: [], sell: [] };
@@ -2487,7 +2812,8 @@ function setupTickerEventHandlers() {
                 const fullDepth = enhanceDepthTo20Levels(tick.depth, tick.last_price, scanType, false);
                 
                 // LOG DEPTH LEVEL ANALYSIS
-                console.log('📊 DEPTH LEVEL ANALYSIS:', {
+                if (ENABLE_VERBOSE_TICK_LOGS) {
+                    console.log('📊 DEPTH LEVEL ANALYSIS:', {
                     symbol: symbol,
                     originalDepth: {
                         buyLevels: tick.depth?.buy?.length || 0,
@@ -2506,6 +2832,7 @@ function setupTickerEventHandlers() {
                         level20SellPrice: fullDepth.sell?.[19]?.price || 'N/A'
                     }
                 });
+                }
                 
                 const buyImpact = calculateMarketImpact(fullDepth, tick.last_price, 'BUY_SCAN', globalUsableFunds);
                 const sellImpact = calculateMarketImpact(fullDepth, tick.last_price, 'SELL_SCAN', globalUsableFunds);
@@ -2574,7 +2901,7 @@ function setupTickerEventHandlers() {
             });
             
             // Also send batch if more than 1 tick
-            if (ticks.length > 1) {
+            if (ENABLE_TICK_BATCH_BROADCAST && ticks.length > 1) {
                 const structuredTicks = ticks.map(tick => {
                     const symbol = getSymbolFromToken(tick.instrument_token.toString());
                     const change = tick.change || 0;
@@ -2586,7 +2913,9 @@ function setupTickerEventHandlers() {
                     // Get scan type for this token
                     const scanType = scanTypeTracker.get(tick.instrument_token) || 'UNKNOWN';
                     
-                    console.log(`📡 BATCH: FULL 20-LEVEL TICK DATA: ${symbol} @ ₹${tick.last_price}`);
+                    if (ENABLE_VERBOSE_TICK_LOGS) {
+                        console.log(`📡 BATCH: FULL 20-LEVEL TICK DATA: ${symbol} @ ₹${tick.last_price}`);
+                    }
                     
                     // CAPTURE ORIGINAL UNTOUCHED DEPTH BEFORE ANY MODIFICATIONS
                     const originalUntouchedDepth = tick.depth ? JSON.parse(JSON.stringify(tick.depth)) : { buy: [], sell: [] };
@@ -2646,6 +2975,9 @@ function setupTickerEventHandlers() {
                     ticks: structuredTicks
                 });
             }
+        }
+        } finally {
+            tickHandlerBusy = false;
         }
     });
 
@@ -2712,16 +3044,28 @@ router.post('/low-price-scanners', async (req, res) => {
         console.log(`🔍 DEBUG - Auto Trade Status: ${global.autoTrade}`);
         console.log(`🔍 DEBUG - Access Token: ${req.body.access_token ? 'PROVIDED' : 'MISSING'}`);
 
+        const effectiveAccessToken = (req.body.access_token && req.body.access_token !== 'demo_token')
+            ? req.body.access_token
+            : (global.lastAccessToken && global.lastAccessToken !== 'demo_token' ? global.lastAccessToken : null);
+        console.log(`🔐 Scan precheck token source: ${req.body.access_token ? 'request' : (effectiveAccessToken ? 'stored' : 'none')}`);
+
         const startTime = Date.now();
 
-        // 💰 STEP: Update global funds before scanning
-        console.log('💰 Updating global funds before scanning...');
-        const fundsUpdated = await updateGlobalFunds(req.body.access_token);
-        if (!fundsUpdated) {
-            console.log('⚠️ Failed to update global funds, proceeding with existing values');
+        // Precheck once per scan route: positions + open orders + funds
+        const scanPrecheck = await getTradePrecheckSnapshot(effectiveAccessToken || 'demo_token', {
+            refreshFunds: true,
+            context: 'low-price-scan'
+        });
+        const precheckActivePositions = (scanPrecheck.activePositions || []).filter(pos => Math.abs(Number(pos.quantity || 0)) > 0);
+        const precheckOpenOrders = scanPrecheck.openOrders || [];
+        const mainOrdersAllowedInScan = Boolean(autoTradingActive && global.autoTrade && precheckActivePositions.length === 0 && precheckOpenOrders.length === 0);
+        console.log(`🛡️ Scan precheck gate: positions=${precheckActivePositions.length}, openOrders=${precheckOpenOrders.length}, mainOrdersAllowed=${mainOrdersAllowedInScan}`);
+
+        if (!scanPrecheck.fundsUpdated) {
+            console.log('⚠️ Failed to refresh global funds in scan precheck, proceeding with existing values');
         }
-        
-        const globalFunds = getGlobalFunds();
+
+        const globalFunds = scanPrecheck.globalFunds;
         console.log(`💰 Using global funds: Available=₹${globalFunds.availableFunds.toLocaleString('en-IN')}, Leveraged=₹${globalFunds.leverageFunds.toLocaleString('en-IN')}, Usable=₹${globalFunds.usableFunds.toLocaleString('en-IN')}`);
 
         const stocksPayload = buildLowPriceScannerPayload();
@@ -2756,39 +3100,12 @@ router.post('/low-price-scanners', async (req, res) => {
         // Enrich all stocks with technical data
         const enrichedStocks = allStocks.map(enrichLowPriceStockData);
 
-        // Also run crossover/crossdown scans when low-price scan is called
-        const crossoverPayload = buildLowPriceScannerPayload([
-            { "left": "EMA3|1", "operation": "crosses_above", "right": "EMA3|5" }
-        ]);
-        const crossdownPayload = buildLowPriceScannerPayload([
-            { "left": "EMA3|1", "operation": "crosses_below", "right": "EMA3|5" }
-        ]);
-
-        const [crossoverResult, crossdownResult] = await Promise.all([
-            makeScannorCall(crossoverPayload, 'low-price-crossover-scan', req.body),
-            makeScannorCall(crossdownPayload, 'low-price-crossdown-scan', req.body)
-        ]);
-
-        const crossoverStocks = extractTradingViewStocks(crossoverResult)
-            .map(enrichLowPriceStockData)
-            .filter(stock => stock.ema3_1 > stock.ema3_5);
-
-        const crossdownStocks = extractTradingViewStocks(crossdownResult)
-            .map(enrichLowPriceStockData)
-            .filter(stock => stock.ema3_1 < stock.ema3_5);
-
-        const crossoverSymbols = new Set(crossoverStocks.map(stock => stock.symbol));
-        const crossdownSymbols = new Set(crossdownStocks.map(stock => stock.symbol));
-
-        console.log(`📈 Crossover scan results: ${crossoverStocks.length}`);
-        console.log(`📉 Crossdown scan results: ${crossdownStocks.length}`);
+        console.log('ℹ️ Intersection checks disabled: using only buy/sell condition signals');
 
     
         // Classify stocks into buy/sell based on conditions
         const buyStocks = [];
         const sellStocks = [];
-        const buyWithoutCrossoverStocks = [];
-        const sellWithoutCrossdownStocks = [];
         
         // Clear previous candidates for fresh scan
         buyCandidates.clear();
@@ -2806,8 +3123,8 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Track condition pass counts
         let conditionStats = {
             total_stocks: 0,
-            buy_condition_passes: Array(14).fill(0),
-            sell_condition_passes: Array(14).fill(0),
+            buy_condition_passes: Array(13).fill(0),
+            sell_condition_passes: Array(13).fill(0),
             ema_1min_issues: [],
             orders_attempted: 0,
             orders_successful: 0,
@@ -2818,17 +3135,15 @@ router.post('/low-price-scanners', async (req, res) => {
             conditionStats.total_stocks++;
             
             // BUY CONDITIONS (as requested):
-            // 1) EMA3(15m) > EMA3(5m)
-            // 2) EMA3 > EMA5 on 1m, 5m, 15m
-            // 3) MACD > Signal on 1m, 5m, 15m
-            // 4) MACD > 0 on 1m, 5m
-            // 5) -DI < 15 on 5m OR 15m
-            // 6) ADX > 25 on 1m OR 5m OR 15m
-            // 7) +DI > 25 on 5m OR 15m
-            // 8) +DI(1m) > ADX(1m) and ADX(1m) > 25
+            // 1) EMA3 > EMA5 on 1m, 5m, 15m
+            // 2) MACD > Signal on 1m, 5m, 15m
+            // 3) MACD > 0 on 1m, 5m
+            // 4) -DI < 15 on 5m OR 15m
+            // 5) ADX > 25 on 1m OR 5m OR 15m
+            // 6) +DI > 25 on 5m OR 15m
+            // 7) +DI(1m) > ADX(1m) and ADX(1m) > 25
             
             const buyConditions = [
-                stock.ema3_15 > stock.ema3_5, // EMA3(15m) > EMA3(5m)
                 stock.ema3_1 > stock.ema5_1,  // EMA3(1m) > EMA5(1m)
                 stock.ema3_5 > stock.ema5_5,  // EMA3(5m) > EMA5(5m)
                 stock.ema3_15 > stock.ema5_15, // EMA3(15m) > EMA5(15m)
@@ -2867,7 +3182,6 @@ router.post('/low-price-scanners', async (req, res) => {
             // SELL CONDITIONS (exact opposite of the BUY conditions above)
             
             const sellConditions = [
-                stock.ema3_15 < stock.ema3_5, // opposite of EMA3(15m) > EMA3(5m)
                 stock.ema3_1 < stock.ema5_1,  // opposite of EMA3(1m) > EMA5(1m)
                 stock.ema3_5 < stock.ema5_5,  // opposite of EMA3(5m) > EMA5(5m)
                 stock.ema3_15 < stock.ema5_15, // opposite of EMA3(15m) > EMA5(15m)
@@ -2887,17 +3201,17 @@ router.post('/low-price-scanners', async (req, res) => {
             const isBuySignal = buyConditions.every(condition => condition);
             const isSellSignal = sellConditions.every(condition => condition);
             
-            if (isBuySignal && crossoverSymbols.has(stock.symbol)) {
+            if (isBuySignal) {
                 // 💰 Pre-calculate quantity based on global funds
-                let preCalculatedQuantity = 1; // Default testing quantity
+                let preCalculatedQuantity = 0;
                 let maxPossibleQuantity = 0;
                 let quantityCalculationError = null;
                 
                 if (globalFunds.usableFunds > 0 && stock.ltp > 0) {
                     try {
                         maxPossibleQuantity = Math.floor(globalFunds.usableFunds / stock.ltp);
-                        // For main orders, use testing quantity of 1
-                        preCalculatedQuantity = 1;
+                        // Use calculated quantity derived from usable leveraged funds
+                        preCalculatedQuantity = Math.max(0, maxPossibleQuantity);
                     } catch (qtyError) {
                         quantityCalculationError = qtyError.message;
                         console.log(`⚠️ Quantity calculation error for ${stock.symbol}:`, qtyError.message);
@@ -2924,22 +3238,19 @@ router.post('/low-price-scanners', async (req, res) => {
                 
                 // NO LONGER STORING FOR TICK-BASED EXECUTION - Direct execution only
                 // buyCandidates.set() removed
-            } else if (isBuySignal) {
-                // Buy signal that did not match crossover intersection
-                buyWithoutCrossoverStocks.push(stock);
             }
 
-            if (isSellSignal && crossdownSymbols.has(stock.symbol)) {
+            if (isSellSignal) {
                 // 💰 Pre-calculate quantity for SELL orders based on global funds
-                let preCalculatedQuantity = 1; // Default testing quantity
+                let preCalculatedQuantity = 0;
                 let maxPossibleQuantity = 0;
                 let quantityCalculationError = null;
                 
                 if (globalFunds.usableFunds > 0 && stock.ltp > 0) {
                     try {
                         maxPossibleQuantity = Math.floor(globalFunds.usableFunds / stock.ltp);
-                        // For main orders, use testing quantity of 1
-                        preCalculatedQuantity = 1;
+                        // Use calculated quantity derived from usable leveraged funds
+                        preCalculatedQuantity = Math.max(0, maxPossibleQuantity);
                     } catch (qtyError) {
                         quantityCalculationError = qtyError.message;
                         console.log(`⚠️ Quantity calculation error for ${stock.symbol}:`, qtyError.message);
@@ -2975,16 +3286,12 @@ router.post('/low-price-scanners', async (req, res) => {
                 if (stock.orderExecuted !== undefined) {
                     conditionStats.orders_attempted++;
                 }
-            } else if (isSellSignal) {
-                // Sell signal that did not match crossdown intersection
-                sellWithoutCrossdownStocks.push(stock);
             }
             // If neither buy nor sell conditions are met, stock is ignored
         });
         // DEBUG: Print condition statistics
         console.log('🔍 CONDITION ANALYSIS:');
         const conditionLabels = [
-            'EMA3 (15m) > EMA3 (5m)',
             'EMA3 (1m) > EMA5 (1m)',
             'EMA3 (5m) > EMA5 (5m)',
             'EMA3 (15m) > EMA5 (15m)',
@@ -3049,13 +3356,13 @@ router.post('/low-price-scanners', async (req, res) => {
         
         console.log(`✅ SCAN COMPLETE - Direct execution with subscription management`);
 
-        // 🎯 POSITION & ORDER CHECK: Check after every scan (MONITORING ONLY)
+        // 🎯 POSITION & ORDER CHECK: Check after every scan (includes target reconciliation)
         console.log(`🔍 Access token check: ${global.lastAccessToken ? 'Available' : 'Missing'}, Token: ${global.lastAccessToken || 'undefined'}`);
         if (global.lastAccessToken && global.lastAccessToken !== 'demo_token') {
             console.log('🔄 Scheduling position & order check in 1 second...');
             setTimeout(async () => {
                 try {
-                    console.log('⏰ Starting position & order monitoring (no automatic target placement)...');
+                    console.log('⏰ Starting position & order reconciliation...');
                     const checkResult = await checkPositionsAndOrders(global.lastAccessToken);
                     console.log('📊 Position check result:', checkResult);
                 } catch (error) {
@@ -3085,40 +3392,6 @@ router.post('/low-price-scanners', async (req, res) => {
             token: symbolMappings.symbolMappings[stock.symbol] || null
         }));
 
-        const crossoverTableData = crossoverStocks.map(stock => ({
-            symbol: stock.symbol,
-            ltp: stock.ltp,
-            ema3_1: stock.ema3_1,
-            ema3_5: stock.ema3_5,
-            token: symbolMappings.symbolMappings[stock.symbol] || null
-        }));
-
-        const crossdownTableData = crossdownStocks.map(stock => ({
-            symbol: stock.symbol,
-            ltp: stock.ltp,
-            ema3_1: stock.ema3_1,
-            ema3_5: stock.ema3_5,
-            token: symbolMappings.symbolMappings[stock.symbol] || null
-        }));
-
-        const buyWithoutIntersectionTableData = buyWithoutCrossoverStocks.map(stock => ({
-            symbol: stock.symbol,
-            ltp: stock.ltp,
-            ema3_5: stock.ema3_5,
-            triggerMet: stock.ltp < stock.ema3_5,
-            orderExecuted: stock.orderExecuted || false,
-            orderError: stock.orderError || null,
-            token: symbolMappings.symbolMappings[stock.symbol] || null
-        }));
-
-        const sellWithoutIntersectionTableData = sellWithoutCrossdownStocks.map(stock => ({
-            symbol: stock.symbol,
-            ltp: stock.ltp,
-            orderExecuted: stock.orderExecuted || false,
-            orderError: stock.orderError || null,
-            token: symbolMappings.symbolMappings[stock.symbol] || null
-        }));
-
         // Return comprehensive response for new UI structure
         const consolidatedResponse = {
             success: true,
@@ -3128,21 +3401,24 @@ router.post('/low-price-scanners', async (req, res) => {
             priceFilter: '≤₹4000',
             executionMode: 'direct', // No subscription, direct execution
             autoTrade: global.autoTrade,
+            mainOrdersAllowed: mainOrdersAllowedInScan,
+            positionsFound: precheckActivePositions.length > 0,
+            openOrdersFound: precheckOpenOrders.length > 0,
             
             // NEW: Simplified table data for UI
             buyTable: buyTableData,
             sellTable: sellTableData,
-            crossoverTable: crossoverTableData,
-            crossdownTable: crossdownTableData,
-            buyWithoutIntersectionTable: buyWithoutIntersectionTableData,
-            sellWithoutIntersectionTable: sellWithoutIntersectionTableData,
+            crossoverTable: [],
+            crossdownTable: [],
+            buyWithoutIntersectionTable: [],
+            sellWithoutIntersectionTable: [],
             
             // Legacy data (for compatibility)
             totalStocks: enrichedStocks.length,
             buyStocks: buyStocks,
             sellStocks: sellStocks,
-            crossoverStocks: crossoverStocks,
-            crossdownStocks: crossdownStocks,
+            crossoverStocks: [],
+            crossdownStocks: [],
             allStocks: enrichedStocks,
             
             message: `Found ${buyStocks.length} buy and ${sellStocks.length} sell signals from ${enrichedStocks.length} low-price stocks. ${conditionStats.orders_attempted} orders attempted, ${conditionStats.orders_successful} successful.`,
@@ -3150,6 +3426,7 @@ router.post('/low-price-scanners', async (req, res) => {
             // ORDER EXECUTION STATUS (replaces tick execution)
             orderExecution: {
                 enabled: global.autoTrade,
+                mainOrdersAllowed: mainOrdersAllowedInScan,
                 attempted: conditionStats.orders_attempted,
                 successful: conditionStats.orders_successful,
                 failed: conditionStats.orders_failed,
@@ -3157,6 +3434,14 @@ router.post('/low-price-scanners', async (req, res) => {
                 message: global.autoTrade ? 
                     `Direct execution: ${conditionStats.orders_successful}/${conditionStats.orders_attempted} orders successful` :
                     'Scan-only mode: Set autoTrade=true to execute orders'
+            },
+
+            precheck: {
+                called: true,
+                tokenSource: req.body.access_token ? 'request' : (effectiveAccessToken ? 'stored' : 'none'),
+                fundsUpdated: scanPrecheck.fundsUpdated,
+                positionsCount: precheckActivePositions.length,
+                openOrdersCount: precheckOpenOrders.length
             },
             
             statistics: {
@@ -3452,6 +3737,24 @@ router.post('/buy-order', async (req, res) => {
                 error: 'Symbol and LTP are required for BUY order'
             });
         }
+
+        // Outside MIS window, short-circuit main orders before heavy checks to avoid retry storms.
+        if (!isTargetOrder) {
+            const productTypeNow = getProductType();
+            if (productTypeNow !== 'MIS') {
+                if (symbol) {
+                    markSignalAsExecuted(symbol, 'BUY');
+                }
+                return res.status(409).json({
+                    success: false,
+                    error: 'Main BUY order blocked: MIS window closed (post 3:25 PM).',
+                    order_category: 'BUY',
+                    symbol,
+                    productTypeNow,
+                    suggestion: 'Wait for market hours or place non-main/manual order flow that supports CNC.'
+                });
+            }
+        }
         
         console.log(`🎯 Processing BUY order for ${symbol} at LTP ₹${ltp}`);
         console.log(`🔧 Order type: ${isTargetOrder ? 'TARGET ORDER (₹1500 profit)' : 'MAIN ORDER'}`);
@@ -3494,7 +3797,14 @@ router.post('/buy-order', async (req, res) => {
                 console.log('✅ No active positions - MAIN ORDER ALLOWED');
                 
             } catch (positionError) {
-                console.log('⚠️ Position check failed, allowing order:', positionError.message);
+                console.log('⛔ Position check failed - blocking main order for safety:', positionError.message);
+                return res.status(503).json({
+                    success: false,
+                    error: 'Position check failed - main order blocked for safety',
+                    details: positionError.message,
+                    order_category: 'BUY',
+                    symbol: symbol
+                });
             }
         } else if (isTargetOrder) {
             console.log('🎯 TARGET ORDER - bypassing position check');
@@ -3696,11 +4006,7 @@ router.post('/buy-order', async (req, res) => {
         console.log(`🎯 Final quantity: ${finalQuantity}`);
         console.log(`💸 Total investment: ₹${(finalQuantity * pricePerShare).toLocaleString('en-IN')}`);;
         
-        // 🧪 TESTING OVERRIDE: Use 1 quantity for main orders only
-        if (!isTargetOrder) {
-            console.log(`🧪 TESTING MODE: Overriding main BUY order quantity from ${finalQuantity} to 1 for testing`);
-            finalQuantity = 1;
-        }
+        // Use calculated quantity for main orders (no test override)
         
         if (finalQuantity <= 0) {
             return res.status(400).json({
@@ -3997,6 +4303,11 @@ router.post('/buy-order', async (req, res) => {
         }
     } catch (error) {
         console.error('❌ Error placing enhanced buy order:', error);
+
+        const isMisCutoffError = String(error?.message || '').includes('Intraday orders (MIS) are allowed only till 3.25 PM');
+        if (isMisCutoffError && req.body?.symbol && !req.body?.isTargetOrder) {
+            markSignalAsExecuted(req.body.symbol, 'BUY');
+        }
         
         // Use already calculated quantity from above
         const errorResponse = {
@@ -4016,7 +4327,7 @@ router.post('/buy-order', async (req, res) => {
             if (req.body.ema5) errorResponse.ema5 = req.body.ema5;
         }
         
-        res.status(500).json(errorResponse);
+        res.status(isMisCutoffError ? 409 : 500).json(errorResponse);
     }
 });
 
@@ -4079,6 +4390,24 @@ router.post('/sell-order', async (req, res) => {
                 error: 'Symbol and LTP are required for SELL order'
             });
         }
+
+        // Outside MIS window, short-circuit main orders before heavy checks to avoid retry storms.
+        if (!isTargetOrder) {
+            const productTypeNow = getProductType();
+            if (productTypeNow !== 'MIS') {
+                if (symbol) {
+                    markSignalAsExecuted(symbol, 'SELL');
+                }
+                return res.status(409).json({
+                    success: false,
+                    error: 'Main SELL order blocked: MIS window closed (post 3:25 PM).',
+                    order_category: 'SELL',
+                    symbol,
+                    productTypeNow,
+                    suggestion: 'Wait for market hours or place non-main/manual order flow that supports CNC.'
+                });
+            }
+        }
         
         console.log(`🎯 Processing SELL order for ${symbol} at LTP ₹${ltp}`);
         console.log(`🔧 Order type: ${isTargetOrder ? 'TARGET ORDER (₹1500 profit)' : 'MAIN ORDER'}`);
@@ -4121,7 +4450,14 @@ router.post('/sell-order', async (req, res) => {
                 console.log('✅ No active positions - MAIN ORDER ALLOWED');
                 
             } catch (positionError) {
-                console.log('⚠️ Position check failed, allowing order:', positionError.message);
+                console.log('⛔ Position check failed - blocking main order for safety:', positionError.message);
+                return res.status(503).json({
+                    success: false,
+                    error: 'Position check failed - main order blocked for safety',
+                    details: positionError.message,
+                    order_category: 'SELL',
+                    symbol: symbol
+                });
             }
         } else if (isTargetOrder) {
             console.log('🎯 TARGET ORDER - bypassing position check');
@@ -4354,11 +4690,7 @@ router.post('/sell-order', async (req, res) => {
         console.log(`🎯 Final quantity: ${finalQuantity}`);
         console.log(`💸 Total investment: ₹${(finalQuantity * pricePerShare).toLocaleString('en-IN')}`);
         
-        // 🧪 TESTING OVERRIDE: Use 1 quantity for main orders only
-        if (!isTargetOrder) {
-            console.log(`🧪 TESTING MODE: Overriding main SELL order quantity from ${finalQuantity} to 1 for testing`);
-            finalQuantity = 1;
-        }
+        // Use calculated quantity for main orders (no test override)
         
         if (finalQuantity <= 0) {
             return res.status(400).json({
@@ -4433,7 +4765,7 @@ router.post('/sell-order', async (req, res) => {
                 positionData: {
                     orderType: 'MIS_SHORT_SELLING',
                     marginRequired: marginRequired,
-                    existingPositions: existingPositions.map(pos => ({
+                    existingPositions: activePositionsFiltered.map(pos => ({
                         quantity: pos.quantity,
                         average_price: pos.average_price,
                         pnl: pos.pnl
@@ -4534,6 +4866,11 @@ router.post('/sell-order', async (req, res) => {
     } catch (error) {
         console.error('🚨 SELL ORDER ERROR:', error);
 
+        const isMisCutoffError = String(error?.message || '').includes('Intraday orders (MIS) are allowed only till 3.25 PM');
+        if (isMisCutoffError && req.body?.symbol && !req.body?.isTargetOrder) {
+            markSignalAsExecuted(req.body.symbol, 'SELL');
+        }
+
         const errorResponse = {
             success: false,
             error: error.message || 'Unknown error occurred',
@@ -4551,7 +4888,7 @@ router.post('/sell-order', async (req, res) => {
             if (req.body.ema5) errorResponse.ema5 = req.body.ema5;
         }
 
-        res.status(500).json(errorResponse);
+        res.status(isMisCutoffError ? 409 : 500).json(errorResponse);
     }
 });
 

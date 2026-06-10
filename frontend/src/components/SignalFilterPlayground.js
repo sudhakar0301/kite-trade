@@ -32,7 +32,6 @@ const tdStyle = {
 };
 
 const buyFilterDefs = [
-  { id: 'ema15GtEma5', label: 'EMA3(15m) > EMA3(5m)', test: row => Number(row.ema3_15 || row.ema3_15m) > Number(row.ema3_5 || row.ema3_5m) },
   {
     id: 'emaTrendAllTf',
     label: 'EMA3 > EMA5 on 1m, 5m, and 15m',
@@ -77,7 +76,6 @@ const buyFilterDefs = [
 ];
 
 const sellFilterDefs = [
-  { id: 'ema15LtEma5', label: 'EMA3(15m) < EMA3(5m)', test: row => Number(row.ema3_15 || row.ema3_15m) < Number(row.ema3_5 || row.ema3_5m) },
   {
     id: 'emaTrendAllTfSell',
     label: 'EMA3 < EMA5 on 1m, 5m, and 15m',
@@ -170,6 +168,30 @@ export default function SignalFilterPlayground({
   const setBuyChecks = onBuyChecksChange || setBuyChecksState;
   const setSellChecks = onSellChecksChange || setSellChecksState;
 
+  const selectAllBuyFilters = () => {
+    const next = {};
+    buyFilterDefs.forEach(filter => {
+      next[filter.id] = true;
+    });
+    setBuyChecks(next);
+  };
+
+  const clearAllBuyFilters = () => {
+    setBuyChecks({});
+  };
+
+  const selectAllSellFilters = () => {
+    const next = {};
+    sellFilterDefs.forEach(filter => {
+      next[filter.id] = true;
+    });
+    setSellChecks(next);
+  };
+
+  const clearAllSellFilters = () => {
+    setSellChecks({});
+  };
+
   const normalizedBuy = useMemo(() => {
     return normalizeRows(buyData);
   }, [buyData]);
@@ -204,19 +226,55 @@ export default function SignalFilterPlayground({
             Buy Filters
           </div>
           {showFilters && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr', rowGap: '18px', marginBottom: showTables ? '10px' : 0 }}>
-              {buyFilterDefs.map(filter => (
-                <label key={filter.id} style={{ color: '#cbd5e1', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px', lineHeight: '1.35' }}>
-                  <input
-                    type="checkbox"
-                    checked={!!buyChecks[filter.id]}
-                    onChange={e => setBuyChecks(prev => ({ ...prev, [filter.id]: e.target.checked }))}
-                    style={{ width: '16px', height: '16px' }}
-                  />
-                  {filter.label}
-                </label>
-              ))}
-            </div>
+            <>
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                <button
+                  type="button"
+                  onClick={selectAllBuyFilters}
+                  style={{
+                    background: 'rgba(16, 185, 129, 0.2)',
+                    border: '1px solid rgba(16, 185, 129, 0.45)',
+                    color: '#a7f3d0',
+                    borderRadius: '6px',
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  onClick={clearAllBuyFilters}
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.2)',
+                    border: '1px solid rgba(239, 68, 68, 0.45)',
+                    color: '#fecaca',
+                    borderRadius: '6px',
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Clear All
+                </button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr', rowGap: '18px', marginBottom: showTables ? '10px' : 0 }}>
+                {buyFilterDefs.map(filter => (
+                  <label key={filter.id} style={{ color: '#cbd5e1', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px', lineHeight: '1.35' }}>
+                    <input
+                      type="checkbox"
+                      checked={!!buyChecks[filter.id]}
+                      onChange={e => setBuyChecks(prev => ({ ...prev, [filter.id]: e.target.checked }))}
+                      style={{ width: '16px', height: '16px' }}
+                    />
+                    {filter.label}
+                  </label>
+                ))}
+              </div>
+            </>
           )}
 
           {showTables && (
@@ -269,19 +327,55 @@ export default function SignalFilterPlayground({
             Sell Filters
           </div>
           {showFilters && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr', rowGap: '18px', marginBottom: showTables ? '10px' : 0 }}>
-              {sellFilterDefs.map(filter => (
-                <label key={filter.id} style={{ color: '#cbd5e1', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px', lineHeight: '1.35' }}>
-                  <input
-                    type="checkbox"
-                    checked={!!sellChecks[filter.id]}
-                    onChange={e => setSellChecks(prev => ({ ...prev, [filter.id]: e.target.checked }))}
-                    style={{ width: '16px', height: '16px' }}
-                  />
-                  {filter.label}
-                </label>
-              ))}
-            </div>
+            <>
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                <button
+                  type="button"
+                  onClick={selectAllSellFilters}
+                  style={{
+                    background: 'rgba(16, 185, 129, 0.2)',
+                    border: '1px solid rgba(16, 185, 129, 0.45)',
+                    color: '#a7f3d0',
+                    borderRadius: '6px',
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Select All
+                </button>
+                <button
+                  type="button"
+                  onClick={clearAllSellFilters}
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.2)',
+                    border: '1px solid rgba(239, 68, 68, 0.45)',
+                    color: '#fecaca',
+                    borderRadius: '6px',
+                    padding: '4px 10px',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  Clear All
+                </button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr', rowGap: '18px', marginBottom: showTables ? '10px' : 0 }}>
+                {sellFilterDefs.map(filter => (
+                  <label key={filter.id} style={{ color: '#cbd5e1', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px', lineHeight: '1.35' }}>
+                    <input
+                      type="checkbox"
+                      checked={!!sellChecks[filter.id]}
+                      onChange={e => setSellChecks(prev => ({ ...prev, [filter.id]: e.target.checked }))}
+                      style={{ width: '16px', height: '16px' }}
+                    />
+                    {filter.label}
+                  </label>
+                ))}
+              </div>
+            </>
           )}
 
           {showTables && (

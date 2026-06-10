@@ -302,17 +302,17 @@ function App() {
     }
   }, [accessToken]);
 
-  // Load positions/orders/funds once on login/load
-  useEffect(() => {
-    if (accessToken) {
-      fetchPositionsAndOrders();
-    }
-  }, [fetchPositionsAndOrders, accessToken]);
+  // Do not auto-call positions/orders/margins on login.
+  // Keep this data on-demand only to avoid repeated precheck API calls.
 
   // Refs
   const pollIntervalRef = useRef(null);
   const countdownIntervalRef = useRef(null);
   const hasInitialLoaded = useRef(false);
+  const tickTradeInFlightRef = useRef(false);
+  const lastTickTradeAttemptRef = useRef({});
+  const TICK_TRADE_COOLDOWN_MS = 10000;
+  const mainOrdersAllowedRef = useRef(false);
 
   // Refs for WebSocket handler to access current values (avoiding stale closure)
   const autoTradingEnabledRef = useRef(autoTradingEnabled);
@@ -618,6 +618,11 @@ function App() {
       console.log('⚠️ [AUTO-TRADE] Auto trading is DISABLED - skipping order attempts');
       return;
     }
+
+    if (!mainOrdersAllowedRef.current) {
+      console.log('⛔ [AUTO-TRADE] Main-order attempts suppressed by scan precheck (active positions/open orders/disabled gate)');
+      return;
+    }
     
     const token = accessToken || localStorage.getItem('kite_access_token');
     if (!token || token === 'demo_token') {
@@ -630,52 +635,6 @@ function App() {
     console.log(`   - Sell stocks: ${sellStocks.length}`);
 
     try {
-      // 🚦 STEP 1: SINGLE PRECHECK SNAPSHOT (positions + orders + funds)
-      console.log('🔍 Step 1: Running precheck snapshot (positions/orders/funds)...');
-      const [positionsResponse, ordersResponse, marginsResponse] = await Promise.all([
-        fetch('http://localhost:5000/api/positions', {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          }
-        }),
-        fetch('http://localhost:5000/api/orders', {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          }
-        }),
-        fetch('http://localhost:5000/api/get-margins', {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          }
-        })
-      ]);
-
-      if (!positionsResponse.ok || !ordersResponse.ok || !marginsResponse.ok) {
-        throw new Error(`Precheck failed (positions:${positionsResponse.status}, orders:${ordersResponse.status}, funds:${marginsResponse.status})`);
-      }
-
-      const [positionsData, ordersData, marginsData] = await Promise.all([
-        positionsResponse.json(),
-        ordersResponse.json(),
-        marginsResponse.json()
-      ]);
-
-      const activePositions = positionsData.positions || [];
-      const activePositionsFiltered = activePositions.filter(pos => pos.quantity !== 0);
-      const openOrders = (ordersData.orders || []).filter(order => order.status === 'OPEN' || order.status === 'TRIGGER PENDING');
-      const usableFunds = Number(marginsData.usableFunds || 0);
-      const precheckSnapshot = { activePositions: activePositionsFiltered, openOrders, usableFunds };
-      
-      console.log(`📊 Found ${activePositionsFiltered.length} active positions:`, activePositionsFiltered.map(pos => pos.tradingsymbol));
-      console.log(`📋 Found ${openOrders.length} open orders in precheck`);
-      console.log(`💰 Usable funds in precheck: ₹${usableFunds.toLocaleString('en-IN')}`);
-
       let successfulOrders = 0;
       let failedOrders = 0;
       let blockedOrders = 0;
@@ -687,55 +646,15 @@ function App() {
       
       console.log(`🎯 CONTROLLED TRADING: Selected ${buyStocksToTrade.length} BUY + ${sellStocksToTrade.length} SELL from ${buyStocks.length + sellStocks.length} total signals`);
 
-      // 🚦 DECISION LOGIC: Positions exist vs no positions
-      if (activePositionsFiltered.length > 0) {
-        console.log('⚠️ POSITIONS EXIST - Using intelligent order logic');
-        
-        // For each stock, check if we have a position for that symbol
-        for (const stock of buyStocksToTrade) {
-          const hasPositionForSymbol = activePositionsFiltered.some(pos => pos.tradingsymbol === stock.symbol);
-          
-          if (hasPositionForSymbol) {
-            // ✅ ALLOW TARGET ORDER for existing position
-            console.log(`🎯 Placing TARGET order for existing position: ${stock.symbol}`);
-            const result = await executeOrder('BUY', stock, token, true, precheckSnapshot); // isTargetOrder: true
-            if (result.success) successfulOrders++; else failedOrders++;
-          } else {
-            // ❌ BLOCK ORDER for different symbol
-            console.log(`🚫 BLOCKING BUY order for ${stock.symbol} - position exists for other symbols`);
-            blockedOrders++;
-          }
-        }
+      // Submit only direct main-order attempts; backend owns target-order and final precheck policy.
+      for (const stock of buyStocksToTrade) {
+        const result = await executeOrder('BUY', stock, token, false);
+        if (result.success) successfulOrders++; else failedOrders++;
+      }
 
-        for (const stock of sellStocksToTrade) {
-          const hasPositionForSymbol = activePositionsFiltered.some(pos => pos.tradingsymbol === stock.symbol);
-          
-          if (hasPositionForSymbol) {
-            // ✅ ALLOW TARGET ORDER for existing position
-            console.log(`🎯 Placing TARGET order for existing position: ${stock.symbol}`);
-            const result = await executeOrder('SELL', stock, token, true, precheckSnapshot); // isTargetOrder: true
-            if (result.success) successfulOrders++; else failedOrders++;
-          } else {
-            // ❌ BLOCK ORDER for different symbol
-            console.log(`🚫 BLOCKING SELL order for ${stock.symbol} - position exists for other symbols`);
-            blockedOrders++;
-          }
-        }
-      } else {
-        // ✅ NO POSITIONS - EXECUTE MAIN ORDERS NORMALLY
-        console.log('✅ NO POSITIONS EXIST - Executing main orders normally');
-        
-        // Execute BUY orders (LIMITED)
-        for (const stock of buyStocksToTrade) {
-          const result = await executeOrder('BUY', stock, token, false, precheckSnapshot); // isTargetOrder: false
-          if (result.success) successfulOrders++; else failedOrders++;
-        }
-
-        // Execute SELL orders
-        for (const stock of sellStocksToTrade) {
-          const result = await executeOrder('SELL', stock, token, false, precheckSnapshot); // isTargetOrder: false
-          if (result.success) successfulOrders++; else failedOrders++;
-        }
+      for (const stock of sellStocksToTrade) {
+        const result = await executeOrder('SELL', stock, token, false);
+        if (result.success) successfulOrders++; else failedOrders++;
       }
 
       // Show completion notification
@@ -749,8 +668,7 @@ function App() {
         speak(`${successfulOrders} orders executed successfully`);
       }
 
-      // Refresh UI snapshots after execution (on-demand, no interval polling)
-      fetchPositionsAndOrders();
+      // Do not auto-refresh positions/orders/margins here.
       
     } catch (error) {
       console.error('❌ [AUTO-TRADE] Execution failed:', error);
@@ -764,64 +682,6 @@ function App() {
   useEffect(() => {
     executeAutoTradingRef.current = executeAutoTradingViaSeparateRoutes;
   }, [executeAutoTradingViaSeparateRoutes]);
-
-  // 🎯 SUBSCRIBE SIGNAL STOCKS TO KITETICKER
-  const subscribeToSignalStocks = useCallback(async (buyStocks, sellStocks) => {
-    try {
-      const token = accessToken || localStorage.getItem('kite_access_token');
-      if (!token || token === 'demo_token') {
-        console.log('⚠️ No valid access token for stock subscription');
-        return;
-      }
-
-      const allSignalStocks = [...buyStocks, ...sellStocks];
-      if (allSignalStocks.length === 0) {
-        console.log('📊 No signal stocks to subscribe');
-        return;
-      }
-
-      console.log(`📡 Subscribing ${allSignalStocks.length} signal stocks to KiteTicker...`);
-      console.log('   - Buy signals:', buyStocks.map(s => s.symbol || s.s));
-      console.log('   - Sell signals:', sellStocks.map(s => s.symbol || s.s));
-
-      // Update signal stocks state for tick handler
-      setSignalStocks({
-        buySignals: buyStocks,
-        sellSignals: sellStocks,
-        lastUpdate: new Date().toISOString()
-      });
-
-      // Call backend to subscribe stocks
-      const subscribeResponse = await fetch('http://localhost:5000/api/subscribe-signal-stocks', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          stocks: allSignalStocks.map(stock => ({
-            symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
-            ltp: stock.ltp || stock.d?.[0] || 0,
-            signalType: buyStocks.includes(stock) ? 'BUY' : 'SELL'
-          }))
-        })
-      });
-
-      if (subscribeResponse.ok) {
-        const subscribeResult = await subscribeResponse.json();
-        console.log('✅ Signal stocks subscription successful:', subscribeResult.subscribed_count || 0, 'stocks');
-        
-        if (voiceEnabled && subscribeResult.subscribed_count > 0) {
-          speak(`Subscribed ${subscribeResult.subscribed_count} signal stocks for tick monitoring`);
-        }
-      } else {
-        console.log('⚠️ Signal stocks subscription failed:', subscribeResponse.status);
-      }
-
-    } catch (error) {
-      console.error('❌ Error subscribing signal stocks:', error);
-    }
-  }, [accessToken, voiceEnabled, speak]);
 
   // 🔍 CHECK IF STOCK HAS ACTIVE SIGNALS
   const hasSignalForStock = useCallback((tickSymbol) => {
@@ -1024,75 +884,13 @@ function App() {
   }, [accessToken, voiceEnabled, speak, openNamedChart]);
 
   // Helper function to execute individual orders
-  const executeOrder = useCallback(async (type, stock, token, isTargetOrder, precheckSnapshot = null) => {
+  const executeOrder = useCallback(async (type, stock, token, isTargetOrder) => {
     try {
       const orderTypeText = isTargetOrder ? 'TARGET' : 'MAIN';
       const preCalcInfo = stock.preCalculated ? `Qty=${stock.preCalculated.quantity}, Investment=₹${stock.preCalculated.investment.toFixed(2)}` : 'No pre-calc data';
       console.log(`${type === 'BUY' ? '🔵' : '🔴'} Attempting ${orderTypeText} ${type} order for ${stock.symbol} @ ₹${stock.ltp} (${preCalcInfo})`);
 
-      // Mandatory precheck before every BUY/SELL/TARGET order attempt
-      let activePositions = [];
-      let openOrders = [];
-      let usableFunds = 0;
-
-      if (precheckSnapshot) {
-        activePositions = precheckSnapshot.activePositions || [];
-        openOrders = precheckSnapshot.openOrders || [];
-        usableFunds = Number(precheckSnapshot.usableFunds || 0);
-      } else {
-        const [positionsResponse, ordersResponse, marginsResponse] = await Promise.all([
-          fetch('http://localhost:5000/api/positions', {
-            method: 'GET',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            }
-          }),
-          fetch('http://localhost:5000/api/orders', {
-            method: 'GET',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            }
-          }),
-          fetch('http://localhost:5000/api/get-margins', {
-            method: 'GET',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`
-            }
-          })
-        ]);
-
-        if (!positionsResponse.ok || !ordersResponse.ok || !marginsResponse.ok) {
-          const precheckError = `Precheck failed (positions:${positionsResponse.status}, orders:${ordersResponse.status}, funds:${marginsResponse.status})`;
-          console.log(`❌ ${precheckError}`);
-          return { success: false, error: precheckError };
-        }
-
-        const [positionsPayload, ordersPayload, marginsPayload] = await Promise.all([
-          positionsResponse.json(),
-          ordersResponse.json(),
-          marginsResponse.json()
-        ]);
-
-        activePositions = (positionsPayload.positions || []).filter(pos => Number(pos.quantity) !== 0);
-        openOrders = (ordersPayload.orders || []).filter(order => order.status === 'OPEN' || order.status === 'TRIGGER PENDING');
-        usableFunds = Number(marginsPayload.usableFunds || 0);
-      }
-
-      console.log(`🔎 Order precheck for ${stock.symbol}: activePositions=${activePositions.length}, openOrders=${openOrders.length}, usableFunds=₹${usableFunds.toLocaleString('en-IN')}`);
-
-      if (!isTargetOrder && usableFunds <= 0) {
-        return { success: false, error: 'Insufficient usable funds for main order' };
-      }
-
-      if (isTargetOrder) {
-        const hasSymbolPosition = activePositions.some(pos => pos.tradingsymbol === stock.symbol);
-        if (!hasSymbolPosition) {
-          return { success: false, error: `No active position for ${stock.symbol}, target order skipped` };
-        }
-      }
+      console.log(`🔎 Order submission for ${stock.symbol}: delegating precheck to backend order route`);
       
       // Prepare order data with pre-calculated quantities
       const orderData = {
@@ -1136,6 +934,18 @@ function App() {
         return { success: true, orderId: result.order_id };
       } else {
         console.log(`❌ ${orderTypeText} ${type} order failed: ${stock.symbol} - ${result.error}`);
+
+        const errorText = String(result.error || '').toLowerCase();
+        if (!isTargetOrder && (
+          errorText.includes('active positions exist') ||
+          errorText.includes('main order blocked') ||
+          errorText.includes('pending order') ||
+          errorText.includes('open order')
+        )) {
+          mainOrdersAllowedRef.current = false;
+          console.log('🛡️ [AUTO-TRADE] Main-order attempts suppressed until next scan precheck update');
+        }
+
         return { success: false, error: result.error };
       }
     } catch (error) {
@@ -1315,6 +1125,12 @@ function App() {
           console.log(`   - Execution mode: ${lowPriceData.executionMode || 'unknown'}`);
           console.log(`   - Auto trade: ${lowPriceData.autoTrade}`);
           
+          const scanMainOrdersAllowed = Boolean(
+            lowPriceData.mainOrdersAllowed ?? lowPriceData.orderExecution?.mainOrdersAllowed ?? false
+          );
+          mainOrdersAllowedRef.current = scanMainOrdersAllowed;
+          console.log(`🛡️ [SCAN GATE] mainOrdersAllowed=${scanMainOrdersAllowed}, positionsFound=${Boolean(lowPriceData.positionsFound)}, openOrdersFound=${Boolean(lowPriceData.openOrdersFound)}`);
+
           setScanResults({
             buyTable: lowPriceData.buyTable || [],
             sellTable: lowPriceData.sellTable || [],
@@ -1324,6 +1140,7 @@ function App() {
             sellWithoutIntersectionTable: lowPriceData.sellWithoutIntersectionTable || [],
             executionMode: lowPriceData.executionMode || 'direct',
             autoTrade: lowPriceData.autoTrade || false,
+            mainOrdersAllowed: scanMainOrdersAllowed,
             lastScanTime: new Date().toISOString(),
             orderExecution: lowPriceData.orderExecution || {}
           });
@@ -1335,15 +1152,16 @@ function App() {
         
         setLastUpdate(new Date().toLocaleTimeString());
 
-        // Shared scanner-time refresh only: subscription status + margins.
+        // Shared scanner-time refresh: subscription + positions/orders/margins (once per scan).
         try {
-          const [subscriptionRes, marginsRes] = await Promise.all([
+          const token = accessToken || localStorage.getItem('kite_access_token');
+          const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {};
+
+          const [subscriptionRes, positionsRes, ordersRes, marginsRes] = await Promise.all([
             fetch('http://localhost:5000/api/subscription-status'),
-            fetch('http://localhost:5000/api/get-margins', {
-              headers: {
-                ...(accessToken && { 'Authorization': `Bearer ${accessToken}` })
-              }
-            })
+            fetch('http://localhost:5000/api/positions', { headers: authHeaders }),
+            fetch('http://localhost:5000/api/orders', { headers: authHeaders }),
+            fetch('http://localhost:5000/api/get-margins', { headers: authHeaders })
           ]);
 
           if (subscriptionRes.ok) {
@@ -1355,32 +1173,47 @@ function App() {
             });
           }
 
+          if (positionsRes.ok) {
+            const positionsPayload = await positionsRes.json();
+            setPositionsData(positionsPayload.positions || []);
+            setLastPositionsOrdersUpdate(new Date().toLocaleTimeString());
+          }
+
+          if (ordersRes.ok) {
+            const ordersPayload = await ordersRes.json();
+            setOrdersData(ordersPayload.orders || []);
+            setLastPositionsOrdersUpdate(new Date().toLocaleTimeString());
+          }
+
           if (marginsRes.ok) {
-            const marginsData = await marginsRes.json();
+            const marginsPayload = await marginsRes.json();
             setScannerMargins({
-              availableFunds: Number(marginsData?.availableFunds || 0),
-              leverageFunds: Number(marginsData?.leverageFunds || 0),
-              usableFunds: Number(marginsData?.usableFunds || 0)
+              availableFunds: Number(marginsPayload?.availableFunds || 0),
+              leverageFunds: Number(marginsPayload?.leverageFunds || 0),
+              usableFunds: Number(marginsPayload?.usableFunds || 0)
             });
           }
         } catch (sharedFetchError) {
-          console.warn('⚠️ Scanner-shared subscription/margins refresh failed:', sharedFetchError.message);
+          console.warn('⚠️ Scanner-shared refresh failed:', sharedFetchError.message);
         }
         
-        // 🎯 NEW ARCHITECTURE: STEP 2 - Subscribe signal stocks (no direct execution)
-        console.log(`📡 Step 2: Subscribing signal stocks for tick-driven execution...`);
+        // 🎯 STEP 2: Sync local signal state (backend already handled subscribe/unsubscribe after scan)
+        console.log(`📡 Step 2: Syncing signal stocks from scan results...`);
         console.log(`   - Buy signals found: ${buyStocks.length}`);
         console.log(`   - Sell signals found: ${sellStocks.length}`);
         console.log(`   - Auto trading enabled: ${autoTradingEnabled}`);
         console.log(`   - Kite login status: ${kiteLoginStatus}`);
-        
+
+        setSignalStocks({
+          buySignals: buyStocks,
+          sellSignals: sellStocks,
+          lastUpdate: new Date().toISOString()
+        });
+
         if (buyStocks.length > 0 || sellStocks.length > 0) {
-          console.log('📡 Subscribing signal stocks to KiteTicker for tick-driven execution...');
-          await subscribeToSignalStocks(buyStocks, sellStocks);
-          console.log('✅ Signal stocks subscription completed - waiting for tick updates to trigger trades');
+          console.log('✅ Signal stocks synced locally - backend subscription already reconciled after scan');
         } else {
-          console.log('⚠️ No signal stocks to subscribe - clearing previous signals');
-          setSignalStocks({ buySignals: [], sellSignals: [], lastUpdate: null });
+          console.log('⚠️ No signal stocks from scan - local signal state cleared');
         }
         
         // Voice alert for low-price scanner results
@@ -1388,15 +1221,7 @@ function App() {
           speak(`Low price scanner found ${buyStocks.length} buy signals and ${sellStocks.length} sell signals from stocks under ₹4000`);
         }
         
-        // 🔄 STEP 3: On-demand position/order/funds check only when trading is actionable
-        if (autoTradingEnabled && kiteLoginStatus === 'logged-in' && (buyStocks.length > 0 || sellStocks.length > 0)) {
-          console.log('🔄 Step 3: Running on-demand position/order/funds check before actionable trades...');
-          setTimeout(() => {
-            checkPositionsAndOrdersFromFrontend();
-          }, 2000); // Delay to ensure scan/orders are processed
-        } else {
-          console.log('⏭️ Step 3 skipped: no actionable trade trigger for position/order/funds check');
-        }
+        // No additional frontend precheck calls here. Backend performs the order-attempt precheck.
       }
     } catch (error) {
       console.error('Failed to fetch scanner data:', error);
@@ -1404,7 +1229,7 @@ function App() {
       setBuySignals([]);
       setSellSignals([]);
     }
-  }, [voiceEnabled, autoTradingEnabled, speak, accessToken, kiteLoginStatus, subscribeToSignalStocks, checkPositionsAndOrdersFromFrontend]);
+  }, [voiceEnabled, autoTradingEnabled, speak, accessToken, kiteLoginStatus]);
 
   // Initialize WebSocket connection
   useEffect(() => {
@@ -1494,6 +1319,21 @@ function App() {
             console.log(`🔍 [TICK-TRADE] Signal check for ${cleanSymbol}:`, { hasBuySignal, hasSellSignal });
             
             if (hasBuySignal || hasSellSignal) {
+              const now = Date.now();
+              const lastAttempt = lastTickTradeAttemptRef.current[cleanSymbol] || 0;
+
+              if (tickTradeInFlightRef.current) {
+                console.log(`⏸️ [TICK-TRADE] Skipping ${cleanSymbol} - execution already in flight`);
+                return;
+              }
+
+              if (now - lastAttempt < TICK_TRADE_COOLDOWN_MS) {
+                const remainingMs = TICK_TRADE_COOLDOWN_MS - (now - lastAttempt);
+                console.log(`⏸️ [TICK-TRADE] Cooldown active for ${cleanSymbol} - next attempt in ${Math.ceil(remainingMs / 1000)}s`);
+                return;
+              }
+
+              lastTickTradeAttemptRef.current[cleanSymbol] = now;
               console.log(`🚀 [TICK-TRADE] *** EXECUTING ORDERS FOR ${symbol} *** - triggering execution`);
               
               const buySignalStocks = hasBuySignal ? currentSignalStocks.buySignals.filter(stock => {
@@ -1516,11 +1356,14 @@ function App() {
               
               // 🚀 DIRECT EXECUTION: Call the frontend route executor immediately
               try {
+                tickTradeInFlightRef.current = true;
                 console.log(`🚀 [TICK-TRADE] CALLING executeAutoTradingViaSeparateRoutes() for ${symbol} via REF`);
                 await executeFunction(buySignalStocks, sellSignalStocks);
                 console.log(`✅ [TICK-TRADE] Execution completed successfully for ${symbol}`);
               } catch (error) {
                 console.error(`❌ [TICK-TRADE] Execution failed for ${symbol}:`, error);
+              } finally {
+                tickTradeInFlightRef.current = false;
               }
             } else {
               console.log(`⚪ [TICK-TRADE] No signals found for ${cleanSymbol} - skipping execution`);
@@ -1584,23 +1427,44 @@ function App() {
           });
         }
       } else if (data.type === 'target_order_placed') {
-        // Handle target order details for display
-        console.log('🎯 Target order placed:', data.targetOrder);
-        
+        // Handle target order details for display (supports both {targetOrder} and {position} payload shapes)
+        const rawTarget = data?.targetOrder || data?.position || null;
+        console.log('🎯 Target order placed payload:', rawTarget);
+
+        if (!rawTarget || !rawTarget.symbol) {
+          console.warn('⚠️ Ignoring malformed target_order_placed payload:', data);
+          return;
+        }
+
+        const normalizedTargetOrder = {
+          symbol: rawTarget.symbol,
+          orderId: rawTarget.orderId || rawTarget.targetOrderId || null,
+          avgPrice: Number(rawTarget.avgPrice || 0),
+          quantity: Number(rawTarget.quantity || 0),
+          investment: Number(rawTarget.investment || (Number(rawTarget.avgPrice || 0) * Math.abs(Number(rawTarget.quantity || 0))) || 0),
+          targetPrice: Number(rawTarget.targetPrice || 0),
+          expectedProfit: Number(rawTarget.expectedProfit || rawTarget.targetProfit || 0),
+          profitPercentage: rawTarget.profitPercentage || '0.00',
+          side: rawTarget.side || 'BUY',
+          targetSide: rawTarget.targetSide || (rawTarget.side === 'SELL' ? 'BUY' : 'SELL'),
+          placedAt: rawTarget.placedAt || rawTarget.timestamp || new Date().toISOString(),
+          timestamp: rawTarget.timestamp || new Date().toLocaleTimeString(),
+          status: rawTarget.status || 'OPEN',
+          orderType: rawTarget.orderType || 'TARGET'
+        };
+
         setTargetOrderDetails(prevDetails => {
-          // Check if this target order already exists (avoid duplicates)
-          const existingIndex = prevDetails.findIndex(order => order.orderId === data.targetOrder.orderId);
-          
+          const safePrev = (prevDetails || []).filter(order => order && order.symbol);
+          const existingIndex = safePrev.findIndex(order => order.orderId && normalizedTargetOrder.orderId && order.orderId === normalizedTargetOrder.orderId);
+
           let newDetails;
           if (existingIndex >= 0) {
-            // Update existing target order
-            newDetails = [...prevDetails];
-            newDetails[existingIndex] = data.targetOrder;
+            newDetails = [...safePrev];
+            newDetails[existingIndex] = normalizedTargetOrder;
           } else {
-            // Add new target order, keep only last 10 target orders
-            newDetails = [data.targetOrder, ...prevDetails].slice(0, 10);
+            newDetails = [normalizedTargetOrder, ...safePrev].slice(0, 10);
           }
-          
+
           return newDetails;
         });
         
@@ -1609,16 +1473,16 @@ function App() {
         
         // Voice notification
         if (voiceEnabled) {
-          const profit = Math.round(data.targetOrder.expectedProfit);
-          speak(`Target order placed for ${data.targetOrder.symbol}. Expected profit ${profit} rupees`);
+          const profit = Math.round(normalizedTargetOrder.expectedProfit || 0);
+          speak(`Target order placed for ${normalizedTargetOrder.symbol}. Expected profit ${profit} rupees`);
         }
         
         // Visual notification
         setOrderNotification({
           type: 'success',   
           title: '🎯 Target Order Placed',
-          message: `Target order placed for ${data.targetOrder.symbol}`,
-          details: `Expected profit: ₹${data.targetOrder.expectedProfit.toFixed(2)} (0.3%)`,
+          message: `Target order placed for ${normalizedTargetOrder.symbol}`,
+          details: `Expected profit: ₹${Number(normalizedTargetOrder.expectedProfit || 0).toFixed(2)} (0.3%)`,
           timestamp: new Date().toLocaleTimeString()
         });
         
@@ -1731,19 +1595,7 @@ function App() {
     }
   }, [pollInterval, fetchScannerData]); // Add fetchScannerData dependency to get latest version
 
-  // On login, do a one-time position & order check (no interval polling)
-  useEffect(() => {
-    if (kiteLoginStatus === 'logged-in') {
-      console.log('🎯 Running one-time position/order check on login...');
-      const oneTimeCheck = setTimeout(() => {
-        checkPositionsAndOrdersFromFrontend();
-      }, 1000);
-
-      return () => clearTimeout(oneTimeCheck);
-    } else {
-      console.log('⚠️ Position & order one-time check skipped - not logged in');
-    }
-  }, [kiteLoginStatus, checkPositionsAndOrdersFromFrontend]);
+  // Do not run automatic position/order/funds checks on login.
 
   const startPolling = useCallback(() => {
     console.log(`🔄 Starting scanner polling with ${pollInterval}s interval...`);
@@ -1981,7 +1833,6 @@ function App() {
                     Buy Conditions
                   </div>
                   <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
-                    <li>EMA3(15m) &gt; EMA3(5m)</li>
                     <li>EMA3 &gt; EMA5 on 1m, 5m, and 15m</li>
                     <li>MACD &gt; Signal on 1m, 5m, and 15m</li>
                     <li>MACD(1m) &gt; 0 and MACD(5m) &gt; 0</li>
@@ -1997,7 +1848,6 @@ function App() {
                     Sell Conditions
                   </div>
                   <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
-                    <li>EMA3(15m) &lt; EMA3(5m)</li>
                     <li>EMA3 &lt; EMA5 on 1m, 5m, and 15m</li>
                     <li>MACD &lt; Signal on 1m, 5m, and 15m</li>
                     <li>MACD(1m) &lt; 0 and MACD(5m) &lt; 0</li>

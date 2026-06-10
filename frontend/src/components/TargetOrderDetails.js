@@ -190,22 +190,32 @@ const EmptyMessage = styled.div`
 `;
 
 const TargetOrderDetails = ({ targetOrders = [], onClose, isVisible = false }) => {
-  if (!isVisible || targetOrders.length === 0) {
+  const safeOrders = (Array.isArray(targetOrders) ? targetOrders : [])
+    .filter(order => order && order.symbol)
+    .map(order => ({
+      ...order,
+      investment: Number(order.investment || 0),
+      expectedProfit: Number(order.expectedProfit || 0),
+      targetPrice: Number(order.targetPrice || 0),
+      profitPercentage: order.profitPercentage ?? '0.00'
+    }));
+
+  if (!isVisible || safeOrders.length === 0) {
     return null;
   }
 
   return (
     <TargetOrderContainer>
       <TargetOrderHeader>
-        <div>🎯 Target Orders Placed ({targetOrders.length})</div>
+        <div>🎯 Target Orders Placed ({safeOrders.length})</div>
         <CloseButton onClick={onClose}>✕</CloseButton>
       </TargetOrderHeader>
       
       <TargetOrderList>
-        {targetOrders.length === 0 ? (
+        {safeOrders.length === 0 ? (
           <EmptyMessage>No target orders placed yet</EmptyMessage>
         ) : (
-          targetOrders.map((order, index) => (
+          safeOrders.map((order, index) => (
             <TargetOrderCard key={order.orderId || index}>
               <OrderSymbol>
                 <span>{order.symbol}</span>
