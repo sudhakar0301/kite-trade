@@ -246,7 +246,7 @@ const ActionButton = styled.button`
   }
 `;
 
-// Define the exact 12 filter conditions from backend with OR logic only where it exists
+// Define filter conditions with OR logic only where it exists
 const FILTER_CONDITIONS = {
   buy: [
     { id: 'buy_ema5_ema3', label: 'EMA5 (5min) < EMA3 (15min)', section: 'EMA Cross' },
@@ -254,12 +254,14 @@ const FILTER_CONDITIONS = {
     { id: 'buy_plus_di_25', label: '+DI > 25 (15min OR 5min)', section: 'ADX Conditions' },
     { id: 'buy_plus_di_adx', label: '+DI > ADX (15min OR 5min)', section: 'ADX Conditions' },
     { id: 'buy_adx_1', label: 'ADX > 25 (1min)', section: 'ADX Conditions' },
+    { id: 'buy_adx_5', label: 'ADX > 25 (5min)', section: 'ADX Conditions' },
+    { id: 'buy_adx_gt_minus_di_1', label: 'ADX > -DI (1min)', section: 'ADX Conditions' },
     { id: 'buy_macd_signal_5', label: 'MACD > Signal (5min)', section: 'MACD Conditions' },
-    { id: 'buy_macd_signal_1', label: 'MACD > Signal (1min)', section: 'MACD Conditions' },
     { id: 'buy_macd_positive_5', label: 'MACD > 0 (5min)', section: 'MACD Conditions' },
     { id: 'buy_macd_positive_1', label: 'MACD > 0 (1min)', section: 'MACD Conditions' },
-    { id: 'buy_ema9_vwap_1', label: 'EMA9 > VWAP (1min)', section: 'EMA Position' },
+    { id: 'buy_ema9_vwap_1', label: 'EMA5 > VWAP (1min)', section: 'EMA Position' },
     { id: 'buy_ema3_ema5_1', label: 'EMA3 > EMA5 (1min)', section: 'EMA Cross' },
+    { id: 'buy_ema3_band_5m', label: 'LTP < UBB (5min)', section: 'Price Position' },
     { id: 'buy_ltp_position', label: 'LTP < EMA3 (15min)', section: 'Price Position' }
   ],
   sell: [
@@ -268,12 +270,14 @@ const FILTER_CONDITIONS = {
     { id: 'sell_minus_di_25', label: '-DI > 25 (15min OR 5min)', section: 'ADX Conditions' },
     { id: 'sell_minus_di_adx', label: '-DI > ADX (15min OR 5min)', section: 'ADX Conditions' },
     { id: 'sell_adx_1', label: 'ADX > 25 (1min)', section: 'ADX Conditions' },
+    { id: 'sell_adx_5', label: 'ADX > 25 (5min)', section: 'ADX Conditions' },
+    { id: 'sell_adx_gt_plus_di_1', label: 'ADX > +DI (1min)', section: 'ADX Conditions' },
     { id: 'sell_macd_signal_5', label: 'MACD < Signal (5min)', section: 'MACD Conditions' },
-    { id: 'sell_macd_signal_1', label: 'MACD < Signal (1min)', section: 'MACD Conditions' },
     { id: 'sell_macd_negative_5', label: 'MACD < 0 (5min)', section: 'MACD Conditions' },
     { id: 'sell_macd_negative_1', label: 'MACD < 0 (1min)', section: 'MACD Conditions' },
-    { id: 'sell_ema9_vwap_1', label: 'EMA9 < VWAP (1min)', section: 'EMA Position' },
+    { id: 'sell_ema9_vwap_1', label: 'EMA5 < VWAP (1min)', section: 'EMA Position' },
     { id: 'sell_ema3_ema5_1', label: 'EMA3 < EMA5 (1min)', section: 'EMA Cross' },
+    { id: 'sell_ema3_band_5m', label: 'LTP > LBB (5min)', section: 'Price Position' },
     { id: 'sell_ltp_position', label: 'LTP > EMA3 (15min)', section: 'Price Position' }
   ]
 };
@@ -330,7 +334,7 @@ const FilterPanel = ({ type = 'buy', allStocks = [], onFilteredResults, defaultA
 
     const filteredStocks = allStocks.filter(stock => {
       if (type === 'buy') {
-        // Match exact backend buy conditions - all 12 conditions must pass (AND logic between conditions)
+        // Buy conditions - all selected conditions must pass (AND logic)
         
         // Condition 1: EMA5 (5min) < EMA3 (15min) - standalone condition
         const condition1 = !activeFilters.buy_ema5_ema3 || (stock.ema5_5 < stock.ema3_15);
@@ -348,35 +352,45 @@ const FilterPanel = ({ type = 'buy', allStocks = [], onFilteredResults, defaultA
         
         // Condition 5: ADX > 25 (1min) - standalone condition
         const condition5 = !activeFilters.buy_adx_1 || (stock.adx1 > 25);
+
+        // Condition 5a: ADX > 25 (5min) - standalone condition
+        const condition5a = !activeFilters.buy_adx_5 || (stock.adx5 > 25);
+
+        // Condition 5b: ADX > -DI (1min) - standalone condition
+        const condition5b = !activeFilters.buy_adx_gt_minus_di_1 || (stock.adx1 > stock.minusDI1);
         
         // Condition 6: MACD > Signal (5min) - standalone condition
         const condition6 = !activeFilters.buy_macd_signal_5 || (stock.macd5 > stock.signal5);
-        
-        // Condition 7: MACD > Signal (1min) - standalone condition
-        const condition7 = !activeFilters.buy_macd_signal_1 || (stock.macd1 > stock.signal1);
+
+        const condition7 = true;
         
         // Condition 8: MACD > 0 (5min) - standalone condition
         const condition8 = !activeFilters.buy_macd_positive_5 || (stock.macd5 > 0);
-        
+
         // Condition 9: MACD > 0 (1min) - standalone condition
         const condition9 = !activeFilters.buy_macd_positive_1 || (stock.macd1 > 0);
         
-        // Condition 10: EMA9 > VWAP (1min) - standalone condition
-        const condition10 = !activeFilters.buy_ema9_vwap_1 || (stock.ema9_1 > stock.vwap1);
+        // Condition 10: EMA5 > VWAP (1min) - standalone condition
+        const condition10 = !activeFilters.buy_ema9_vwap_1 || (stock.ema5_1 > stock.vwap1);
         
         // Condition 11: EMA3 > EMA5 (1min) - standalone condition
         const condition11 = !activeFilters.buy_ema3_ema5_1 || (stock.ema3_1 > stock.ema5_1);
+
+          // Condition 12: LTP < UBB (5min)
+        const condition12 = !activeFilters.buy_ema3_band_5m ||
+          (stock.ltp < (stock.ubb_5 || stock.ubb5 || 0));
         
-        // Condition 12: LTP < EMA3 (15min) - EMA5 check handled via tick data
-        const condition12 = !activeFilters.buy_ltp_position || 
+        // Condition 13: LTP < EMA3 (15min) - EMA5 check handled via tick data
+        const condition13 = !activeFilters.buy_ltp_position || 
           (stock.ltp < stock.ema3_15);
         
-        return condition1 && condition2 && condition3 && condition4 && condition5 && 
+        return condition1 && condition2 && condition3 && condition4 && condition5 && condition5a && 
+           condition5b &&
                condition6 && condition7 && condition8 && condition9 && condition10 && 
-               condition11 && condition12;
+               condition11 && condition12 && condition13;
                
       } else {
-        // Match exact backend sell conditions - all 12 conditions must pass (AND logic between conditions)
+        // Sell conditions - all selected conditions must pass (AND logic)
         
         // Condition 1: EMA5 (5min) > EMA3 (15min) - standalone condition
         const condition1 = !activeFilters.sell_ema5_ema3 || (stock.ema5_5 > stock.ema3_15);
@@ -394,32 +408,42 @@ const FilterPanel = ({ type = 'buy', allStocks = [], onFilteredResults, defaultA
         
         // Condition 5: ADX > 25 (1min) - standalone condition
         const condition5 = !activeFilters.sell_adx_1 || (stock.adx1 > 25);
+
+        // Condition 5a: ADX > 25 (5min) - standalone condition
+        const condition5a = !activeFilters.sell_adx_5 || (stock.adx5 > 25);
+
+        // Condition 5b: ADX > +DI (1min) - standalone condition
+        const condition5b = !activeFilters.sell_adx_gt_plus_di_1 || (stock.adx1 > stock.plusDI1);
         
         // Condition 6: MACD < Signal (5min) - standalone condition
         const condition6 = !activeFilters.sell_macd_signal_5 || (stock.macd5 < stock.signal5);
-        
-        // Condition 7: MACD < Signal (1min) - standalone condition
-        const condition7 = !activeFilters.sell_macd_signal_1 || (stock.macd1 < stock.signal1);
+
+        const condition7 = true;
         
         // Condition 8: MACD < 0 (5min) - standalone condition
         const condition8 = !activeFilters.sell_macd_negative_5 || (stock.macd5 < 0);
-        
+
         // Condition 9: MACD < 0 (1min) - standalone condition
         const condition9 = !activeFilters.sell_macd_negative_1 || (stock.macd1 < 0);
         
-        // Condition 10: EMA9 < VWAP (1min) - standalone condition
-        const condition10 = !activeFilters.sell_ema9_vwap_1 || (stock.ema9_1 < stock.vwap1);
+        // Condition 10: EMA5 < VWAP (1min) - standalone condition
+        const condition10 = !activeFilters.sell_ema9_vwap_1 || (stock.ema5_1 < stock.vwap1);
         
         // Condition 11: EMA3 < EMA5 (1min) - standalone condition
         const condition11 = !activeFilters.sell_ema3_ema5_1 || (stock.ema3_1 < stock.ema5_1);
+
+          // Condition 12: LTP > LBB (5min)
+        const condition12 = !activeFilters.sell_ema3_band_5m ||
+          (stock.ltp > (stock.lbb_5 || stock.lbb5 || 0));
         
-        // Condition 12: LTP > EMA3 (15min) - EMA5 check handled via tick data
-        const condition12 = !activeFilters.sell_ltp_position || 
+        // Condition 13: LTP > EMA3 (15min) - EMA5 check handled via tick data
+        const condition13 = !activeFilters.sell_ltp_position || 
           (stock.ltp > stock.ema3_15);
         
-        return condition1 && condition2 && condition3 && condition4 && condition5 && 
+        return condition1 && condition2 && condition3 && condition4 && condition5 && condition5a && 
+           condition5b &&
                condition6 && condition7 && condition8 && condition9 && condition10 && 
-               condition11 && condition12;
+               condition11 && condition12 && condition13;
       }
     });
 

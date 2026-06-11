@@ -438,7 +438,7 @@ const SubscribedStockTracker = ({
         const result = await response.json();
         console.log('✅ RELIANCE buy scan completed:', result);
         setRelianceScanType('BUY_SCAN');
-        alert(`RELIANCE set as Buy Scan symbol\nOrders will only execute if ALL 13 buy conditions are met`);
+        alert(`RELIANCE set as Buy Scan symbol\nOrders will only execute if ALL 14 buy conditions are met`);
       } else {
         const error = await response.json();
         console.error('❌ RELIANCE buy scan failed:', error);
@@ -467,7 +467,7 @@ const SubscribedStockTracker = ({
         const result = await response.json();
         console.log('✅ RELIANCE sell scan completed:', result);
         setRelianceScanType('SELL_SCAN');
-        alert(`RELIANCE set as Sell Scan symbol\nOrders will only execute if ALL 13 sell conditions are met`);
+        alert(`RELIANCE set as Sell Scan symbol\nOrders will only execute if ALL 14 sell conditions are met`);
       } else {
         const error = await response.json();
         console.error('❌ RELIANCE sell scan failed:', error);
@@ -1224,7 +1224,7 @@ const SubscribedStockTracker = ({
                   fontFamily: 'system-ui, -apple-system, sans-serif',
                   opacity: relianceScanType === 'BUY_SCAN' ? '0.8' : '1'
                 }}
-                title={relianceScanType === 'BUY_SCAN' ? 'RELIANCE is set as Buy Scan symbol' : 'Set RELIANCE as Buy Scan symbol - Orders only execute if ALL 13 buy conditions are met'}
+                title={relianceScanType === 'BUY_SCAN' ? 'RELIANCE is set as Buy Scan symbol' : 'Set RELIANCE as Buy Scan symbol - Orders only execute if ALL 14 buy conditions are met'}
               >
                 {relianceScanType === 'BUY_SCAN' ? '✓ Buy Active' : '📈 Buy Scan'}
               </button>
@@ -1250,7 +1250,7 @@ const SubscribedStockTracker = ({
                   fontFamily: 'system-ui, -apple-system, sans-serif',
                   opacity: relianceScanType === 'SELL_SCAN' ? '0.8' : '1'
                 }}
-                title={relianceScanType === 'SELL_SCAN' ? 'RELIANCE is set as Sell Scan symbol' : 'Set RELIANCE as Sell Scan symbol - Orders only execute if ALL 13 sell conditions are met'}
+                title={relianceScanType === 'SELL_SCAN' ? 'RELIANCE is set as Sell Scan symbol' : 'Set RELIANCE as Sell Scan symbol - Orders only execute if ALL 14 sell conditions are met'}
               >
                 {relianceScanType === 'SELL_SCAN' ? '✓ Sell Active' : '📉 Sell Scan'}
               </button>

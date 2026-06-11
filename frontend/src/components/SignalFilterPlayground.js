@@ -41,10 +41,14 @@ const buyFilterDefs = [
       Number(row.ema3_15 || row.ema3_15m) > Number(row.ema5_15 || row.ema5_15m)
   },
   {
+    id: 'ema5_5BelowEma3_15',
+    label: 'EMA5(5m) < EMA3(15m)',
+    test: row => Number(row.ema5_5 || row.ema5_5m) < Number(row.ema3_15 || row.ema3_15m)
+  },
+  {
     id: 'macdSignalAllTf',
-    label: 'MACD > Signal on 1m, 5m, and 15m',
+    label: 'MACD > Signal on 5m and 15m',
     test: row =>
-      Number(row.macd1 || row.macd_1m) > Number(row.signal1 || row.signal_1m) &&
       Number(row.macd5 || row.macd_5m) > Number(row.signal5 || row.signal_5m) &&
       Number(row.macd15 || row.macd_15m) > Number(row.signal15 || row.signal_15m)
   },
@@ -64,14 +68,45 @@ const buyFilterDefs = [
     test: row => Number(row.adx1 || row.adx_1m) > 25 || Number(row.adx5 || row.adx_5m) > 25 || Number(row.adx15 || row.adx_15m) > 25
   },
   {
+    id: 'adxStrong5m',
+    label: 'ADX(5m) > 25',
+    test: row => Number(row.adx5 || row.adx_5m) > 25
+  },
+  {
     id: 'plusDiStrong',
     label: '+DI(5m) > 25 OR +DI(15m) > 25',
     test: row => Number(row.plus_di5 || row.plusDI5 || row.pdi5) > 25 || Number(row.plus_di15 || row.plusDI15 || row.pdi15) > 25
   },
   {
+    id: 'plusDiOverAdx5Or15',
+    label: '+DI(5m) > ADX(5m) OR +DI(15m) > ADX(15m)',
+    test: row =>
+      Number(row.plus_di5 || row.plusDI5 || row.pdi5) > Number(row.adx5 || row.adx_5m) ||
+      Number(row.plus_di15 || row.plusDI15 || row.pdi15) > Number(row.adx15 || row.adx_15m)
+  },
+  {
     id: 'plusDiOverAdx1m',
-    label: '+DI(1m) > ADX(1m) and ADX(1m) > 25',
-    test: row => Number(row.plus_di1 || row.plusDI1 || row.pdi1) > Number(row.adx1 || row.adx_1m) && Number(row.adx1 || row.adx_1m) > 25
+    label: '+DI(1m) > 25 and (+DI(1m) > ADX(1m) OR ADX(1m) > 25)',
+    test: row => {
+      const plusDi1 = Number(row.plus_di1 || row.plusDI1 || row.pdi1);
+      const adx1 = Number(row.adx1 || row.adx_1m);
+      return plusDi1 > 25 && (plusDi1 > adx1 || adx1 > 25);
+    }
+  },
+  {
+    id: 'adxOverMinusDi1m',
+    label: 'ADX(1m) > -DI(1m)',
+    test: row => Number(row.adx1 || row.adx_1m) > Number(row.minus_di1 || row.minusDI1 || row.mdi1)
+  },
+  {
+    id: 'ema5OverVwap1m',
+    label: 'EMA5(1m) > VWAP(1m)',
+    test: row => Number(row.ema5_1 || row.ema5_1m) > Number(row.vwap1 || row.vwap_1m)
+  },
+  {
+    id: 'ema3BandBuy',
+    label: 'LTP < UBB(5m)',
+    test: row => Number(row.ltp) < Number(row.ubb_5 || row.ubb5 || row.bbUpper5)
   }
 ];
 
@@ -85,10 +120,14 @@ const sellFilterDefs = [
       Number(row.ema3_15 || row.ema3_15m) < Number(row.ema5_15 || row.ema5_15m)
   },
   {
+    id: 'ema5_5AboveEma3_15',
+    label: 'EMA5(5m) > EMA3(15m)',
+    test: row => Number(row.ema5_5 || row.ema5_5m) > Number(row.ema3_15 || row.ema3_15m)
+  },
+  {
     id: 'macdSignalAllTfSell',
-    label: 'MACD < Signal on 1m, 5m, and 15m',
+    label: 'MACD < Signal on 5m and 15m',
     test: row =>
-      Number(row.macd1 || row.macd_1m) < Number(row.signal1 || row.signal_1m) &&
       Number(row.macd5 || row.macd_5m) < Number(row.signal5 || row.signal_5m) &&
       Number(row.macd15 || row.macd_15m) < Number(row.signal15 || row.signal_15m)
   },
@@ -108,20 +147,52 @@ const sellFilterDefs = [
     test: row => Number(row.adx1 || row.adx_1m) > 25 || Number(row.adx5 || row.adx_5m) > 25 || Number(row.adx15 || row.adx_15m) > 25
   },
   {
+    id: 'adxStrong5mSell',
+    label: 'ADX(5m) > 25',
+    test: row => Number(row.adx5 || row.adx_5m) > 25
+  },
+  {
     id: 'minusDiStrong',
     label: '-DI(5m) > 25 OR -DI(15m) > 25',
     test: row => Number(row.minus_di5 || row.minusDI5 || row.mdi5) > 25 || Number(row.minus_di15 || row.minusDI15 || row.mdi15) > 25
   },
   {
+    id: 'minusDiOverAdx5Or15',
+    label: '-DI(5m) > ADX(5m) OR -DI(15m) > ADX(15m)',
+    test: row =>
+      Number(row.minus_di5 || row.minusDI5 || row.mdi5) > Number(row.adx5 || row.adx_5m) ||
+      Number(row.minus_di15 || row.minusDI15 || row.mdi15) > Number(row.adx15 || row.adx_15m)
+  },
+  {
     id: 'minusDiOverAdx1m',
-    label: '-DI(1m) > ADX(1m) and ADX(1m) > 25',
-    test: row => Number(row.minus_di1 || row.minusDI1 || row.mdi1) > Number(row.adx1 || row.adx_1m) && Number(row.adx1 || row.adx_1m) > 25
+    label: '-DI(1m) > 25 and (-DI(1m) > ADX(1m) OR ADX(1m) > 25)',
+    test: row => {
+      const minusDi1 = Number(row.minus_di1 || row.minusDI1 || row.mdi1);
+      const adx1 = Number(row.adx1 || row.adx_1m);
+      return minusDi1 > 25 && (minusDi1 > adx1 || adx1 > 25);
+    }
+  },
+  {
+    id: 'adxOverPlusDi1m',
+    label: 'ADX(1m) > +DI(1m)',
+    test: row => Number(row.adx1 || row.adx_1m) > Number(row.plus_di1 || row.plusDI1 || row.pdi1)
+  },
+  {
+    id: 'ema5BelowVwap1m',
+    label: 'EMA5(1m) < VWAP(1m)',
+    test: row => Number(row.ema5_1 || row.ema5_1m) < Number(row.vwap1 || row.vwap_1m)
+  },
+  {
+    id: 'ema3BandSell',
+    label: 'LTP > LBB(5m)',
+    test: row => Number(row.ltp) > Number(row.lbb_5 || row.lbb5 || row.bbLower5)
   }
 ];
 
 function normalizeRows(rows) {
   return (rows || []).map(row => ({
     symbol: row.symbol || row.s || 'N/A',
+    token: row.instrument_token || row.token || row.instrumentToken || null,
     ltp: Number(row.ltp || row.last_price || row.price || 0),
     volume: Number(row.volume || 0),
     change_percent: Number(row.change_percent || row.changePercent || 0),
@@ -131,6 +202,9 @@ function normalizeRows(rows) {
     ema5_15: Number(row.ema5_15 || row.ema5_15m || 0),
     ema5_5: Number(row.ema5_5 || row.ema5_5m || 0),
     ema5_1: Number(row.ema5_1 || row.ema5_1m || 0),
+    vwap1: Number(row.vwap1 || row.vwap_1m || row.vwap_1 || 0),
+    ubb_5: Number(row.ubb_5 || row.ubb5 || row.bbUpper5 || 0),
+    lbb_5: Number(row.lbb_5 || row.lbb5 || row.bbLower5 || 0),
     macd15: Number(row.macd15 || row.macd_15m || 0),
     macd5: Number(row.macd5 || 0),
     macd1: Number(row.macd1 || row.macd_1m || 0),
@@ -298,7 +372,7 @@ export default function SignalFilterPlayground({
                         <td style={tdStyle}>
                           <button
                             type="button"
-                            onClick={() => onSymbolClick && onSymbolClick(row.symbol)}
+                            onClick={() => onSymbolClick && onSymbolClick(row)}
                             style={{
                               background: 'rgba(59, 130, 246, 0.2)',
                               border: '1px solid rgba(59, 130, 246, 0.5)',
@@ -399,7 +473,7 @@ export default function SignalFilterPlayground({
                         <td style={tdStyle}>
                           <button
                             type="button"
-                            onClick={() => onSymbolClick && onSymbolClick(row.symbol)}
+                            onClick={() => onSymbolClick && onSymbolClick(row)}
                             style={{
                               background: 'rgba(59, 130, 246, 0.2)',
                               border: '1px solid rgba(59, 130, 246, 0.5)',
