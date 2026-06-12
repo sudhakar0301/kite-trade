@@ -130,34 +130,36 @@ function App() {
     lastUpdate: null
   });
   const [buyFilterChecks, setBuyFilterChecks] = useState(() => ({
-    emaTrendAllTf: true,
-    ema5_5BelowEma3_15: true,
-    macdSignalAllTf: true,
-    macdAboveZero: true,
-    minusDiLow: true,
-    adxStrongAnyTf: true,
-    adxStrong5m: true,
-    plusDiStrong: true,
-    plusDiOverAdx5Or15: true,
-    plusDiOverAdx1m: true,
-    adxOverMinusDi1m: true,
-    ema5OverVwap1m: true,
-    ema3BandBuy: true
+    macdAboveSignal5m: true,
+    macdAboveZero5m: true,
+    adxAbove25_5m: true,
+    plusDiAbove25_5m: true,
+    plusDiAboveAdx_5m: true,
+    minusDiBelow15_5m: true,
+    ema3AboveEma5_5m: true,
+    rsiAbove60_5m: true,
+    macdAboveSignal1m: true,
+    adxAbove25_1m: true,
+    plusDiAbove25_1m: true,
+    minusDiBelow15_1m: true,
+    rsiAbove65_1m: true,
+    ema3AboveEma5_1m: true
   }));
   const [sellFilterChecks, setSellFilterChecks] = useState(() => ({
-    emaTrendAllTfSell: true,
-    ema5_5AboveEma3_15: true,
-    macdSignalAllTfSell: true,
-    macdBelowZero: true,
-    plusDiLow: true,
-    adxStrongAnyTfSell: true,
-    adxStrong5mSell: true,
-    minusDiStrong: true,
-    minusDiOverAdx5Or15: true,
-    minusDiOverAdx1m: true,
-    adxOverPlusDi1m: true,
-    ema5BelowVwap1m: true,
-    ema3BandSell: true
+    macdBelowSignal5mSell: true,
+    macdBelowZero5mSell: true,
+    adxAbove25_5mSell: true,
+    minusDiAbove25_5mSell: true,
+    minusDiAboveAdx_5mSell: true,
+    plusDiBelow15_5mSell: true,
+    ema3BelowEma5_5mSell: true,
+    rsiBelow40_5mSell: true,
+    macdBelowSignal1mSell: true,
+    adxAbove25_1mSell: true,
+    minusDiAbove25_1mSell: true,
+    plusDiBelow15_1mSell: true,
+    rsiBelow35_1mSell: true,
+    ema3BelowEma5_1mSell: true
   }));
 
   const handleBuyChecksChange = useCallback((nextChecks) => {
@@ -1043,6 +1045,11 @@ function App() {
         }
       };
 
+      // Crossover/crossdown routes do not consume UI filters, so keep payload lean.
+      const crossSignalRequestBody = {
+        access_token: scannerRequestBody.access_token
+      };
+
       const [lowPriceResponse, crossoverResponse, crossdownResponse] = await Promise.all([
         fetch('http://localhost:5000/api/low-price-scanners', {
           method: 'POST',
@@ -1056,14 +1063,14 @@ function App() {
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify(scannerRequestBody)
+          body: JSON.stringify(crossSignalRequestBody)
         }),
         fetch('http://localhost:5000/api/stocks-crossdown-vwma9', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify(scannerRequestBody)
+          body: JSON.stringify(crossSignalRequestBody)
         })
       ]);
 
@@ -1082,8 +1089,8 @@ function App() {
         const rawCrossbelowSellStocks = crossdownData.crossdownStocks || [];
 
         console.log('📊 Separate crossover route results:');
-        console.log(`   - Crossover(VWMA9) stocks: ${rawCrossoverBuyStocks.length}`);
-        console.log(`   - Crossdown(VWMA9) stocks: ${rawCrossbelowSellStocks.length}`);
+        console.log(`   - Crossover(EMA3|1 over EMA3|5) stocks: ${rawCrossoverBuyStocks.length}`);
+        console.log(`   - Crossdown(EMA3|1 under EMA3|5) stocks: ${rawCrossbelowSellStocks.length}`);
 
         // Check if low price scanning was blocked due to timing constraints
         if (lowPriceData.success === false && lowPriceData.reason === 'last_two_minutes_block') {
@@ -1169,14 +1176,16 @@ function App() {
         
         const lowPriceSellStocks = formattedSellStocks;
         
-        // Map crossover stocks to display format (from separate VWMA routes)
+        // Map crossover stocks to display format (from separate EMA3 routes)
         const mappedCrossoverStocks = rawCrossoverBuyStocks.map(stock => ({
           symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
           ltp: stock.ltp || stock.d?.[0] || 0,
           volume: stock.volume || stock.d?.[1] || 0,
           change_percent: stock.change_percent || 0,
           ema3_1: stock.ema3_1 || stock.d?.[1] || 0, // EMA3|1
-          vwma_5: stock.vwma_5 || stock.d?.[2] || 0, // VWMA|5
+          ema3_5: stock.ema3_5 || stock.d?.[2] || 0, // EMA3|5
+          rsi1: stock.rsi1 || stock.d?.[3] || 0, // RSI|1
+          rsi5: stock.rsi5 || stock.d?.[4] || 0, // RSI|5
           token: stock.token || null,
           signalStrength: 80 // Crossover strength
         }));
@@ -1187,7 +1196,9 @@ function App() {
           volume: stock.volume || stock.d?.[1] || 0,
           change_percent: stock.change_percent || 0,
           ema3_1: stock.ema3_1 || stock.d?.[1] || 0, // EMA3|1
-          vwma_5: stock.vwma_5 || stock.d?.[2] || 0, // VWMA|5
+          ema3_5: stock.ema3_5 || stock.d?.[2] || 0, // EMA3|5
+          rsi1: stock.rsi1 || stock.d?.[3] || 0, // RSI|1
+          rsi5: stock.rsi5 || stock.d?.[4] || 0, // RSI|5
           token: stock.token || null,
           signalStrength: 80 // Crossbelow strength
         }));
@@ -1629,6 +1640,11 @@ function App() {
         
         // Show the target order details section
         setShowTargetOrderDetails(true);
+
+        // Safety behavior: target order placement forces auto-trading OFF for new main orders.
+        setAutoTradingEnabled(false);
+        autoTradingEnabledRef.current = false;
+        mainOrdersAllowedRef.current = false;
         
         // Voice notification
         if (voiceEnabled) {
@@ -1647,11 +1663,29 @@ function App() {
         
         // Clear notification after 5 seconds
         setTimeout(() => setOrderNotification(null), 5000);
+
+      } else if (data.type === 'auto_trading_status') {
+        if (typeof data.autoTradingActive === 'boolean') {
+          setAutoTradingEnabled(data.autoTradingActive);
+          autoTradingEnabledRef.current = data.autoTradingActive;
+        }
+        if (typeof data.mainOrdersAllowed === 'boolean') {
+          mainOrdersAllowedRef.current = data.mainOrdersAllowed;
+        }
         
       } else if (data.type === 'subscription_update') {
         // Update real subscription count from backend
         console.log('📡 Subscription update received:', data.subscribed_count);
         setRealSubscriptionCount(data.subscribed_count || 0);
+
+        // Keep subscribed symbol list in sync with backend subscription reconciliation.
+        // Without this, table rows can become stale and show pending/empty values.
+        setScannerSubscriptionData(prev => ({
+          subscribedSymbols: Array.isArray(data.subscribed_symbols)
+            ? data.subscribed_symbols
+            : (prev?.subscribedSymbols || []),
+          signalStocks: data.signal_stocks || prev?.signalStocks || { buySignals: [], sellSignals: [] }
+        }));
       }
     };
 
@@ -1886,18 +1920,193 @@ function App() {
             <SectionSubTitle>Real-time tick feed and active signal stock monitoring</SectionSubTitle>
           </SectionHeader>
           <SectionBody>
+            <details style={{ marginBottom: '12px', border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', background: 'rgba(15, 23, 42, 0.75)' }}>
+              <summary style={{ cursor: 'pointer', padding: '10px 12px', fontWeight: 800, fontSize: '13px', color: '#e2e8f0' }}>
+                Signal Conditions (Click to Expand)
+              </summary>
+              <div style={{ padding: '10px 12px 12px' }}>
+                <div style={{ fontSize: '11px', color: '#93c5fd', fontWeight: 700, marginBottom: '8px' }}>
+                  All listed conditions must pass
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div style={{ padding: '10px', borderRadius: '10px', background: 'rgba(20, 83, 45, 0.28)', border: '1px solid rgba(74, 222, 128, 0.35)' }}>
+                    <div style={{ fontWeight: 800, fontSize: '12px', color: '#86efac', marginBottom: '8px' }}>
+                      Buy Conditions
+                    </div>
+                    <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
+                      <li>MACD(5m) &gt; Signal(5m)</li>
+                      <li>MACD(5m) &gt; 0</li>
+                      <li>ADX(5m) &gt; 20</li>
+                      <li>+DI(5m) &gt; 25</li>
+                      <li>+DI(5m) &gt; ADX(5m)</li>
+                      <li>-DI(5m) &lt; 15</li>
+                      <li>EMA3(5m) &gt; EMA5(5m)</li>
+                      <li>RSI(5m) &gt; 60</li>
+                      <li>MACD(1m) &gt; Signal(1m)</li>
+                      <li>ADX(1m) &gt; 20</li>
+                      <li>+DI(1m) &gt; 25</li>
+                      <li>-DI(1m) &lt; 15</li>
+                      <li>RSI(1m) &gt; 65</li>
+                      <li>EMA3(1m) &gt; EMA5(1m)</li>
+                    </ol>
+                  </div>
+
+                  <div style={{ padding: '10px', borderRadius: '10px', background: 'rgba(127, 29, 29, 0.28)', border: '1px solid rgba(248, 113, 113, 0.35)' }}>
+                    <div style={{ fontWeight: 800, fontSize: '12px', color: '#fca5a5', marginBottom: '8px' }}>
+                      Sell Conditions
+                    </div>
+                    <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
+                      <li>MACD(5m) &lt; Signal(5m)</li>
+                      <li>MACD(5m) &lt; 0</li>
+                      <li>ADX(5m) &gt; 20</li>
+                      <li>-DI(5m) &gt; 25</li>
+                      <li>-DI(5m) &gt; ADX(5m)</li>
+                      <li>+DI(5m) &lt; 15</li>
+                      <li>EMA3(5m) &lt; EMA5(5m)</li>
+                      <li>RSI(5m) &lt; 40</li>
+                      <li>MACD(1m) &lt; Signal(1m)</li>
+                      <li>ADX(1m) &gt; 20</li>
+                      <li>-DI(1m) &gt; 25</li>
+                      <li>+DI(1m) &lt; 15</li>
+                      <li>RSI(1m) &lt; 35</li>
+                      <li>EMA3(1m) &lt; EMA5(1m)</li>
+                    </ol>
+                  </div>
+                </div>
+              </div>
+            </details>
+
+            <details style={{ marginBottom: '12px', border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', background: 'rgba(15, 23, 42, 0.75)' }}>
+              <summary style={{ cursor: 'pointer', padding: '10px 12px', fontWeight: 800, fontSize: '13px', color: '#e2e8f0' }}>
+                Positions, Orders, and Targets (Click to Expand)
+              </summary>
+              <div style={{ padding: '10px 12px 12px' }}>
+                <PositionsOrdersTable 
+                  positions={positionsData}
+                  orders={ordersData}
+                  loading={positionsOrdersLoading}
+                  error={positionsOrdersError}
+                  lastUpdated={lastPositionsOrdersUpdate}
+                  onRefresh={fetchPositionsAndOrders}
+                />
+
+                <TargetOrderDetails 
+                  targetOrders={targetOrderDetails}
+                  isVisible={showTargetOrderDetails}
+                  onClose={() => setShowTargetOrderDetails(false)}
+                />
+              </div>
+            </details>
+
             <SubscribedStockTracker 
               tickData={tickData}
               onOpenChart={openNamedChart}
               subscribedCount={realSubscriptionCount}
-              buySignalsCount={signalStocks.buySignals.length}
-              sellSignalsCount={signalStocks.sellSignals.length}
+              buySignalsCount={(intersectedSourceStocks.buy || []).length}
+              sellSignalsCount={(intersectedSourceStocks.sell || []).length}
               pollCountdown={pollCountdown}
               subscribedSymbols={scannerSubscriptionData.subscribedSymbols}
-              signalStocks={scannerSubscriptionData.signalStocks}
+              signalStocks={signalStocks}
+              intersectionSignalStocks={{
+                buySignals: intersectedSourceStocks.buy || [],
+                sellSignals: intersectedSourceStocks.sell || []
+              }}
+              emaCheckSignalStocks={{
+                buySignals: lowPriceSourceStocks.buy || [],
+                sellSignals: lowPriceSourceStocks.sell || []
+              }}
               marginsData={scannerMargins}
             />
 
+            <div style={{ marginTop: '12px', border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
+              <div style={{ padding: '10px', fontWeight: 800, color: '#e2e8f0', background: 'rgba(30, 41, 59, 0.75)' }}>
+                EMA3(1m) vs EMA3(5m) Crosses
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', padding: '10px' }}>
+                <div style={{ border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
+                  <div style={{ padding: '10px', fontWeight: 800, color: '#86efac', background: 'rgba(20, 83, 45, 0.22)' }}>
+                    Crossover (EMA3(1m) crosses above EMA3(5m))
+                  </div>
+                  <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                      <thead style={{ position: 'sticky', top: 0, background: 'rgba(15, 23, 42, 0.95)' }}>
+                        <tr>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Symbol</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>LTP</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA3(1m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA3(5m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(1m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(5m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Chart</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(scanResults.crossoverTable || []).length === 0 ? (
+                          <tr>
+                            <td colSpan={7} style={{ padding: '10px', color: '#94a3b8' }}>No crossover stocks in latest scan.</td>
+                          </tr>
+                        ) : (
+                          (scanResults.crossoverTable || []).map((row, idx) => (
+                            <tr key={`sub-cross-${row.symbol || idx}`}>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{row.symbol || 'N/A'}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ltp || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema3_1 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema3_5 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi1 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi5 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{renderChartCell(row, 'sub-crossover')}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <div style={{ border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
+                  <div style={{ padding: '10px', fontWeight: 800, color: '#fca5a5', background: 'rgba(127, 29, 29, 0.22)' }}>
+                    Crossdown (EMA3(1m) crosses below EMA3(5m))
+                  </div>
+                  <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                      <thead style={{ position: 'sticky', top: 0, background: 'rgba(15, 23, 42, 0.95)' }}>
+                        <tr>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Symbol</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>LTP</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA3(1m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA3(5m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(1m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(5m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Chart</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(scanResults.crossdownTable || []).length === 0 ? (
+                          <tr>
+                            <td colSpan={7} style={{ padding: '10px', color: '#94a3b8' }}>No crossdown stocks in latest scan.</td>
+                          </tr>
+                        ) : (
+                          (scanResults.crossdownTable || []).map((row, idx) => (
+                            <tr key={`sub-crossdown-${row.symbol || idx}`}>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{row.symbol || 'N/A'}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ltp || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema3_1 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema3_5 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi1 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi5 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{renderChartCell(row, 'sub-crossdown')}</td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Commented out for later use */}
+            {/*
             <SignalFilterPlayground
               buyData={buySignals}
               sellData={sellSignals}
@@ -1909,6 +2118,7 @@ function App() {
               onBuyChecksChange={handleBuyChecksChange}
               onSellChecksChange={handleSellChecksChange}
             />
+            */}
           </SectionBody>
         </SectionCard>
 
@@ -1971,133 +2181,6 @@ function App() {
         
         <SectionCard>
           <SectionHeader>
-            <SectionTitle>Positions, Orders, and Targets</SectionTitle>
-            <SectionSubTitle>Open positions, pending orders, and target order tracking</SectionSubTitle>
-          </SectionHeader>
-          <SectionBody>
-            <PositionsOrdersTable 
-              positions={positionsData}
-              orders={ordersData}
-              loading={positionsOrdersLoading}
-              error={positionsOrdersError}
-              lastUpdated={lastPositionsOrdersUpdate}
-              onRefresh={fetchPositionsAndOrders}
-            />
-
-            <div style={{ marginTop: '12px', padding: '14px', borderRadius: '12px', background: 'rgba(15, 23, 42, 0.8)', border: '1px solid rgba(148, 163, 184, 0.35)' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', gap: '8px', flexWrap: 'wrap' }}>
-                <div style={{ fontWeight: 800, fontSize: '14px', color: '#f1f5f9' }}>
-                  Signal Conditions
-                </div>
-                <div style={{ fontSize: '11px', color: '#93c5fd', fontWeight: 700 }}>
-                  All listed conditions must pass
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
-                <button
-                  type="button"
-                  onClick={() => setUiFilterStockSource('intersected')}
-                  style={{
-                    padding: '6px 10px',
-                    borderRadius: '8px',
-                    border: '1px solid rgba(148, 163, 184, 0.4)',
-                    background: uiFilterStockSource === 'intersected' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(30, 41, 59, 0.7)',
-                    color: uiFilterStockSource === 'intersected' ? '#86efac' : '#cbd5e1',
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}
-                >
-                  Intersected Source
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setUiFilterStockSource('lowPrice')}
-                  style={{
-                    padding: '6px 10px',
-                    borderRadius: '8px',
-                    border: '1px solid rgba(148, 163, 184, 0.4)',
-                    background: uiFilterStockSource === 'lowPrice' ? 'rgba(59, 130, 246, 0.25)' : 'rgba(30, 41, 59, 0.7)',
-                    color: uiFilterStockSource === 'lowPrice' ? '#93c5fd' : '#cbd5e1',
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}
-                >
-                  Low-Price Source
-                </button>
-                <div style={{ fontSize: '11px', color: '#94a3b8', alignSelf: 'center' }}>
-                  Buy: {selectedFilterBuyData.length} | Sell: {selectedFilterSellData.length}
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                <div style={{ padding: '10px', borderRadius: '10px', background: 'rgba(20, 83, 45, 0.28)', border: '1px solid rgba(74, 222, 128, 0.35)' }}>
-                  <div style={{ fontWeight: 800, fontSize: '12px', color: '#86efac', marginBottom: '8px' }}>
-                    Buy Conditions
-                  </div>
-                  <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
-                    <li>EMA3 &gt; EMA5 on 1m, 5m, and 15m</li>
-                    <li>MACD &gt; Signal on 5m and 15m</li>
-                    <li>MACD(1m) &gt; 0 and MACD(5m) &gt; 0</li>
-                    <li>-DI(5m) &lt; 15 OR -DI(15m) &lt; 15</li>
-                    <li>ADX &gt; 25 on 1m OR 5m OR 15m</li>
-                    <li>ADX(5m) &gt; 25</li>
-                    <li>+DI(5m) &gt; 25 OR +DI(15m) &gt; 25</li>
-                    <li>+DI(5m) &gt; ADX(5m) OR +DI(15m) &gt; ADX(15m)</li>
-                    <li>+DI(1m) &gt; ADX(1m) and ADX(1m) &gt; 25</li>
-                    <li>ADX(1m) &gt; -DI(1m)</li>
-                    <li>EMA5(1m) &gt; VWAP(1m)</li>
-                    <li>LTP &lt; UBB(5m)</li>
-                  </ol>
-                </div>
-
-                <div style={{ padding: '10px', borderRadius: '10px', background: 'rgba(127, 29, 29, 0.28)', border: '1px solid rgba(248, 113, 113, 0.35)' }}>
-                  <div style={{ fontWeight: 800, fontSize: '12px', color: '#fca5a5', marginBottom: '8px' }}>
-                    Sell Conditions
-                  </div>
-                  <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
-                    <li>EMA3 &lt; EMA5 on 1m, 5m, and 15m</li>
-                    <li>MACD &lt; Signal on 5m and 15m</li>
-                    <li>MACD(1m) &lt; 0 and MACD(5m) &lt; 0</li>
-                    <li>+DI(5m) &lt; 15 OR +DI(15m) &lt; 15</li>
-                    <li>ADX &gt; 25 on 1m OR 5m OR 15m</li>
-                    <li>ADX(5m) &gt; 25</li>
-                    <li>-DI(5m) &gt; 25 OR -DI(15m) &gt; 25</li>
-                    <li>-DI(5m) &gt; ADX(5m) OR -DI(15m) &gt; ADX(15m)</li>
-                    <li>-DI(1m) &gt; ADX(1m) and ADX(1m) &gt; 25</li>
-                    <li>ADX(1m) &gt; +DI(1m)</li>
-                    <li>EMA5(1m) &lt; VWAP(1m)</li>
-                    <li>LTP &gt; LBB(5m)</li>
-                  </ol>
-                </div>
-              </div>
-            </div>
-
-            <SignalFilterPlayground
-              buyData={selectedFilterBuyData}
-              sellData={selectedFilterSellData}
-              showFilters={false}
-              showTables={true}
-              title={`Filtered Tables (${uiFilterStockSource === 'intersected' ? 'Intersected Source' : 'Low-Price Source'})`}
-              onSymbolClick={openNamedChart}
-              buyChecks={buyFilterChecks}
-              sellChecks={sellFilterChecks}
-              onBuyChecksChange={handleBuyChecksChange}
-              onSellChecksChange={handleSellChecksChange}
-            />
-
-            <TargetOrderDetails 
-              targetOrders={targetOrderDetails}
-              isVisible={showTargetOrderDetails}
-              onClose={() => setShowTargetOrderDetails(false)}
-            />
-          </SectionBody>
-        </SectionCard>
-
-        <SectionCard>
-          <SectionHeader>
             <SectionTitle>Trading Control Panel</SectionTitle>
             <SectionSubTitle>Auto trade, polling, execution updates, and account controls</SectionSubTitle>
           </SectionHeader>
@@ -2131,6 +2214,8 @@ function App() {
 
         </TopSectionsGrid>
 
+        {/* Commented out for later use: Pure Crossover and Crossdown tables */}
+        {/*
         <SectionCard style={{ marginTop: '16px' }}>
           <SectionHeader>
             <SectionTitle>Pure Crossover and Crossdown</SectionTitle>
@@ -2212,6 +2297,7 @@ function App() {
             </div>
           </SectionBody>
         </SectionCard>
+        */}
         
         {/* TEMPORARILY HIDDEN: Live Stock Tracker (now shown above) */}
         {/* 

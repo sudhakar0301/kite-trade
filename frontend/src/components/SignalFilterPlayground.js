@@ -33,159 +33,147 @@ const tdStyle = {
 
 const buyFilterDefs = [
   {
-    id: 'emaTrendAllTf',
-    label: 'EMA3 > EMA5 on 1m, 5m, and 15m',
-    test: row =>
-      Number(row.ema3_1 || row.ema3_1m) > Number(row.ema5_1 || row.ema5_1m) &&
-      Number(row.ema3_5 || row.ema3_5m) > Number(row.ema5_5 || row.ema5_5m) &&
-      Number(row.ema3_15 || row.ema3_15m) > Number(row.ema5_15 || row.ema5_15m)
+    id: 'macdAboveSignal5m',
+    label: 'MACD(5m) > Signal(5m)',
+    test: row => Number(row.macd5 || row.macd_5m) > Number(row.signal5 || row.signal_5m)
   },
   {
-    id: 'ema5_5BelowEma3_15',
-    label: 'EMA5(5m) < EMA3(15m)',
-    test: row => Number(row.ema5_5 || row.ema5_5m) < Number(row.ema3_15 || row.ema3_15m)
+    id: 'macdAboveZero5m',
+    label: 'MACD(5m) > 0',
+    test: row => Number(row.macd5 || row.macd_5m) > 0
   },
   {
-    id: 'macdSignalAllTf',
-    label: 'MACD > Signal on 5m and 15m',
-    test: row =>
-      Number(row.macd5 || row.macd_5m) > Number(row.signal5 || row.signal_5m) &&
-      Number(row.macd15 || row.macd_15m) > Number(row.signal15 || row.signal_15m)
+    id: 'adxAbove25_5m',
+    label: 'ADX(5m) > 20',
+    test: row => Number(row.adx5 || row.adx_5m) > 20
   },
   {
-    id: 'macdAboveZero',
-    label: 'MACD(1m) > 0 and MACD(5m) > 0',
-    test: row => Number(row.macd1 || row.macd_1m) > 0 && Number(row.macd5 || row.macd_5m) > 0
+    id: 'plusDiAbove25_5m',
+    label: '+DI(5m) > 25',
+    test: row => Number(row.plus_di5 || row.plusDI5 || row.pdi5) > 25
   },
   {
-    id: 'minusDiLow',
-    label: '-DI(5m) < 15 OR -DI(15m) < 15',
-    test: row => Number(row.minus_di5 || row.minusDI5 || row.mdi5) < 15 || Number(row.minus_di15 || row.minusDI15 || row.mdi15) < 15
+    id: 'plusDiAboveAdx_5m',
+    label: '+DI(5m) > ADX(5m)',
+    test: row => Number(row.plus_di5 || row.plusDI5 || row.pdi5) > Number(row.adx5 || row.adx_5m)
   },
   {
-    id: 'adxStrongAnyTf',
-    label: 'ADX > 25 on 1m OR 5m OR 15m',
-    test: row => Number(row.adx1 || row.adx_1m) > 25 || Number(row.adx5 || row.adx_5m) > 25 || Number(row.adx15 || row.adx_15m) > 25
+    id: 'minusDiBelow15_5m',
+    label: '-DI(5m) < 15',
+    test: row => Number(row.minus_di5 || row.minusDI5 || row.mdi5) < 15
   },
   {
-    id: 'adxStrong5m',
-    label: 'ADX(5m) > 25',
-    test: row => Number(row.adx5 || row.adx_5m) > 25
+    id: 'ema3AboveEma5_5m',
+    label: 'EMA3(5m) > EMA5(5m)',
+    test: row => Number(row.ema3_5 || row.ema3_5m) > Number(row.ema5_5 || row.ema5_5m)
   },
   {
-    id: 'plusDiStrong',
-    label: '+DI(5m) > 25 OR +DI(15m) > 25',
-    test: row => Number(row.plus_di5 || row.plusDI5 || row.pdi5) > 25 || Number(row.plus_di15 || row.plusDI15 || row.pdi15) > 25
+    id: 'rsiAbove60_5m',
+    label: 'RSI(5m) > 60',
+    test: row => Number(row.rsi5 || row.rsi_5m) > 60
   },
   {
-    id: 'plusDiOverAdx5Or15',
-    label: '+DI(5m) > ADX(5m) OR +DI(15m) > ADX(15m)',
-    test: row =>
-      Number(row.plus_di5 || row.plusDI5 || row.pdi5) > Number(row.adx5 || row.adx_5m) ||
-      Number(row.plus_di15 || row.plusDI15 || row.pdi15) > Number(row.adx15 || row.adx_15m)
+    id: 'macdAboveSignal1m',
+    label: 'MACD(1m) > Signal(1m)',
+    test: row => Number(row.macd1 || row.macd_1m) > Number(row.signal1 || row.signal_1m)
   },
   {
-    id: 'plusDiOverAdx1m',
-    label: '+DI(1m) > 25 and (+DI(1m) > ADX(1m) OR ADX(1m) > 25)',
-    test: row => {
-      const plusDi1 = Number(row.plus_di1 || row.plusDI1 || row.pdi1);
-      const adx1 = Number(row.adx1 || row.adx_1m);
-      return plusDi1 > 25 && (plusDi1 > adx1 || adx1 > 25);
-    }
+    id: 'adxAbove25_1m',
+    label: 'ADX(1m) > 20',
+    test: row => Number(row.adx1 || row.adx_1m) > 20
   },
   {
-    id: 'adxOverMinusDi1m',
-    label: 'ADX(1m) > -DI(1m)',
-    test: row => Number(row.adx1 || row.adx_1m) > Number(row.minus_di1 || row.minusDI1 || row.mdi1)
+    id: 'plusDiAbove25_1m',
+    label: '+DI(1m) > 25',
+    test: row => Number(row.plus_di1 || row.plusDI1 || row.pdi1) > 25
   },
   {
-    id: 'ema5OverVwap1m',
-    label: 'EMA5(1m) > VWAP(1m)',
-    test: row => Number(row.ema5_1 || row.ema5_1m) > Number(row.vwap1 || row.vwap_1m)
+    id: 'minusDiBelow15_1m',
+    label: '-DI(1m) < 15',
+    test: row => Number(row.minus_di1 || row.minusDI1 || row.mdi1) < 15
   },
   {
-    id: 'ema3BandBuy',
-    label: 'LTP < UBB(5m)',
-    test: row => Number(row.ltp) < Number(row.ubb_5 || row.ubb5 || row.bbUpper5)
+    id: 'rsiAbove65_1m',
+    label: 'RSI(1m) > 65',
+    test: row => Number(row.rsi1 || row.rsi_1m) > 65
+  },
+  {
+    id: 'ema3AboveEma5_1m',
+    label: 'EMA3(1m) > EMA5(1m)',
+    test: row => Number(row.ema3_1 || row.ema3_1m) > Number(row.ema5_1 || row.ema5_1m)
   }
 ];
 
 const sellFilterDefs = [
   {
-    id: 'emaTrendAllTfSell',
-    label: 'EMA3 < EMA5 on 1m, 5m, and 15m',
-    test: row =>
-      Number(row.ema3_1 || row.ema3_1m) < Number(row.ema5_1 || row.ema5_1m) &&
-      Number(row.ema3_5 || row.ema3_5m) < Number(row.ema5_5 || row.ema5_5m) &&
-      Number(row.ema3_15 || row.ema3_15m) < Number(row.ema5_15 || row.ema5_15m)
+    id: 'macdBelowSignal5mSell',
+    label: 'MACD(5m) < Signal(5m)',
+    test: row => Number(row.macd5 || row.macd_5m) < Number(row.signal5 || row.signal_5m)
   },
   {
-    id: 'ema5_5AboveEma3_15',
-    label: 'EMA5(5m) > EMA3(15m)',
-    test: row => Number(row.ema5_5 || row.ema5_5m) > Number(row.ema3_15 || row.ema3_15m)
+    id: 'macdBelowZero5mSell',
+    label: 'MACD(5m) < 0',
+    test: row => Number(row.macd5 || row.macd_5m) < 0
   },
   {
-    id: 'macdSignalAllTfSell',
-    label: 'MACD < Signal on 5m and 15m',
-    test: row =>
-      Number(row.macd5 || row.macd_5m) < Number(row.signal5 || row.signal_5m) &&
-      Number(row.macd15 || row.macd_15m) < Number(row.signal15 || row.signal_15m)
+    id: 'adxAbove25_5mSell',
+    label: 'ADX(5m) > 20',
+    test: row => Number(row.adx5 || row.adx_5m) > 20
   },
   {
-    id: 'macdBelowZero',
-    label: 'MACD(1m) < 0 and MACD(5m) < 0',
-    test: row => Number(row.macd1 || row.macd_1m) < 0 && Number(row.macd5 || row.macd_5m) < 0
+    id: 'minusDiAbove25_5mSell',
+    label: '-DI(5m) > 25',
+    test: row => Number(row.minus_di5 || row.minusDI5 || row.mdi5) > 25
   },
   {
-    id: 'plusDiLow',
-    label: '+DI(5m) < 15 OR +DI(15m) < 15',
-    test: row => Number(row.plus_di5 || row.plusDI5 || row.pdi5) < 15 || Number(row.plus_di15 || row.plusDI15 || row.pdi15) < 15
+    id: 'minusDiAboveAdx_5mSell',
+    label: '-DI(5m) > ADX(5m)',
+    test: row => Number(row.minus_di5 || row.minusDI5 || row.mdi5) > Number(row.adx5 || row.adx_5m)
   },
   {
-    id: 'adxStrongAnyTfSell',
-    label: 'ADX > 25 on 1m OR 5m OR 15m',
-    test: row => Number(row.adx1 || row.adx_1m) > 25 || Number(row.adx5 || row.adx_5m) > 25 || Number(row.adx15 || row.adx_15m) > 25
+    id: 'plusDiBelow15_5mSell',
+    label: '+DI(5m) < 15',
+    test: row => Number(row.plus_di5 || row.plusDI5 || row.pdi5) < 15
   },
   {
-    id: 'adxStrong5mSell',
-    label: 'ADX(5m) > 25',
-    test: row => Number(row.adx5 || row.adx_5m) > 25
+    id: 'ema3BelowEma5_5mSell',
+    label: 'EMA3(5m) < EMA5(5m)',
+    test: row => Number(row.ema3_5 || row.ema3_5m) < Number(row.ema5_5 || row.ema5_5m)
   },
   {
-    id: 'minusDiStrong',
-    label: '-DI(5m) > 25 OR -DI(15m) > 25',
-    test: row => Number(row.minus_di5 || row.minusDI5 || row.mdi5) > 25 || Number(row.minus_di15 || row.minusDI15 || row.mdi15) > 25
+    id: 'rsiBelow40_5mSell',
+    label: 'RSI(5m) < 40',
+    test: row => Number(row.rsi5 || row.rsi_5m) < 40
   },
   {
-    id: 'minusDiOverAdx5Or15',
-    label: '-DI(5m) > ADX(5m) OR -DI(15m) > ADX(15m)',
-    test: row =>
-      Number(row.minus_di5 || row.minusDI5 || row.mdi5) > Number(row.adx5 || row.adx_5m) ||
-      Number(row.minus_di15 || row.minusDI15 || row.mdi15) > Number(row.adx15 || row.adx_15m)
+    id: 'macdBelowSignal1mSell',
+    label: 'MACD(1m) < Signal(1m)',
+    test: row => Number(row.macd1 || row.macd_1m) < Number(row.signal1 || row.signal_1m)
   },
   {
-    id: 'minusDiOverAdx1m',
-    label: '-DI(1m) > 25 and (-DI(1m) > ADX(1m) OR ADX(1m) > 25)',
-    test: row => {
-      const minusDi1 = Number(row.minus_di1 || row.minusDI1 || row.mdi1);
-      const adx1 = Number(row.adx1 || row.adx_1m);
-      return minusDi1 > 25 && (minusDi1 > adx1 || adx1 > 25);
-    }
+    id: 'adxAbove25_1mSell',
+    label: 'ADX(1m) > 20',
+    test: row => Number(row.adx1 || row.adx_1m) > 20
   },
   {
-    id: 'adxOverPlusDi1m',
-    label: 'ADX(1m) > +DI(1m)',
-    test: row => Number(row.adx1 || row.adx_1m) > Number(row.plus_di1 || row.plusDI1 || row.pdi1)
+    id: 'minusDiAbove25_1mSell',
+    label: '-DI(1m) > 25',
+    test: row => Number(row.minus_di1 || row.minusDI1 || row.mdi1) > 25
   },
   {
-    id: 'ema5BelowVwap1m',
-    label: 'EMA5(1m) < VWAP(1m)',
-    test: row => Number(row.ema5_1 || row.ema5_1m) < Number(row.vwap1 || row.vwap_1m)
+    id: 'plusDiBelow15_1mSell',
+    label: '+DI(1m) < 15',
+    test: row => Number(row.plus_di1 || row.plusDI1 || row.pdi1) < 15
   },
   {
-    id: 'ema3BandSell',
-    label: 'LTP > LBB(5m)',
-    test: row => Number(row.ltp) > Number(row.lbb_5 || row.lbb5 || row.bbLower5)
+    id: 'rsiBelow35_1mSell',
+    label: 'RSI(1m) < 35',
+    test: row => Number(row.rsi1 || row.rsi_1m) < 35
+  },
+  {
+    id: 'ema3BelowEma5_1mSell',
+    label: 'EMA3(1m) < EMA5(1m)',
+    test: row => Number(row.ema3_1 || row.ema3_1m) < Number(row.ema5_1 || row.ema5_1m)
   }
 ];
 
@@ -211,6 +199,8 @@ function normalizeRows(rows) {
     signal15: Number(row.signal15 || row.signal_15m || 0),
     signal5: Number(row.signal5 || 0),
     signal1: Number(row.signal1 || row.signal_1m || 0),
+    rsi5: Number(row.rsi5 || row.rsi_5m || 0),
+    rsi1: Number(row.rsi1 || row.rsi_1m || 0),
     adx15: Number(row.adx15 || row.adx_15m || 0),
     adx5: Number(row.adx5 || 0),
     adx1: Number(row.adx1 || row.adx_1m || 0),

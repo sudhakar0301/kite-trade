@@ -350,11 +350,11 @@ const FilterPanel = ({ type = 'buy', allStocks = [], onFilteredResults, defaultA
         const condition4 = !activeFilters.buy_plus_di_adx ||
           (stock.plusDI15 > stock.adx15) || (stock.plusDI5 > stock.adx5);
         
-        // Condition 5: ADX > 25 (1min) - standalone condition
-        const condition5 = !activeFilters.buy_adx_1 || (stock.adx1 > 25);
+        // Condition 5: ADX > 20 (1min) - standalone condition
+        const condition5 = !activeFilters.buy_adx_1 || (stock.adx1 > 20);
 
-        // Condition 5a: ADX > 25 (5min) - standalone condition
-        const condition5a = !activeFilters.buy_adx_5 || (stock.adx5 > 25);
+        // Condition 5a: ADX > 20 (5min) - standalone condition
+        const condition5a = !activeFilters.buy_adx_5 || (stock.adx5 > 20);
 
         // Condition 5b: ADX > -DI (1min) - standalone condition
         const condition5b = !activeFilters.buy_adx_gt_minus_di_1 || (stock.adx1 > stock.minusDI1);
@@ -406,11 +406,11 @@ const FilterPanel = ({ type = 'buy', allStocks = [], onFilteredResults, defaultA
         const condition4 = !activeFilters.sell_minus_di_adx ||
           (stock.minusDI15 > stock.adx15) || (stock.minusDI5 > stock.adx5);
         
-        // Condition 5: ADX > 25 (1min) - standalone condition
-        const condition5 = !activeFilters.sell_adx_1 || (stock.adx1 > 25);
+        // Condition 5: ADX > 20 (1min) - standalone condition
+        const condition5 = !activeFilters.sell_adx_1 || (stock.adx1 > 20);
 
-        // Condition 5a: ADX > 25 (5min) - standalone condition
-        const condition5a = !activeFilters.sell_adx_5 || (stock.adx5 > 25);
+        // Condition 5a: ADX > 20 (5min) - standalone condition
+        const condition5a = !activeFilters.sell_adx_5 || (stock.adx5 > 20);
 
         // Condition 5b: ADX > +DI (1min) - standalone condition
         const condition5b = !activeFilters.sell_adx_gt_plus_di_1 || (stock.adx1 > stock.plusDI1);

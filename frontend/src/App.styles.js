@@ -209,12 +209,12 @@ export const SectionBody = styled.div`
 
 export const TopSectionsGrid = styled.div`
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 4fr) minmax(260px, 1fr);
   gap: 16px;
   align-items: start;
 
   @media (max-width: 1400px) {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 4fr) minmax(230px, 1fr);
   }
 
   @media (max-width: 900px) {

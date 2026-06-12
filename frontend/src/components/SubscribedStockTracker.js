@@ -289,6 +289,8 @@ const SubscribedStockTracker = ({
   pollCountdown = 0,
   subscribedSymbols = [],
   signalStocks = { buySignals: [], sellSignals: [] },
+  intersectionSignalStocks = null,
+  emaCheckSignalStocks = null,
   marginsData = null
 }) => {
   // State to track currently selected stock symbol
@@ -1293,11 +1295,11 @@ const SubscribedStockTracker = ({
           </div>
           <div style={{ textAlign: 'center', color: '#3b82f6' }}>
             <div style={{ fontWeight: '600', fontSize: '16px' }}>{buySignalsCount || 0}</div>
-            <div style={{ opacity: '0.8' }}>Buy Signals</div>
+            <div style={{ opacity: '0.8' }}>Buy Intersections</div>
           </div>
           <div style={{ textAlign: 'center', color: '#ef4444' }}>
             <div style={{ fontWeight: '600', fontSize: '16px' }}>{sellSignalsCount || 0}</div>
-            <div style={{ opacity: '0.8' }}>Sell Signals</div>
+            <div style={{ opacity: '0.8' }}>Sell Intersections</div>
           </div>
           <div style={{ textAlign: 'center', color: '#f59e0b' }}>
             <div style={{ fontWeight: '600', fontSize: '16px' }}>{pollCountdown || 0}s</div>
@@ -1312,7 +1314,7 @@ const SubscribedStockTracker = ({
         {/* Table Header */}
         <div style={{
           display: 'grid',
-          gridTemplateColumns: gridTemplate,
+          gridTemplateColumns: window.innerWidth <= 768 ? '85px 40px 55px 55px 55px 60px 65px 70px 80px 80px 75px 160px' : '130px 60px 85px 90px 90px 85px 100px 100px 130px 130px 120px 260px',
           gap: '8px',
           padding: '8px 12px',
           fontSize: '11px',
@@ -1327,27 +1329,102 @@ const SubscribedStockTracker = ({
           border: '1px solid #e5e7eb',
           whiteSpace: 'nowrap',
           overflow: 'hidden'
-        }}>          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SYMBOL</div>
+        }}>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SYMBOL</div>
           <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>TYPE</div>
           <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>LTP</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>CALC QTY</div>
           <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>BID QTY</div>
           <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>ASK QTY</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>BID LEVELS</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>ASK LEVELS</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>BUY SLIP</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SELL SLIP</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>FUNDS</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>RSI(1m)</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>IMPACT LVLS</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SLIPPAGE</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>LAST UPDATE</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>LEVERAGED FUNDS</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>CALCULATED QTY</div>
+          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>5L DEPTH CHECK</div>
         </div>
       
         {/* Table Data */}
         {(() => {
           const subscribedStocks = getSubscribedStocks();
-          console.log('🔍 RENDER CHECK - subscribedStocks length:', subscribedStocks.length);
-          console.log('🔍 RENDER CHECK - subscribedStocks:', subscribedStocks);
+          const IMPACT_MAX_LEVELS = 3;
+          const IMPACT_MAX_SLIPPAGE = 0.08;
+          const effectiveSignalStocks = emaCheckSignalStocks || signalStocks;
+
+          const normalizeSymbolKey = (value) => String(extractSymbolName(value || '') || '').toUpperCase();
+          const buySignalBySymbol = new Map(
+            (effectiveSignalStocks?.buySignals || []).map((row) => [
+              normalizeSymbolKey(row?.symbol || row?.s),
+              row
+            ])
+          );
+          const sellSignalBySymbol = new Map(
+            (effectiveSignalStocks?.sellSignals || []).map((row) => [
+              normalizeSymbolKey(row?.symbol || row?.s),
+              row
+            ])
+          );
+
+          const passedRows = subscribedStocks
+            .map((symbol) => {
+              const symbolKey = extractSymbolName(symbol);
+              const symbolData = tickData?.[symbolKey];
+              const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
+              if (!latestTick) return null;
+
+              const scanType = latestTick?.scan_type;
+              const side = scanType === 'BUY_SCAN' ? 'buy' : (scanType === 'SELL_SCAN' ? 'sell' : null);
+              if (!side) return null;
+
+              const normalizedSymbolKey = normalizeSymbolKey(symbol);
+
+              const signalRow = side === 'buy'
+                ? buySignalBySymbol.get(normalizedSymbolKey)
+                : sellSignalBySymbol.get(normalizedSymbolKey);
+              if (!signalRow) return null;
+
+              const ema3_1 = Number(signalRow?.ema3_1 || signalRow?.ema3_1m || 0);
+              const ema3_5 = Number(signalRow?.ema3_5 || signalRow?.ema3_5m || 0);
+              const emaPass = ema3_1 >= ema3_5;
+              if (!emaPass) return null;
+
+              const rsi1 = Number(signalRow?.rsi1 || signalRow?.rsi_1m || 0);
+
+              const impact = latestTick?.marketImpact?.[side] || {};
+              const levels = Number(impact.levels);
+              const slippage = Number(impact.slippage);
+              const depth = latestTick?.depth || latestTick?.rawTick?.depth || {};
+              const bidQty = Number((depth?.buy || []).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
+              const askQty = Number((depth?.sell || []).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
+              const bidQty5 = Number((depth?.buy || []).slice(0, 5).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
+              const askQty5 = Number((depth?.sell || []).slice(0, 5).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
+
+              const impactPass = Number.isFinite(levels) && Number.isFinite(slippage) && levels <= IMPACT_MAX_LEVELS && Math.abs(slippage) <= IMPACT_MAX_SLIPPAGE;
+              if (!impactPass) return null;
+
+              return {
+                symbol,
+                scanType,
+                ltp: Number(latestTick?.last_price || 0),
+                bidQty,
+                askQty,
+                bidQty5,
+                askQty5,
+                rsi1,
+                levels,
+                slippage,
+                timestamp: latestTick?.timestamp || null
+              };
+            })
+            .filter(Boolean);
+
+          console.log('🔍 LOW-PRICE+EMA(ema3_1>=ema3_5)+IMPACT PASSED rows:', passedRows.length, {
+            buySignalRows: buySignalBySymbol.size,
+            sellSignalRows: sellSignalBySymbol.size
+          });
           
           // Only show real subscribed stocks, no test data
-          if (subscribedStocks.length === 0) {
+          if (passedRows.length === 0) {
             return (
               <div style={{
                 textAlign: 'center',
@@ -1360,8 +1437,8 @@ const SubscribedStockTracker = ({
                 fontFamily: '"Segoe UI", "Roboto", "Inter", system-ui, -apple-system, sans-serif',
                 lineHeight: '1.6'
               }}>
-                📡 No subscribed stocks found.<br/>
-                Start scanner to see live market impact data.
+                📡 No stocks passed low-price + EMA check (EMA3(1m) >= EMA3(5m)) + impact conditions yet.<br/>
+                Waiting for EMA-check rows and impact thresholds to pass.
               </div>
             );
           }
@@ -1399,171 +1476,36 @@ const SubscribedStockTracker = ({
                   fontFamily: 'system-ui, -apple-system, sans-serif',
                   letterSpacing: '0.025em'
                 }}>
-                  � Market Scanner [Active: {subscribedStocks.length}]
+                  Market Scanner [Low-Price + EMA Check + Impact Passed: {passedRows.length}]
                 </div>
                 
-                {subscribedStocks.map((symbol, index) => {
-                  console.log('🔍 TABLE RENDER - Processing symbol:', symbol, 'Index:', index);
-                  
-                  const symbolKey = extractSymbolName(symbol);
-                  const symbolData = tickData?.[symbolKey];
-                  const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-                  
-                  // Create placeholder data for symbols without tick data
-                  const hasTickData = !!latestTick;
-                  
-                  // Use actual tick data if available, otherwise create placeholder
-                  const displayTick = latestTick || {
-                    last_price: 0,
-                    depth: { buy: [], sell: [] },
-                    marketImpact: { buy: {}, sell: {} },
-                    scan_type: 'PENDING',
-                    timestamp: new Date().toISOString()
-                  };
-                  
-                  const marketImpact = displayTick?.marketImpact;
-                  let scanType = displayTick?.scan_type || 'PENDING';
-                  
-                  // Mark symbols without tick data as PENDING
-                  if (!hasTickData) {
-                    scanType = 'PENDING';
-                  }
-                  
-                  // Override: Consider Reliance as sell signal for now (only if has tick data)
-                  if (hasTickData && symbol.includes('RELIANCE')) {
-                    scanType = 'SELL_SCAN';
-                  }
-                  
-                  // Force live update by including tick-based refresh
-                  const buyImpact = marketImpact?.buy || {};
-                  const sellImpact = marketImpact?.sell || {};
-                  
-                  // Calculate dynamic order book imbalance
-                  const calculateImbalance = (tickData) => {
-                    if (!tickData || !tickData.depth) {
-                      return { imbalance5: 0, imbalance10: 0 };
-                    }
-                    
-                    // Add extra safety check for depth structure
-                    const depth = tickData.depth || {};
-                    const { buy = [], sell = [] } = depth;
-                    
-                    // Debug logging
-                    console.log('🔍 ORDER BOOK DEPTH:', {
-                      buyLevels: buy.length,
-                      sellLevels: sell.length,
-                      buyFirst5: buy.slice(0, 5).map(l => l?.quantity || 0),
-                      sellFirst5: sell.slice(0, 5).map(l => l?.quantity || 0)
-                    });
-                    
-                    // Helper function to detect concentration end level
-                    const findConcentrationEnd = (levels, threshold = 0.7) => {
-                      if (!levels || levels.length === 0) return 0;
-                      
-                      const totalQty = levels.reduce((sum, level) => sum + (level?.quantity || 0), 0);
-                      if (totalQty === 0) return 0;
-                      
-                      let accumulatedQty = 0;
-                      for (let i = 0; i < levels.length; i++) {
-                        accumulatedQty += (levels[i]?.quantity || 0);
-                        // If 70% of quantity is within first i+1 levels, concentration ends here
-                        if (accumulatedQty >= (totalQty * threshold)) {
-                          return i + 1; // Return 1-based level number
-                        }
-                      }
-                      return Math.min(levels.length, 2); // Default to 2 levels if no clear concentration
-                    };
-                    
-                    // Find where quantity concentration ends for both sides
-                    const bidConcentrationEnd = findConcentrationEnd(buy);
-                    const askConcentrationEnd = findConcentrationEnd(sell);
-                    
-                    // Use the maximum concentration end point to ensure we look beyond all major activity
-                    const concentrationEnd = Math.max(bidConcentrationEnd, askConcentrationEnd, 2);
-                    
-                    console.log('🎯 CONCENTRATION:', {
-                      bidEnd: bidConcentrationEnd,
-                      askEnd: askConcentrationEnd,
-                      finalEnd: concentrationEnd
-                    });
-                    
-                    // Calculate support levels: separate 5 and 10 level ranges
-                    const supportStart = concentrationEnd; // 0-based index
-                    
-                    // SUP5: Next 5 levels after concentration (e.g., levels 3-7)
-                    const supportEnd5 = Math.min(supportStart + 5, Math.min(buy.length, sell.length));
-                    
-                    // Only calculate if we have enough levels
-                    if (supportEnd5 <= supportStart) {
-                      return { imbalance5: 0, imbalance10: 0 };
-                    }
-                    
-                    const bidSupportQty5 = buy.slice(supportStart, supportEnd5).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-                    const askSupportQty5 = sell.slice(supportStart, supportEnd5).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-                    
-                    // DEEP: Next 5 levels AFTER the SUP5 range (e.g., levels 8-12)
-                    const supportStart10 = supportEnd5; // Start where SUP5 ended
-                    const supportEnd10 = Math.min(supportStart10 + 5, Math.min(buy.length, sell.length));
-                    
-                    let bidSupportQty10 = 0;
-                    let askSupportQty10 = 0;
-                    
-                    // Only calculate DEEP if we have enough levels
-                    if (supportEnd10 > supportStart10) {
-                      bidSupportQty10 = buy.slice(supportStart10, supportEnd10).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-                      askSupportQty10 = sell.slice(supportStart10, supportEnd10).reduce((sum, level) => sum + (level?.quantity || 0), 0);
-                    }
-                    
-                    console.log('📊 SUPPORT CALC:', {
-                      sup5Range: `${supportStart}-${supportEnd5}`,
-                      deepRange: `${supportStart10}-${supportEnd10}`,
-                      sup5Bid: bidSupportQty5,
-                      sup5Ask: askSupportQty5,
-                      deepBid: bidSupportQty10,
-                      deepAsk: askSupportQty10
-                    });
-                    
-                    // Calculate imbalance for 5-level support
-                    let imbalance5 = 0;
-                    if (bidSupportQty5 > 0 && askSupportQty5 > 0) {
-                      if (bidSupportQty5 > askSupportQty5) {
-                        imbalance5 = bidSupportQty5 / askSupportQty5;
-                      } else {
-                        imbalance5 = -(askSupportQty5 / bidSupportQty5);
-                      }
-                    } else if (bidSupportQty5 > 0) {
-                      imbalance5 = 999; // Only bid support
-                    } else if (askSupportQty5 > 0) {
-                      imbalance5 = -999; // Only ask support
-                    }
-                    
-                    // Calculate imbalance for 10-level support (actually deeper 5 levels)
-                    let imbalance10 = 0;
-                    if (bidSupportQty10 > 0 && askSupportQty10 > 0) {
-                      if (bidSupportQty10 > askSupportQty10) {
-                        imbalance10 = bidSupportQty10 / askSupportQty10;
-                      } else {
-                        imbalance10 = -(askSupportQty10 / bidSupportQty10);
-                      }
-                    } else if (bidSupportQty10 > 0) {
-                      imbalance10 = 999; // Only bid support
-                    } else if (askSupportQty10 > 0) {
-                      imbalance10 = -999; // Only ask support
-                    }
-                    
-                    return { imbalance5, imbalance10 };
-                  };
-                  
-                  const { imbalance5, imbalance10 } = calculateImbalance(displayTick);
-                  
-                  // Use actual tick timestamp for truly live updates
+                {passedRows.map((row, index) => {
+                  const symbol = row.symbol;
+                  const scanType = row.scanType;
+                  const rowLtp = Number(row.ltp || 0);
+                  const rowCalcQty = rowLtp > 0 ? calculateQuantityFromFunds(rowLtp) : 0;
+                  const bidHasDouble = rowCalcQty > 0 && row.bidQty5 >= (2 * rowCalcQty);
+                  const askHasDouble = rowCalcQty > 0 && row.askQty5 >= (2 * rowCalcQty);
+                  const SELL_IMBALANCE_MIN = 1.2;
+                  const SELL_IMBALANCE_MAX = 4;
+                  const BUY_IMBALANCE_MIN = 1.2;
+                  const BUY_IMBALANCE_MAX = 4;
+
+                  const sellImbalanceRatio = row.bidQty5 > 0 ? (row.askQty5 / row.bidQty5) : 0;
+                  const buyImbalanceRatio = row.askQty5 > 0 ? (row.bidQty5 / row.askQty5) : 0;
+
+                  const sellRatioOk = sellImbalanceRatio >= SELL_IMBALANCE_MIN && sellImbalanceRatio <= SELL_IMBALANCE_MAX;
+                  const buyRatioOk = buyImbalanceRatio >= BUY_IMBALANCE_MIN && buyImbalanceRatio <= BUY_IMBALANCE_MAX;
+
+                  const sellSupportPass = bidHasDouble && askHasDouble && sellRatioOk;
+                  const buySupportPass = askHasDouble && bidHasDouble && buyRatioOk;
                   
                   return (
                     <div
                       key={`unique-row-${symbol}-${index}`}
                       style={{
                         display: 'grid',
-                        gridTemplateColumns: gridTemplate,
+                        gridTemplateColumns: window.innerWidth <= 768 ? '85px 40px 55px 55px 55px 60px 65px 70px 80px 80px 75px 160px' : '130px 60px 85px 90px 90px 85px 100px 100px 130px 130px 120px 260px',
                         gap: '8px',
                         padding: '6px 12px',
                         fontSize: '12px',
@@ -1675,40 +1617,9 @@ const SubscribedStockTracker = ({
                         overflow: 'hidden',
                         textOverflow: 'ellipsis'
                       }}>
-                        {hasTickData && displayTick?.last_price ? (window.innerWidth <= 480 ? displayTick.last_price.toFixed(0) : `₹${displayTick.last_price.toFixed(2)}`) : (hasTickData ? '-' : 'Pending')}
+                        {row.ltp ? (window.innerWidth <= 480 ? row.ltp.toFixed(0) : `₹${row.ltp.toFixed(2)}`) : '-'}
                       </div>
-                      
-                      {/* CALC QTY */}
-                      <div style={{ 
-                        color: '#059669',
-                        fontWeight: '500',
-                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {(() => {
-                          if (!hasTickData) return 'Pending';
-                          // Get calculated quantity - prioritize funds-based calculation
-                          const currentPrice = displayTick?.last_price || displayTick?.ltp || 0;
-                          const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
-                          
-                          const calcQty = fundsBasedQty > 0 ? fundsBasedQty :
-                                         displayTick?.calculated_quantity || 
-                                         displayTick?.calculated_quantity_buy ||
-                                         displayTick?.calculated_quantity_sell ||
-                                         displayTick?.marketImpact?.buy?.quantity ||
-                                         displayTick?.marketImpact?.sell?.quantity ||
-                                         displayTick?.calculatedQuantity ||
-                                         displayTick?.quantity ||
-                                         displayTick?.target_quantity ||
-                                         displayTick?.targetQuantity || 0;
-                          
-                          if (!calcQty) return 'N/A';
-                          const formatted = formatQuantity(calcQty);
-                          return window.innerWidth <= 480 ? formatted.substring(0, 4) : formatted;
-                        })()}
-                      </div>
-                      
+
                       {/* BID QTY */}
                       <div style={{ 
                         color: '#059669',
@@ -1717,14 +1628,9 @@ const SubscribedStockTracker = ({
                         overflow: 'hidden',
                         textOverflow: 'ellipsis'
                       }}>
-                        {(() => {
-                          if (!hasTickData) return '-';
-                          const depth = displayTick?.depth || {};
-                          const bidQty = depth.buy?.reduce((sum, level) => sum + (level.quantity || 0), 0) || 0;
-                          return bidQty > 0 ? formatQuantity(bidQty) : '0';
-                        })()}
+                        {row.bidQty > 0 ? formatQuantity(row.bidQty) : '-'}
                       </div>
-                      
+
                       {/* ASK QTY */}
                       <div style={{ 
                         color: '#dc2626',
@@ -1733,161 +1639,107 @@ const SubscribedStockTracker = ({
                         overflow: 'hidden',
                         textOverflow: 'ellipsis'
                       }}>
-                        {(() => {
-                          if (!hasTickData) return '-';
-                          const depth = displayTick?.depth || {};
-                          const askQty = depth.sell?.reduce((sum, level) => sum + (level.quantity || 0), 0) || 0;
-                          return askQty > 0 ? formatQuantity(askQty) : '0';
-                        })()}
+                        {row.askQty > 0 ? formatQuantity(row.askQty) : '-'}
+                      </div>
+
+                      {/* RSI(1m) */}
+                      <div style={{
+                        color: '#7c3aed',
+                        fontWeight: '600',
+                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {Number.isFinite(row.rsi1) && row.rsi1 > 0 ? row.rsi1.toFixed(2) : '-'}
                       </div>
                       
-                      {/* BID LEVELS (levels consumed by calc qty) */}
+                      {/* IMPACT LEVELS */}
                       <div style={{ 
-                        color: '#059669',
+                        color: '#0ea5e9',
                         fontWeight: '500',
                         fontSize: window.innerWidth <= 480 ? '9px' : '12px',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis'
                       }}>
-                        {(() => {
-                          if (!hasTickData) return '-';
-                          const currentPrice = displayTick?.last_price || displayTick?.ltp || 0;
-                          const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
-                          
-                          const calcQty = fundsBasedQty > 0 ? fundsBasedQty :
-                                         displayTick?.calculated_quantity || 
-                                         displayTick?.calculated_quantity_buy ||
-                                         displayTick?.calculated_quantity_sell ||
-                                         displayTick?.marketImpact?.buy?.quantity ||
-                                         displayTick?.marketImpact?.sell?.quantity ||
-                                         displayTick?.calculatedQuantity ||
-                                         displayTick?.quantity ||
-                                         displayTick?.target_quantity ||
-                                         displayTick?.targetQuantity || 0;
-                          
-                          const depth = displayTick?.depth || {};
-                          const bidConsumption = calculateLevelConsumption(calcQty, depth.buy, 'bid');
-                          return bidConsumption.levels;
-                        })()}
+                        {Number.isFinite(row.levels) ? row.levels : '-'}
                       </div>
                       
-                      {/* ASK LEVELS (levels consumed by calc qty) */}
+                      {/* SLIPPAGE */}
                       <div style={{ 
-                        color: '#dc2626',
+                        color: '#16a34a',
                         fontWeight: '500',
                         fontSize: window.innerWidth <= 480 ? '9px' : '12px',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis'
                       }}>
-                        {(() => {
-                          if (!hasTickData) return '-';
-                          const currentPrice = displayTick?.last_price || displayTick?.ltp || 0;
-                          const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
-                          
-                          const calcQty = fundsBasedQty > 0 ? fundsBasedQty :
-                                         displayTick?.calculated_quantity || 
-                                         displayTick?.calculated_quantity_buy ||
-                                         displayTick?.calculated_quantity_sell ||
-                                         displayTick?.marketImpact?.buy?.quantity ||
-                                         displayTick?.marketImpact?.sell?.quantity ||
-                                         displayTick?.calculatedQuantity ||
-                                         displayTick?.quantity ||
-                                         displayTick?.target_quantity ||
-                                         displayTick?.targetQuantity || 0;
-                          
-                          const depth = displayTick?.depth || {};
-                          const askConsumption = calculateLevelConsumption(calcQty, depth.sell, 'ask');
-                          return askConsumption.levels;
-                        })()}
+                        {Number.isFinite(row.slippage) ? `${Math.abs(row.slippage).toFixed(3)}%` : '-'}
                       </div>
                       
-                      {/* BUY SLIP (calculated with 5-level depth limit) */}
+                      {/* LAST UPDATE */}
                       <div style={{ 
-                        color: '#059669',
+                        color: '#6b7280',
                         fontWeight: '500',
                         fontSize: window.innerWidth <= 480 ? '9px' : '12px',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis'
                       }}>
-                        {(() => {
-                          if (!hasTickData) return '-';
-                          const currentPrice = displayTick?.last_price || displayTick?.ltp || 0;
-                          const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
-                          
-                          const calcQty = fundsBasedQty > 0 ? fundsBasedQty :
-                                         displayTick?.calculated_quantity || 
-                                         displayTick?.calculated_quantity_buy ||
-                                         displayTick?.calculated_quantity_sell ||
-                                         displayTick?.marketImpact?.buy?.quantity ||
-                                         displayTick?.marketImpact?.sell?.quantity ||
-                                         displayTick?.calculatedQuantity ||
-                                         displayTick?.quantity ||
-                                         displayTick?.target_quantity ||
-                                         displayTick?.targetQuantity || 0;
-                          
-                          const depth = displayTick?.depth || {};
-                          const buyConsumption = calculateLevelConsumption(calcQty, depth.sell, 'buy'); // Buy consumes ask levels
-                          return window.innerWidth <= 480 ? buyConsumption.slippage.substring(0, 6) : buyConsumption.slippage;
-                        })()}
+                        {row.timestamp ? new Date(row.timestamp).toLocaleTimeString() : '-'}
                       </div>
-                      
-                      {/* SELL SLIP (calculated with 5-level depth limit) */}
-                      <div style={{ 
-                        color: '#dc2626',
-                        fontWeight: '500',
-                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {(() => {
-                          if (!hasTickData) return '-';
-                          const currentPrice = displayTick?.last_price || displayTick?.ltp || 0;
-                          const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
-                          
-                          const calcQty = fundsBasedQty > 0 ? fundsBasedQty :
-                                         displayTick?.calculated_quantity || 
-                                         displayTick?.calculated_quantity_buy ||
-                                         displayTick?.calculated_quantity_sell ||
-                                         displayTick?.marketImpact?.buy?.quantity ||
-                                         displayTick?.marketImpact?.sell?.quantity ||
-                                         displayTick?.calculatedQuantity ||
-                                         displayTick?.quantity ||
-                                         displayTick?.target_quantity ||
-                                         displayTick?.targetQuantity || 0;
-                          
-                          const depth = displayTick?.depth || {};
-                          const sellConsumption = calculateLevelConsumption(calcQty, depth.buy, 'sell'); // Sell consumes bid levels
-                          return window.innerWidth <= 480 ? sellConsumption.slippage.substring(0, 6) : sellConsumption.slippage;
-                        })()}
-                      </div>
-                      
-                      {/* FUNDS (Available, Leveraged, Usable) */}
-                      <div style={{ 
+
+                      {/* LEVERAGED FUNDS */}
+                      <div style={{
                         color: '#8b5cf6',
-                        fontWeight: '500',
-                        fontSize: window.innerWidth <= 480 ? '8px' : '10px',
+                        fontWeight: '600',
+                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {window.innerWidth <= 480
+                          ? `₹${(fundsData.leverageFunds / 1000).toFixed(0)}K`
+                          : `₹${Number(fundsData.leverageFunds || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
+                      </div>
+
+                      {/* CALCULATED QTY */}
+                      <div style={{
+                        color: '#0f766e',
+                        fontWeight: '600',
+                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis'
+                      }}>
+                        {rowCalcQty > 0
+                          ? (window.innerWidth <= 480 ? formatQuantity(rowCalcQty).substring(0, 4) : formatQuantity(rowCalcQty))
+                          : '-'}
+                      </div>
+
+                      {/* 5L DEPTH CHECK (single column with 3 values) */}
+                      <div style={{
+                        color: '#334155',
+                        fontWeight: '600',
+                        fontSize: window.innerWidth <= 480 ? '8px' : '11px',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
-                        lineHeight: '1.1'
+                        lineHeight: '1.25'
                       }}>
-                        {(() => {
-                          if (window.innerWidth <= 480) {
-                            // Very small screen - show only usable funds
-                            return `₹${(fundsData.usableFunds / 1000).toFixed(0)}K`;
-                          } else if (window.innerWidth <= 768) {
-                            // Small screen - show usable funds with leverage info
-                            return `₹${(fundsData.usableFunds / 1000).toFixed(0)}K (5x)`;
-                          } else {
-                            // Full screen - show all funds info
-                            return (
-                              <div style={{ lineHeight: '1.1' }}>
-                                <div style={{ color: '#059669', fontSize: '9px' }}>₹{(fundsData.availableFunds / 1000).toFixed(0)}K</div>
-                                <div style={{ color: '#dc2626', fontSize: '9px' }}>₹{(fundsData.leverageFunds / 1000).toFixed(0)}K (5x)</div>
-                                <div style={{ color: '#8b5cf6', fontSize: '10px', fontWeight: '600' }}>₹{(fundsData.usableFunds / 1000).toFixed(0)}K</div>
-                              </div>
-                            );
-                          }
-                        })()}
+                        {scanType === 'BUY_SCAN' ? (
+                          <div style={{ color: buySupportPass ? '#059669' : '#dc2626' }}>
+                            <div style={{ fontWeight: '700' }}>BUY {buySupportPass ? 'PASS' : 'FAIL'}</div>
+                            <div>CQ: {rowCalcQty > 0 ? formatQuantity(rowCalcQty) : '-'}</div>
+                            <div>Bid 5L: {formatQuantity(row.bidQty5)} | 2x: {bidHasDouble ? 'YES' : 'NO'}</div>
+                            <div>Ask 5L: {formatQuantity(row.askQty5)} | 2x: {askHasDouble ? 'YES' : 'NO'}</div>
+                            <div>Ratio B/A: {buyImbalanceRatio.toFixed(2)} | Range [{BUY_IMBALANCE_MIN}-{BUY_IMBALANCE_MAX}] {buyRatioOk ? 'OK' : 'NO'}</div>
+                          </div>
+                        ) : scanType === 'SELL_SCAN' ? (
+                          <div style={{ color: sellSupportPass ? '#059669' : '#dc2626' }}>
+                            <div style={{ fontWeight: '700' }}>SELL {sellSupportPass ? 'PASS' : 'FAIL'}</div>
+                            <div>CQ: {rowCalcQty > 0 ? formatQuantity(rowCalcQty) : '-'}</div>
+                            <div>Bid 5L: {formatQuantity(row.bidQty5)} | 2x: {bidHasDouble ? 'YES' : 'NO'}</div>
+                            <div>Ask 5L: {formatQuantity(row.askQty5)} | 2x: {askHasDouble ? 'YES' : 'NO'}</div>
+                            <div>Ratio A/B: {sellImbalanceRatio.toFixed(2)} | Range [{SELL_IMBALANCE_MIN}-{SELL_IMBALANCE_MAX}] {sellRatioOk ? 'OK' : 'NO'}</div>
+                          </div>
+                        ) : (
+                          <div style={{ color: '#6b7280' }}>-</div>
+                        )}
                       </div>
                     </div>
                   );
@@ -1900,6 +1752,27 @@ const SubscribedStockTracker = ({
         {/* Summary Footer */}
         {(() => {
           const subscribedStocks = getSubscribedStocks();
+          const IMPACT_MAX_LEVELS = 3;
+          const IMPACT_MAX_SLIPPAGE = 0.08;
+
+          const passedRows = subscribedStocks
+            .map((symbol) => {
+              const symbolKey = extractSymbolName(symbol);
+              const symbolData = tickData?.[symbolKey];
+              const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
+              if (!latestTick) return null;
+              const scanType = latestTick?.scan_type;
+              const side = scanType === 'BUY_SCAN' ? 'buy' : (scanType === 'SELL_SCAN' ? 'sell' : null);
+              if (!side) return null;
+              const impact = latestTick?.marketImpact?.[side] || {};
+              const levels = Number(impact.levels);
+              const slippage = Number(impact.slippage);
+              const impactPass = Number.isFinite(levels) && Number.isFinite(slippage) && levels <= IMPACT_MAX_LEVELS && Math.abs(slippage) <= IMPACT_MAX_SLIPPAGE;
+              if (!impactPass) return null;
+              return { symbol, scanType };
+            })
+            .filter(Boolean);
+
           return (
             <div style={{
               marginTop: '15px',
@@ -1920,24 +1793,14 @@ const SubscribedStockTracker = ({
                 letterSpacing: '0.2px'
               }}>
                 <div>
-                  📈 Total: {subscribedStocks.length} symbols
+                  Passed: {passedRows.length} symbols
                 </div>
                 <div style={{ display: 'flex', gap: '15px' }}>
                   <span style={{ color: '#00ff00' }}>
-                    🟢 Buy: {subscribedStocks.filter(symbol => {
-                      const symbolKey = extractSymbolName(symbol);
-                      const symbolData = tickData?.[symbolKey];
-                      const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-                      return latestTick?.scan_type === 'BUY_SCAN';
-                    }).length}
+                    🟢 Buy: {passedRows.filter(row => row.scanType === 'BUY_SCAN').length}
                   </span>
                   <span style={{ color: '#ff6b6b' }}>
-                    🔴 Sell: {subscribedStocks.filter(symbol => {
-                      const symbolKey = extractSymbolName(symbol);
-                      const symbolData = tickData?.[symbolKey];
-                      const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-                      return latestTick?.scan_type === 'SELL_SCAN';
-                    }).length}
+                    🔴 Sell: {passedRows.filter(row => row.scanType === 'SELL_SCAN').length}
                   </span>
                 </div>
                 <div>

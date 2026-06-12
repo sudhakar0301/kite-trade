@@ -47,6 +47,12 @@ const targetOrderPlacementInFlight = new Set();
 const recentTargetOrderPlacements = new Map(); // key -> { ts, orderId }
 const TARGET_ORDER_DEDUPE_WINDOW_MS = 15000;
 
+// Centralized target-profit basis: for ~₹4,80,000 leveraged funds, target ~₹1,300 profit.
+const TARGET_PROFIT_BASE_LEVERAGE = 480000;
+const TARGET_PROFIT_BASE_AMOUNT = 1300;
+const TARGET_PROFIT_RATIO = TARGET_PROFIT_BASE_AMOUNT / TARGET_PROFIT_BASE_LEVERAGE;
+const TARGET_PROFIT_PERCENT = TARGET_PROFIT_RATIO * 100;
+
 // Tick precheck throttling: avoid repeated positions/orders/margins calls on rapid ticks.
 const orderPrecheckInFlight = new Set(); // key: symbol_scanType
 const orderPrecheckLastRunAt = new Map(); // key -> epoch ms
@@ -109,6 +115,46 @@ function getGlobalFunds() {
         lastUpdated: globalFundsLastUpdated,
         error: globalFundsError
     };
+}
+
+function getEffectiveLeverageFunds() {
+    return Number(globalLeverageFunds) > 0 ? Number(globalLeverageFunds) : TARGET_PROFIT_BASE_LEVERAGE;
+}
+
+function calculateProfitTargetFromInvestment(investment) {
+    const safeInvestment = Math.max(0, Number(investment) || 0);
+    const leverageFunds = getEffectiveLeverageFunds();
+
+    // Scales target profit linearly with effective position investment.
+    const targetProfitAmount = safeInvestment * TARGET_PROFIT_RATIO;
+
+    return {
+        leverageFunds,
+        targetProfitAmount,
+        targetProfitPercent: TARGET_PROFIT_PERCENT
+    };
+}
+
+// Safety lock: once a target order exists/gets placed, stop new main-order flow.
+function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', details = {}) {
+    if (!autoTradingActive) {
+        return;
+    }
+
+    autoTradingActive = false;
+    console.log(`🔒 AUTO TRADING AUTO-DISABLED (${context})`);
+
+    if (global.broadcastLiveData) {
+        global.broadcastLiveData({
+            type: 'auto_trading_status',
+            autoTradingActive: false,
+            mainOrdersAllowed: false,
+            targetOrdersAllowed: true,
+            reason: context,
+            details,
+            timestamp: new Date().toISOString()
+        });
+    }
 }
 
     // LOW PRICE CROSSOVER ROUTE: EMA3|1 crosses above EMA3|5
@@ -197,16 +243,16 @@ function getGlobalFunds() {
         }
     });
 
-    // LOW PRICE CROSSOVER VWMA ROUTE: EMA3|1 crosses above VWMA|5
+    // LOW PRICE CROSSOVER ROUTE: EMA3|1 crosses above EMA3|5
     router.post('/stocks-crossover-vwma9', async (req, res) => {
         try {
-            console.log('🚀 Processing CROSSOVER VWMA scanner request (EMA3|1 crosses above VWMA|5)...');
+            console.log('🚀 Processing CROSSOVER scanner request (EMA3|1 crosses above EMA3|5)...');
 
             // Keep global funds fresh to match low-price scanner behavior
             await updateGlobalFunds(req.body.access_token);
 
             const crossoverVwmaPayload = buildCrossOnlyScannerPayload([
-                { "left": "EMA3|1", "operation": "crosses_above", "right": "VWMA|5" }
+                { "left": "EMA3|1", "operation": "crosses_above", "right": "EMA3|5" }
             ]);
 
             const scannerResult = await makeScannorCall(crossoverVwmaPayload, 'low-price-crossover-vwma9-scan', req.body);
@@ -214,7 +260,7 @@ function getGlobalFunds() {
             const enrichedStocks = allStocks.map(enrichCrossOnlyStockData);
 
             // Final guard condition in app code
-            const crossoverStocks = enrichedStocks.filter(stock => Number(stock.ema3_1 || 0) > Number(stock.vwma_5 || 0));
+            const crossoverStocks = enrichedStocks.filter(stock => Number(stock.ema3_1 || 0) > Number(stock.ema3_5 || 0));
 
             lastScanTimestamp = new Date().toISOString();
 
@@ -222,7 +268,7 @@ function getGlobalFunds() {
                 success: true,
                 timestamp: new Date().toISOString(),
                 scanType: 'low-price-crossover-vwma9',
-                condition: 'ema3_1 crosses above vwma_5',
+                condition: 'ema3_1 crosses above ema3_5',
                 totalScanned: enrichedStocks.length,
                 crossoverCount: crossoverStocks.length,
                 crossoverStocks: crossoverStocks
@@ -238,16 +284,16 @@ function getGlobalFunds() {
         }
     });
 
-    // LOW PRICE CROSSDOWN VWMA ROUTE: EMA3|1 crosses below VWMA|5
+    // LOW PRICE CROSSDOWN ROUTE: EMA3|1 crosses below EMA3|5
     router.post('/stocks-crossdown-vwma9', async (req, res) => {
         try {
-            console.log('🚀 Processing CROSSDOWN VWMA scanner request (EMA3|1 crosses below VWMA|5)...');
+            console.log('🚀 Processing CROSSDOWN scanner request (EMA3|1 crosses below EMA3|5)...');
 
             // Keep global funds fresh to match low-price scanner behavior
             await updateGlobalFunds(req.body.access_token);
 
             const crossdownVwmaPayload = buildCrossOnlyScannerPayload([
-                { "left": "EMA3|1", "operation": "crosses_below", "right": "VWMA|5" }
+                { "left": "EMA3|1", "operation": "crosses_below", "right": "EMA3|5" }
             ]);
 
             const scannerResult = await makeScannorCall(crossdownVwmaPayload, 'low-price-crossdown-vwma9-scan', req.body);
@@ -255,7 +301,7 @@ function getGlobalFunds() {
             const enrichedStocks = allStocks.map(enrichCrossOnlyStockData);
 
             // Final guard condition in app code
-            const crossdownStocks = enrichedStocks.filter(stock => Number(stock.ema3_1 || 0) < Number(stock.vwma_5 || 0));
+            const crossdownStocks = enrichedStocks.filter(stock => Number(stock.ema3_1 || 0) < Number(stock.ema3_5 || 0));
 
             lastScanTimestamp = new Date().toISOString();
 
@@ -263,7 +309,7 @@ function getGlobalFunds() {
                 success: true,
                 timestamp: new Date().toISOString(),
                 scanType: 'low-price-crossdown-vwma9',
-                condition: 'ema3_1 crosses below vwma_5',
+                condition: 'ema3_1 crosses below ema3_5',
                 totalScanned: enrichedStocks.length,
                 crossdownCount: crossdownStocks.length,
                 crossdownStocks: crossdownStocks
@@ -340,7 +386,7 @@ function getGlobalFunds() {
             "ADX|5", "MACD.macd|1", "MACD.signal|1", "ADX+DI|1", "ADX-DI|1",
             "EMA5|5", "EMA9|5", "ADX+DI|5", "ADX-DI|5", "ADX|1", "open|5",
             "EMA5|1", "EMA9|1", "VWAP|5", "BB.basis|1", "VWAP|1", "BB.upper|5", "BB.lower|5",
-            "low|15", "high|15", "EMA3|15", "EMA3|5", "ADX|15", "ADX+DI|15", "ADX-DI|15", "EMA3|1", "VWMA|9"
+            "low|15", "high|15", "EMA3|15", "EMA3|5", "ADX|15", "ADX+DI|15", "ADX-DI|15", "EMA3|1", "VWMA|9", "RSI|5", "RSI|1"
         ];
     }
 
@@ -362,7 +408,7 @@ function getGlobalFunds() {
     }
 
     function getCrossOnlyScannerColumns() {
-        return ["close", "EMA3|1", "VWMA|5"];
+        return ["close", "EMA3|1", "EMA3|5", "RSI|1", "RSI|5"];
     }
 
     function buildCrossOnlyScannerPayload(extraFilters = []) {
@@ -386,7 +432,9 @@ function getGlobalFunds() {
             d: stock.d,
             ltp: data[0] || 0,
             ema3_1: data[1] || 0,
-            vwma_5: data[2] || 0
+            ema3_5: data[2] || 0,
+            rsi1: data[3] || 0,
+            rsi5: data[4] || 0
         };
     }
 
@@ -440,7 +488,9 @@ function getGlobalFunds() {
             plusDI15: data[34] || 0,
             minusDI15: data[35] || 0,
             ema3_1: data[36] || 0,
-            vwma_9: data[37] || 0
+            vwma_9: data[37] || 0,
+            rsi5: data[38] || 0,
+            rsi1: data[39] || 0
         };
     }
 
@@ -624,31 +674,36 @@ async function getCurrentPositions(accessToken) {
     }
 }
 
-// Calculate target price for ₹1500 profit
+// Calculate target price using centralized leveraged-funds profit basis
 function calculateTargetPrice(avgPrice, quantity, side) {
-    // Calculate 0.3% of total investment as target profit
-    const investment = avgPrice * quantity;
-    const targetProfitAmount = investment * 0.003; // 0.3% of investment
-    const profitPerShare = targetProfitAmount / quantity;
+    const safeQty = Math.abs(parseInt(quantity || 0));
+    const safeAvgPrice = Number(avgPrice || 0);
+    if (safeQty <= 0 || !Number.isFinite(safeAvgPrice) || safeAvgPrice <= 0) {
+        return Number(safeAvgPrice || 0);
+    }
+
+    const investment = safeAvgPrice * safeQty;
+    const { targetProfitAmount, targetProfitPercent, leverageFunds } = calculateProfitTargetFromInvestment(investment);
+    const profitPerShare = targetProfitAmount / safeQty;
     
-    console.log(`💰 Investment Calculation: ₹${avgPrice} × ${quantity} = ₹${investment.toLocaleString('en-IN')}`);
-    console.log(`🎯 Target Profit (0.3%): ₹${targetProfitAmount.toFixed(2)} (₹${profitPerShare.toFixed(2)} per share)`);
+    console.log(`💰 Investment Calculation: ₹${safeAvgPrice} × ${safeQty} = ₹${investment.toLocaleString('en-IN')}`);
+    console.log(`🎯 Target Profit (${targetProfitPercent.toFixed(4)}%): ₹${targetProfitAmount.toFixed(2)} (₹${profitPerShare.toFixed(2)} per share) [Leverage basis: ₹${leverageFunds.toLocaleString('en-IN')} -> ₹${TARGET_PROFIT_BASE_AMOUNT}]`);
     
     let rawTargetPrice;
     if (side === 'BUY') {
         // For BUY position, SELL at higher price for profit
-        rawTargetPrice = avgPrice + profitPerShare;
+        rawTargetPrice = safeAvgPrice + profitPerShare;
         console.log(`📈 BUY position: Raw target SELL at ₹${rawTargetPrice.toFixed(2)} (+₹${profitPerShare.toFixed(2)})`);
     } else {
         // For SELL position, BUY back at lower price for profit  
-        rawTargetPrice = avgPrice - profitPerShare;
+        rawTargetPrice = safeAvgPrice - profitPerShare;
         console.log(`📉 SELL position: Raw target BUY at ₹${rawTargetPrice.toFixed(2)} (-₹${profitPerShare.toFixed(2)})`);
     }
     
     // Round to proper tick size
-    const targetPrice = roundToTickSize(rawTargetPrice, avgPrice);
-    const actualProfitPerShare = Math.abs(targetPrice - avgPrice);
-    const actualTotalProfit = actualProfitPerShare * quantity;
+    const targetPrice = roundToTickSize(rawTargetPrice, safeAvgPrice);
+    const actualProfitPerShare = Math.abs(targetPrice - safeAvgPrice);
+    const actualTotalProfit = actualProfitPerShare * safeQty;
     
     console.log(`🎯 Final target price after tick size rounding: ₹${targetPrice.toFixed(2)}`);
     console.log(`💰 Expected total profit: ₹${actualTotalProfit.toFixed(2)} (₹${actualProfitPerShare.toFixed(2)} per share)`);
@@ -707,6 +762,10 @@ async function placeTargetOrder(accessToken, symbol, quantity, targetPrice, side
                 placedAt: matchingOpenTarget.order_timestamp || new Date().toISOString()
             });
             recentTargetOrderPlacements.set(targetKey, { ts: Date.now(), orderId: matchingOpenTarget.order_id });
+            disableAutoTradingAfterTargetOrder('target_order_detected_existing', {
+                symbol,
+                targetOrderId: matchingOpenTarget.order_id
+            });
             console.log(`✅ Matching open target already exists for ${symbol}: ${matchingOpenTarget.order_id} - deduped`);
             return { success: true, orderId: matchingOpenTarget.order_id, alreadyExists: true };
         }
@@ -740,6 +799,10 @@ async function placeTargetOrder(accessToken, symbol, quantity, targetPrice, side
             });
 
             recentTargetOrderPlacements.set(targetKey, { ts: Date.now(), orderId: result.order_id });
+            disableAutoTradingAfterTargetOrder('target_order_placed', {
+                symbol,
+                targetOrderId: result.order_id
+            });
             
             return { success: true, orderId: result.order_id };
         } else {
@@ -784,10 +847,10 @@ async function processNewPosition(accessToken, symbol, orderType) {
                 return;
             }
             
-            // Calculate target price for 0.3% profit
+            // Calculate target price using centralized leveraged-funds profit basis
             const targetPrice = calculateTargetPrice(avgPrice, quantity, side);
             
-            console.log(`🎯 Calculated target price: ₹${targetPrice.toFixed(2)} for 0.3% profit`);
+            console.log(`🎯 Calculated target price: ₹${targetPrice.toFixed(2)} using centralized leverage-based profit target`);
             
             // Store active position
             activePositions.set(symbol, {
@@ -820,7 +883,7 @@ async function processNewPosition(accessToken, symbol, orderType) {
                             side,
                             targetPrice,
                             targetOrderId: targetResult.orderId,
-                            targetProfit: 1500,
+                            targetProfit: calculateProfitTargetFromInvestment(avgPrice * Math.abs(quantity)).targetProfitAmount,
                             timestamp: new Date().toISOString()
                         }
                     });
@@ -947,7 +1010,7 @@ async function checkPositionsAndOrders(accessToken) {
                                 targetSide,
                                 targetPrice,
                                 targetOrderId: targetResult.orderId,
-                                targetProfit: 1500,
+                                targetProfit: calculateProfitTargetFromInvestment(avgPrice * Math.abs(quantity)).targetProfitAmount,
                                 timestamp: new Date().toISOString()
                             }
                         });
@@ -1531,7 +1594,8 @@ router.get('/debug-position-management', (req, res) => {
                     details: targetOrdersArray
                 },
                 settings: {
-                    targetProfit: 1500,
+                    targetProfitBaseline: TARGET_PROFIT_BASE_AMOUNT,
+                    targetProfitPercent: TARGET_PROFIT_PERCENT,
                     positionCheckDelay: 3000
                 }
             },
@@ -2497,7 +2561,7 @@ function setupTickerEventHandlers() {
                     // POSITION-FIRST EXECUTION STRATEGY:
                     // 1. Check positions first - if exist, place missing target orders
                     // 2. Only place new market orders when NO active positions exist
-                    // 3. Target orders = ₹1500 profit for existing positions
+                    // 3. Target orders = centralized leverage-based profit target for existing positions
                     // ==================================================================== 
                     
                     // Execution criteria (both BUY and SELL): impactedLevels must be <= 2 and slippage <= 0.08%
@@ -2641,10 +2705,10 @@ function setupTickerEventHandlers() {
                                         if (!existingTargetOrder && !targetOrders.has(posSymbol)) {
                                             console.log(`🎯 NO TARGET ORDER EXISTS for ${posSymbol} - Placing target order`);
                                             
-                                            // Calculate target price for ₹1500 profit
+                                            // Calculate target price using centralized leveraged-funds profit basis
                                             const targetPrice = calculateTargetPrice(avgPrice, quantity, side);
                                             
-                                            console.log(`🎯 Calculated target price: ₹${targetPrice.toFixed(2)} for ₹1500 profit`);
+                                            console.log(`🎯 Calculated target price: ₹${targetPrice.toFixed(2)} using centralized leverage-based profit target`);
                                             
                                             // Store active position
                                             activePositions.set(posSymbol, {
@@ -2676,7 +2740,7 @@ function setupTickerEventHandlers() {
                                                             side,
                                                             targetPrice,
                                                             targetOrderId: targetResult.orderId,
-                                                            targetProfit: 1500,
+                                                            targetProfit: calculateProfitTargetFromInvestment(avgPrice * Math.abs(quantity)).targetProfitAmount,
                                                             timestamp: new Date().toISOString()
                                                         }
                                                     });
@@ -3240,8 +3304,8 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Track condition pass counts
         let conditionStats = {
             total_stocks: 0,
-            buy_condition_passes: Array(18).fill(0),
-            sell_condition_passes: Array(18).fill(0),
+            buy_condition_passes: Array(14).fill(0),
+            sell_condition_passes: Array(14).fill(0),
             ema_1min_issues: [],
             orders_attempted: 0,
             orders_successful: 0,
@@ -3252,45 +3316,92 @@ router.post('/low-price-scanners', async (req, res) => {
         const requestedBuyFilters = req.body?.appliedFilters?.buy || {};
         const requestedSellFilters = req.body?.appliedFilters?.sell || {};
 
-        const activeBuyFilterIds = Object.entries(requestedBuyFilters)
-            .filter(([, enabled]) => enabled === true)
-            .map(([id]) => id);
-
-        const activeSellFilterIds = Object.entries(requestedSellFilters)
-            .filter(([, enabled]) => enabled === true)
-            .map(([id]) => id);
-
         const buyFilterIdToConditionIndexes = {
-            emaTrendAllTf: [0, 1, 2],
-            ema5_5BelowEma3_15: [3],
-            macdSignalAllTf: [4, 5],
-            macdAboveZero: [6, 7],
-            minusDiLow: [8],
-            adxStrongAnyTf: [9],
-            adxStrong5m: [10],
-            plusDiStrong: [11],
-            plusDiOverAdx5Or15: [12],
-            plusDiOverAdx1m: [13, 14],
-            adxOverMinusDi1m: [15],
-            ema5OverVwap1m: [16],
-            ema3BandBuy: [17]
+            macdAboveSignal5m: [0],
+            macdAboveZero5m: [1],
+            adxAbove25_5m: [2],
+            plusDiAbove25_5m: [3],
+            plusDiAboveAdx_5m: [4],
+            minusDiBelow15_5m: [5],
+            ema3AboveEma5_5m: [6],
+            rsiAbove60_5m: [7],
+            macdAboveSignal1m: [8],
+            adxAbove25_1m: [9],
+            plusDiAbove25_1m: [10],
+            minusDiBelow15_1m: [11],
+            rsiAbove65_1m: [12],
+            ema3AboveEma5_1m: [13]
         };
 
         const sellFilterIdToConditionIndexes = {
-            emaTrendAllTfSell: [0, 1, 2],
-            ema5_5AboveEma3_15: [3],
-            macdSignalAllTfSell: [4, 5],
-            macdBelowZero: [6, 7],
-            plusDiLow: [8],
-            adxStrongAnyTfSell: [9],
-            adxStrong5mSell: [10],
-            minusDiStrong: [11],
-            minusDiOverAdx5Or15: [12],
-            minusDiOverAdx1m: [13, 14],
-            adxOverPlusDi1m: [15],
-            ema5BelowVwap1m: [16],
-            ema3BandSell: [17]
+            macdBelowSignal5mSell: [0],
+            macdBelowZero5mSell: [1],
+            adxAbove25_5mSell: [2],
+            minusDiAbove25_5mSell: [3],
+            minusDiAboveAdx_5mSell: [4],
+            plusDiBelow15_5mSell: [5],
+            ema3BelowEma5_5mSell: [6],
+            rsiBelow40_5mSell: [7],
+            macdBelowSignal1mSell: [8],
+            adxAbove25_1mSell: [9],
+            minusDiAbove25_1mSell: [10],
+            plusDiBelow15_1mSell: [11],
+            rsiBelow35_1mSell: [12],
+            ema3BelowEma5_1mSell: [13]
         };
+
+        const buyFilterOrder = [
+            'macdAboveSignal5m',
+            'macdAboveZero5m',
+            'adxAbove25_5m',
+            'plusDiAbove25_5m',
+            'plusDiAboveAdx_5m',
+            'minusDiBelow15_5m',
+            'ema3AboveEma5_5m',
+            'rsiAbove60_5m',
+            'macdAboveSignal1m',
+            'adxAbove25_1m',
+            'plusDiAbove25_1m',
+            'minusDiBelow15_1m',
+            'rsiAbove65_1m',
+            'ema3AboveEma5_1m'
+        ];
+
+        const sellFilterOrder = [
+            'macdBelowSignal5mSell',
+            'macdBelowZero5mSell',
+            'adxAbove25_5mSell',
+            'minusDiAbove25_5mSell',
+            'minusDiAboveAdx_5mSell',
+            'plusDiBelow15_5mSell',
+            'ema3BelowEma5_5mSell',
+            'rsiBelow40_5mSell',
+            'macdBelowSignal1mSell',
+            'adxAbove25_1mSell',
+            'minusDiAbove25_1mSell',
+            'plusDiBelow15_1mSell',
+            'rsiBelow35_1mSell',
+            'ema3BelowEma5_1mSell'
+        ];
+
+        const hasCompactBuyIndexes = Array.isArray(req.body?.enabledBuyFilterIndexes);
+        const hasCompactSellIndexes = Array.isArray(req.body?.enabledSellFilterIndexes);
+
+        const activeBuyFilterIds = hasCompactBuyIndexes
+            ? req.body.enabledBuyFilterIndexes
+                .map((index) => buyFilterOrder[index])
+                .filter(Boolean)
+            : Object.entries(requestedBuyFilters)
+                .filter(([, enabled]) => enabled === true)
+                .map(([id]) => id);
+
+        const activeSellFilterIds = hasCompactSellIndexes
+            ? req.body.enabledSellFilterIndexes
+                .map((index) => sellFilterOrder[index])
+                .filter(Boolean)
+            : Object.entries(requestedSellFilters)
+                .filter(([, enabled]) => enabled === true)
+                .map(([id]) => id);
 
         const evaluateWithSelectedFilters = (conditions, activeFilterIds, filterMap) => {
             if (!shouldApplyUiFilters) {
@@ -3314,36 +3425,39 @@ router.post('/low-price-scanners', async (req, res) => {
         enrichedStocks.forEach(async (stock) => {
             conditionStats.total_stocks++;
             
-            // BUY CONDITIONS (as requested):
-            // 1) EMA3 > EMA5 on 1m, 5m, 15m
-            // 2) EMA5(5m) < EMA3(15m)
-            // 3) MACD > Signal on 5m, 15m
-            // 4) MACD > 0 on 1m, 5m
-            // 5) -DI < 15 on 5m OR 15m
-            // 6) ADX > 25 on 1m OR 5m OR 15m
-            // 7) +DI > 25 on 5m OR 15m
-            // 8) +DI(1m) > 25 and (+DI(1m) > ADX(1m) OR ADX(1m) > 25)
-            // 9) LTP compared to Bollinger Bands on 5m
+            // BUY CONDITIONS (combined):
+            // 5m conditions:
+            // 1) MACD > Signal
+            // 2) MACD > 0
+            // 3) ADX > 25
+            // 4) +DI > 25
+            // 5) +DI > ADX
+            // 6) -DI < 15
+            // 7) EMA3 > EMA5
+            // 8) RSI > 60
+            // 1m conditions:
+            // 9) MACD > Signal
+            // 10) ADX > 20
+            // 11) +DI > 25
+            // 12) -DI < 15
+            // 13) RSI > 65
+            // 14) EMA3 > EMA5
             
             const buyConditions = [
-                stock.ema3_1 > stock.ema5_1,  // EMA3(1m) > EMA5(1m)
-                stock.ema3_5 > stock.ema5_5,  // EMA3(5m) > EMA5(5m)
-                stock.ema3_15 > stock.ema5_15, // EMA3(15m) > EMA5(15m)
-                stock.ema5_5 < stock.ema3_15,  // EMA5(5m) < EMA3(15m)
-                stock.macd5 > stock.signal5,   // MACD(5m) > Signal(5m)
-                stock.macd15 > stock.signal15, // MACD(15m) > Signal(15m)
-                stock.macd1 > 0,               // MACD(1m) > 0
-                stock.macd5 > 0,               // MACD(5m) > 0
-                (stock.minusDI5 < 15 || stock.minusDI15 < 15), // -DI < 15 on 5m or 15m
-                (stock.adx1 > 25 || stock.adx5 > 25 || stock.adx15 > 25), // ADX > 25 on 1m or 5m or 15m
-                stock.adx5 > 25,               // ADX(5m) > 25
-                (stock.plusDI5 > 25 || stock.plusDI15 > 25), // +DI > 25 on 5m or 15m
-                (stock.plusDI5 > stock.adx5 || stock.plusDI15 > stock.adx15), // +DI > ADX on 5m or 15m
-                stock.plusDI1 > 25,            // +DI(1m) > 25
-                (stock.plusDI1 > stock.adx1 || stock.adx1 > 25), // +DI(1m) > ADX(1m) OR ADX(1m) > 25
-                stock.adx1 > stock.minusDI1,   // ADX(1m) > -DI(1m)
-                stock.ema5_1 > stock.vwap1,    // EMA5(1m) > VWAP(1m)
-                stock.ltp < stock.ubb_5        // LTP < UBB(5m)
+                stock.macd5 > stock.signal5, // MACD(5m) > Signal(5m)
+                stock.macd5 > 0,             // MACD(5m) > 0
+                stock.adx5 > 20,             // ADX(5m) > 20
+                stock.plusDI5 > 25,          // +DI(5m) > 25
+                stock.plusDI5 > stock.adx5,  // +DI(5m) > ADX(5m)
+                stock.minusDI5 < 15,         // -DI(5m) < 15
+                stock.ema3_5 > stock.ema5_5, // EMA3(5m) > EMA5(5m)
+                stock.rsi5 > 60,             // RSI(5m) > 60
+                stock.macd1 > stock.signal1, // MACD(1m) > Signal(1m)
+                stock.adx1 > 20,             // ADX(1m) > 20
+                stock.plusDI1 > 25,          // +DI(1m) > 25
+                stock.minusDI1 < 15,         // -DI(1m) < 15
+                stock.rsi1 > 65,             // RSI(1m) > 65
+                stock.ema3_1 > stock.ema5_1  // EMA3(1m) > EMA5(1m)
             ];
 
             // Track condition pass counts
@@ -3366,27 +3480,22 @@ router.post('/low-price-scanners', async (req, res) => {
                 });
             }
             
-            // SELL CONDITIONS (exact opposite of the BUY conditions above)
-            
+            // SELL CONDITIONS (opposite of combined BUY conditions)
             const sellConditions = [
-                stock.ema3_1 < stock.ema5_1,  // opposite of EMA3(1m) > EMA5(1m)
-                stock.ema3_5 < stock.ema5_5,  // opposite of EMA3(5m) > EMA5(5m)
-                stock.ema3_15 < stock.ema5_15, // opposite of EMA3(15m) > EMA5(15m)
-                stock.ema5_5 > stock.ema3_15,  // opposite of EMA5(5m) < EMA3(15m)
-                stock.macd5 < stock.signal5,   // opposite of MACD(5m) > Signal(5m)
-                stock.macd15 < stock.signal15, // opposite of MACD(15m) > Signal(15m)
-                stock.macd1 < 0,               // opposite of MACD(1m) > 0
-                stock.macd5 < 0,               // opposite of MACD(5m) > 0
-                (stock.plusDI5 < 15 || stock.plusDI15 < 15), // swapped from buy: +DI < 15 on 5m or 15m
-                (stock.adx1 > 25 || stock.adx5 > 25 || stock.adx15 > 25), // ADX > 25 on 1m or 5m or 15m
-                stock.adx5 > 25,               // ADX(5m) > 25
-                (stock.minusDI5 > 25 || stock.minusDI15 > 25), // swapped from buy: -DI > 25 on 5m or 15m
-                (stock.minusDI5 > stock.adx5 || stock.minusDI15 > stock.adx15), // -DI > ADX on 5m or 15m
-                stock.minusDI1 > 25,           // swapped from buy: -DI(1m) > 25
-                (stock.minusDI1 > stock.adx1 || stock.adx1 > 25), // -DI(1m) > ADX(1m) OR ADX(1m) > 25
-                stock.adx1 > stock.plusDI1,    // ADX(1m) > +DI(1m)
-                stock.ema5_1 < stock.vwap1,    // EMA5(1m) < VWAP(1m)
-                stock.ltp > stock.lbb_5        // LTP > LBB(5m)
+                stock.macd5 < stock.signal5, // MACD(5m) < Signal(5m)
+                stock.macd5 < 0,             // MACD(5m) < 0
+                stock.adx5 > 20,             // ADX(5m) > 20
+                stock.minusDI5 > 25,         // -DI(5m) > 25
+                stock.minusDI5 > stock.adx5, // -DI(5m) > ADX(5m)
+                stock.plusDI5 < 15,          // +DI(5m) < 15
+                stock.ema3_5 < stock.ema5_5, // EMA3(5m) < EMA5(5m)
+                stock.rsi5 < 40,             // RSI(5m) < 40
+                stock.macd1 < stock.signal1, // MACD(1m) < Signal(1m)
+                stock.adx1 > 20,             // ADX(1m) > 20
+                stock.minusDI1 > 25,         // -DI(1m) > 25
+                stock.plusDI1 < 15,          // +DI(1m) < 15
+                stock.rsi1 < 35,             // RSI(1m) < 35
+                stock.ema3_1 < stock.ema5_1  // EMA3(1m) < EMA5(1m)
             ];
             
             
@@ -3493,23 +3602,19 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Print condition statistics
         console.log('🔍 CONDITION ANALYSIS:');
         const conditionLabels = [
-            'EMA3 (1m) > EMA5 (1m)',
-            'EMA3 (5m) > EMA5 (5m)',
-            'EMA3 (15m) > EMA5 (15m)',
             'MACD (5m) > Signal (5m)',
-            'MACD (15m) > Signal (15m)',
-            'MACD (1m) > 0',
             'MACD (5m) > 0',
-            '-DI < 15 (5m OR 15m)',
-            'ADX > 25 (1m OR 5m OR 15m)',
             'ADX (5m) > 25',
-            '+DI > 25 (5m OR 15m)',
-            '+DI > ADX (5m OR 15m)',
-            '+DI (1m) > ADX (1m)',
+            '+DI (5m) > 25',
+            '-DI (5m) < 15',
+            'EMA3 (5m) > EMA5 (5m)',
+            'RSI (5m) > 60',
+            'MACD (1m) > Signal (1m)',
             'ADX (1m) > 25',
-            'ADX (1m) > -DI (1m)',
-            'EMA5 (1m) > VWAP (1m)',
-            'LTP < UBB (5m)'
+            '+DI (1m) > 25',
+            '-DI (1m) < 15',
+            'RSI (1m) > 65',
+            'EMA3 (1m) > EMA5 (1m)'
         ];
        
     
@@ -4004,7 +4109,7 @@ router.post('/buy-order', async (req, res) => {
         }
         
         console.log(`🎯 Processing BUY order for ${symbol} at LTP ₹${ltp}`);
-        console.log(`🔧 Order type: ${isTargetOrder ? 'TARGET ORDER (₹1500 profit)' : 'MAIN ORDER'}`);
+        console.log(`🔧 Order type: ${isTargetOrder ? `TARGET ORDER (${TARGET_PROFIT_PERCENT.toFixed(4)}% leverage-based target)` : 'MAIN ORDER'}`);
         console.log(`🔒 Auto trading status: ${autoTradingActive ? 'ENABLED' : 'DISABLED'}`);
         
         if (!isTargetOrder) {
@@ -4100,13 +4205,13 @@ router.post('/buy-order', async (req, res) => {
                     });
                 }
                 
-                // Calculate target order for 0.3% profit
+                // Calculate target order using centralized leveraged-funds profit basis
                 const avgPrice = parseFloat(positionForSymbol.average_price);
                 const quantity = parseInt(positionForSymbol.quantity);
                 const side = quantity > 0 ? 'BUY' : 'SELL';
                 const targetPrice = calculateTargetPrice(avgPrice, Math.abs(quantity), side);
                 
-                console.log(`🎯 Placing target order: ${orderParams.tradingsymbol} at ₹${targetPrice.toFixed(2)} for 0.3% profit`);
+                console.log(`🎯 Placing target order: ${orderParams.tradingsymbol} at ₹${targetPrice.toFixed(2)} using centralized leverage-based profit target`);
                 
                 // Place target order (opposite side)
                 const targetSide = side === 'BUY' ? 'SELL' : 'BUY';
@@ -4132,11 +4237,11 @@ router.post('/buy-order', async (req, res) => {
                     return res.json({
                         success: true,
                         order_id: targetResult.orderId,
-                        message: `Target order placed for ${orderParams.tradingsymbol} - ₹1500 profit target`,
+                        message: `Target order placed for ${orderParams.tradingsymbol} - leverage-based profit target`,
                         symbol: orderParams.tradingsymbol,
                         orderType: 'TARGET',
                         targetPrice: targetPrice,
-                        expectedProfit: "0.3%",
+                        expectedProfit: `${TARGET_PROFIT_PERCENT.toFixed(4)}%`,
                         openChart: true,
                         timestamp: new Date().toISOString()
                     });
@@ -4299,13 +4404,13 @@ router.post('/buy-order', async (req, res) => {
                     });
                 }
                 
-                // Calculate target order for 0.3% profit
+                // Calculate target order using centralized leveraged-funds profit basis
                 const avgPrice = parseFloat(positionForSymbol.average_price);
                 const quantity = parseInt(positionForSymbol.quantity);
                 const side = quantity > 0 ? 'BUY' : 'SELL';
                 const targetPrice = calculateTargetPrice(avgPrice, Math.abs(quantity), side);
                 
-                console.log(`🎯 Placing target order: ${orderParams.tradingsymbol} at ₹${targetPrice.toFixed(2)} for 0.3% profit`);
+                console.log(`🎯 Placing target order: ${orderParams.tradingsymbol} at ₹${targetPrice.toFixed(2)} using centralized leverage-based profit target`);
                 
                 // Place target order (opposite side)
                 const targetSide = side === 'BUY' ? 'SELL' : 'BUY';
@@ -4331,11 +4436,11 @@ router.post('/buy-order', async (req, res) => {
                     return res.json({
                         success: true,
                         order_id: targetResult.orderId,
-                        message: `Target order placed for ${orderParams.tradingsymbol} - ₹1500 profit target`,
+                        message: `Target order placed for ${orderParams.tradingsymbol} - leverage-based profit target`,
                         symbol: orderParams.tradingsymbol,
                         orderType: 'TARGET',
                         targetPrice: targetPrice,
-                        expectedProfit: "0.3%",
+                        expectedProfit: `${TARGET_PROFIT_PERCENT.toFixed(4)}%`,
                         openChart: true,
                         timestamp: new Date().toISOString()
                     });
@@ -4474,8 +4579,8 @@ router.post('/buy-order', async (req, res) => {
                 timestamp: new Date().toISOString()
             });
             
-            // 🎯 AUTO TARGET ORDER: Place 0.3% profit target after successful main BUY order
-            console.log(`🎯 Setting up 0.3% profit target for ${orderParams.tradingsymbol} after 3 seconds...`);
+            // 🎯 AUTO TARGET ORDER: Place centralized leverage-based target after successful main BUY order
+            console.log(`🎯 Setting up leverage-based profit target for ${orderParams.tradingsymbol} after 3 seconds...`);
             setTimeout(async () => {
                 try {
                     const newPositions = await getActivePositions(access_token);
@@ -4494,11 +4599,11 @@ router.post('/buy-order', async (req, res) => {
                         const targetResult = await placeTargetOrder(access_token, orderParams.tradingsymbol, quantity, targetPrice, targetSide);
                         
                         if (targetResult.success) {
-                            console.log(`✅ 0.3% profit target placed: Order ID ${targetResult.orderId}`);
+                            console.log(`✅ Leverage-based profit target placed: Order ID ${targetResult.orderId}`);
                             
                             // Calculate investment and profit details for frontend display
                             const investment = avgPrice * quantity;
-                            const targetProfitAmount = investment * 0.003; // 0.3% of investment
+                            const { targetProfitAmount, targetProfitPercent } = calculateProfitTargetFromInvestment(investment);
                             const actualProfitPerShare = Math.abs(targetPrice - avgPrice);
                             const actualTotalProfit = actualProfitPerShare * quantity;
                             
@@ -4512,7 +4617,7 @@ router.post('/buy-order', async (req, res) => {
                                         token: parseInt(token) || null,
                                         orderType: 'AUTO_TARGET',
                                         orderId: targetResult.orderId,
-                                        message: `Target order placed - 0.3% profit target for ${orderParams.tradingsymbol}`,
+                                        message: `Target order placed - leverage-based profit target for ${orderParams.tradingsymbol}`,
                                         timestamp: new Date().toISOString()
                                     }]
                                 });
@@ -4528,7 +4633,7 @@ router.post('/buy-order', async (req, res) => {
                                         investment: investment,
                                         targetPrice: targetPrice,
                                         expectedProfit: actualTotalProfit,
-                                        profitPercentage: 0.3,
+                                        profitPercentage: targetProfitPercent,
                                         side: side,
                                         targetSide: targetSide,
                                         placedAt: new Date().toISOString(),
@@ -4657,7 +4762,7 @@ router.post('/sell-order', async (req, res) => {
         }
         
         console.log(`🎯 Processing SELL order for ${symbol} at LTP ₹${ltp}`);
-        console.log(`🔧 Order type: ${isTargetOrder ? 'TARGET ORDER (₹1500 profit)' : 'MAIN ORDER'}`);
+        console.log(`🔧 Order type: ${isTargetOrder ? `TARGET ORDER (${TARGET_PROFIT_PERCENT.toFixed(4)}% leverage-based target)` : 'MAIN ORDER'}`);
         console.log(`🔒 Auto trading status: ${autoTradingActive ? 'ENABLED' : 'DISABLED'}`);
         
         if (!isTargetOrder) {
@@ -4782,13 +4887,13 @@ router.post('/sell-order', async (req, res) => {
                     });
                 }
                 
-                // Calculate target order for ₹1500 profit
+                // Calculate target order using centralized leveraged-funds profit basis
                 const avgPrice = parseFloat(positionForSymbol.average_price);
                 const quantity = parseInt(positionForSymbol.quantity);
                 const side = quantity > 0 ? 'BUY' : 'SELL';
                 const targetPrice = calculateTargetPrice(avgPrice, Math.abs(quantity), side);
                 
-                console.log(`🎯 Placing target order: ${orderParams.tradingsymbol} at ₹${targetPrice.toFixed(2)} for 0.3% profit`);
+                console.log(`🎯 Placing target order: ${orderParams.tradingsymbol} at ₹${targetPrice.toFixed(2)} using centralized leverage-based profit target`);
                 
                 // Place target order (opposite side)
                 const targetSide = side === 'BUY' ? 'SELL' : 'BUY';
@@ -4814,11 +4919,11 @@ router.post('/sell-order', async (req, res) => {
                     return res.json({
                         success: true,
                         order_id: targetResult.orderId,
-                        message: `Target order placed for ${orderParams.tradingsymbol} - 0.3% profit target`,
+                        message: `Target order placed for ${orderParams.tradingsymbol} - leverage-based profit target`,
                         symbol: orderParams.tradingsymbol,
                         orderType: 'TARGET',
                         targetPrice: targetPrice,
-                        expectedProfit: "0.3%",
+                        expectedProfit: `${TARGET_PROFIT_PERCENT.toFixed(4)}%`,
                         openChart: true,
                         timestamp: new Date().toISOString()
                     });
@@ -5035,8 +5140,8 @@ router.post('/sell-order', async (req, res) => {
                 timestamp: new Date().toISOString()
             });
             
-            // 🎯 AUTO TARGET ORDER: Place 0.3% profit target after successful main SELL order
-            console.log(`🎯 Setting up 0.3% profit target for ${orderParams.tradingsymbol} after 3 seconds...`);
+            // 🎯 AUTO TARGET ORDER: Place centralized leverage-based target after successful main SELL order
+            console.log(`🎯 Setting up leverage-based profit target for ${orderParams.tradingsymbol} after 3 seconds...`);
             setTimeout(async () => {
                 try {
                     const newPositions = await kiteOrderPlacement.getPositions();
@@ -5056,11 +5161,11 @@ router.post('/sell-order', async (req, res) => {
                         const targetResult = await placeTargetOrder(access_token, orderParams.tradingsymbol, quantity, targetPrice, targetSide);
                         
                         if (targetResult.success) {
-                            console.log(`✅ 0.3% profit target placed: Order ID ${targetResult.orderId}`);
+                            console.log(`✅ Leverage-based profit target placed: Order ID ${targetResult.orderId}`);
                             
                             // Calculate investment and profit details for frontend display
                             const investment = avgPrice * quantity;
-                            const targetProfitAmount = investment * 0.003; // 0.3% of investment
+                            const { targetProfitAmount, targetProfitPercent } = calculateProfitTargetFromInvestment(investment);
                             const actualProfitPerShare = Math.abs(targetPrice - avgPrice);
                             const actualTotalProfit = actualProfitPerShare * quantity;
                             
@@ -5074,7 +5179,7 @@ router.post('/sell-order', async (req, res) => {
                                         token: parseInt(token) || null,
                                         orderType: 'AUTO_TARGET',
                                         orderId: targetResult.orderId,
-                                        message: `Target order placed - 0.3% profit target for ${orderParams.tradingsymbol}`,
+                                        message: `Target order placed - leverage-based profit target for ${orderParams.tradingsymbol}`,
                                         timestamp: new Date().toISOString()
                                     }]
                                 });
@@ -5090,7 +5195,7 @@ router.post('/sell-order', async (req, res) => {
                                         investment: investment,
                                         targetPrice: targetPrice,
                                         expectedProfit: actualTotalProfit,
-                                        profitPercentage: 0.3,
+                                        profitPercentage: targetProfitPercent,
                                         side: side,
                                         targetSide: targetSide,
                                         placedAt: new Date().toISOString(),
@@ -5506,7 +5611,7 @@ router.post('/target-buy-order', async (req, res) => {
         
         console.log(`🎯 Processing TARGET BUY order for ${symbol}: AvgPrice=₹${avgPrice}, Qty=${Math.abs(quantity)}`);
         
-        // Calculate target price with ₹1500 profit (for SELL position, BUY back lower)
+        // Calculate target price using centralized leveraged-funds profit basis (for SELL position, BUY back lower)
         const targetPrice = calculateTargetPrice(avgPrice, Math.abs(quantity), 'SELL');
         
         // Place target BUY order
@@ -5579,7 +5684,7 @@ router.post('/target-sell-order', async (req, res) => {
         
         console.log(`🎯 Processing TARGET SELL order for ${symbol}: AvgPrice=₹${avgPrice}, Qty=${Math.abs(quantity)}`);
         
-        // Calculate target price with ₹1500 profit (for BUY position, SELL higher)
+        // Calculate target price using centralized leveraged-funds profit basis (for BUY position, SELL higher)
         const targetPrice = calculateTargetPrice(avgPrice, Math.abs(quantity), 'BUY');
         
         // Place target SELL order
