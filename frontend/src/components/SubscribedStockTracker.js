@@ -1384,8 +1384,8 @@ const SubscribedStockTracker = ({
               if (!signalRow) return null;
 
               const ema3_1 = Number(signalRow?.ema3_1 || signalRow?.ema3_1m || 0);
-              const ema3_5 = Number(signalRow?.ema3_5 || signalRow?.ema3_5m || 0);
-              const emaPass = ema3_1 >= ema3_5;
+              const ema5_1 = Number(signalRow?.ema5_1 || signalRow?.ema5_1m || 0);
+              const emaPass = side === 'buy' ? (ema3_1 > ema5_1) : (ema3_1 < ema5_1);
               if (!emaPass) return null;
 
               const rsi1 = Number(signalRow?.rsi1 || signalRow?.rsi_1m || 0);
@@ -1418,7 +1418,7 @@ const SubscribedStockTracker = ({
             })
             .filter(Boolean);
 
-          console.log('🔍 LOW-PRICE+EMA(ema3_1>=ema3_5)+IMPACT PASSED rows:', passedRows.length, {
+          console.log('🔍 LOW-PRICE+EMA(side: ema3_1 vs ema5_1)+IMPACT PASSED rows:', passedRows.length, {
             buySignalRows: buySignalBySymbol.size,
             sellSignalRows: sellSignalBySymbol.size
           });
@@ -1437,7 +1437,7 @@ const SubscribedStockTracker = ({
                 fontFamily: '"Segoe UI", "Roboto", "Inter", system-ui, -apple-system, sans-serif',
                 lineHeight: '1.6'
               }}>
-                📡 No stocks passed low-price + EMA check (EMA3(1m) >= EMA3(5m)) + impact conditions yet.<br/>
+                📡 No stocks passed low-price + EMA check (BUY: EMA3(1m) &gt; EMA5(1m), SELL: EMA3(1m) &lt; EMA5(1m)) + impact conditions yet.<br/>
                 Waiting for EMA-check rows and impact thresholds to pass.
               </div>
             );

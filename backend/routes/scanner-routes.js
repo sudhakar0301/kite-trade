@@ -157,16 +157,16 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
     }
 }
 
-    // LOW PRICE CROSSOVER ROUTE: EMA3|1 crosses above EMA3|5
+    // LOW PRICE CROSSOVER ROUTE: EMA3|1 crosses above EMA5|1
     router.post('/stocks-crossover', async (req, res) => {
         try {
-            console.log('🚀 Processing CROSSOVER scanner request (EMA3|1 crosses above EMA3|5)...');
+            console.log('🚀 Processing CROSSOVER scanner request (EMA3|1 crosses above EMA5|1)...');
 
             // Keep global funds fresh to match low-price scanner behavior
             await updateGlobalFunds(req.body.access_token);
 
             const crossoverPayload = buildLowPriceScannerPayload([
-                { "left": "EMA3|1", "operation": "crosses_above", "right": "EMA3|5" }
+                { "left": "EMA3|1", "operation": "crosses_above", "right": "EMA5|1" }
             ]);
 
             const scannerResult = await makeScannorCall(crossoverPayload, 'low-price-crossover-scan', req.body);
@@ -174,7 +174,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
             const enrichedStocks = allStocks.map(enrichLowPriceStockData);
 
             // Final guard condition in app code
-            const crossoverStocks = enrichedStocks.filter(stock => stock.ema3_1 > stock.ema3_5);
+            const crossoverStocks = enrichedStocks.filter(stock => stock.ema3_1 > stock.ema5_1);
 
             currentBuyStocks = crossoverStocks;
             currentSellStocks = [];
@@ -184,7 +184,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
                 success: true,
                 timestamp: new Date().toISOString(),
                 scanType: 'low-price-crossover',
-                condition: 'ema3_1 crosses above ema3_5',
+                condition: 'ema3_1 crosses above ema5_1',
                 totalScanned: enrichedStocks.length,
                 crossoverCount: crossoverStocks.length,
                 crossoverStocks: crossoverStocks
@@ -200,16 +200,16 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
         }
     });
 
-    // LOW PRICE CROSSDOWN ROUTE: EMA3|1 crosses below EMA3|5
+    // LOW PRICE CROSSDOWN ROUTE: EMA3|1 crosses below EMA5|1
     router.post('/stocks-crossdown', async (req, res) => {
         try {
-            console.log('🚀 Processing CROSSDOWN scanner request (EMA3|1 crosses below EMA3|5)...');
+            console.log('🚀 Processing CROSSDOWN scanner request (EMA3|1 crosses below EMA5|1)...');
 
             // Keep global funds fresh to match low-price scanner behavior
             await updateGlobalFunds(req.body.access_token);
 
             const crossdownPayload = buildLowPriceScannerPayload([
-                { "left": "EMA3|1", "operation": "crosses_below", "right": "EMA3|5" }
+                { "left": "EMA3|1", "operation": "crosses_below", "right": "EMA5|1" }
             ]);
 
             const scannerResult = await makeScannorCall(crossdownPayload, 'low-price-crossdown-scan', req.body);
@@ -217,7 +217,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
             const enrichedStocks = allStocks.map(enrichLowPriceStockData);
 
             // Final guard condition in app code
-            const crossdownStocks = enrichedStocks.filter(stock => stock.ema3_1 < stock.ema3_5);
+            const crossdownStocks = enrichedStocks.filter(stock => stock.ema3_1 < stock.ema5_1);
 
             currentBuyStocks = [];
             currentSellStocks = crossdownStocks;
@@ -227,7 +227,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
                 success: true,
                 timestamp: new Date().toISOString(),
                 scanType: 'low-price-crossdown',
-                condition: 'ema3_1 crosses below ema3_5',
+                condition: 'ema3_1 crosses below ema5_1',
                 totalScanned: enrichedStocks.length,
                 crossdownCount: crossdownStocks.length,
                 crossdownStocks: crossdownStocks
@@ -243,16 +243,16 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
         }
     });
 
-    // LOW PRICE CROSSOVER ROUTE: EMA3|1 crosses above EMA3|5
+    // LOW PRICE CROSSOVER ROUTE: EMA3|1 crosses above EMA5|1
     router.post('/stocks-crossover-vwma9', async (req, res) => {
         try {
-            console.log('🚀 Processing CROSSOVER scanner request (EMA3|1 crosses above EMA3|5)...');
+            console.log('🚀 Processing CROSSOVER scanner request (EMA3|1 crosses above EMA5|1)...');
 
             // Keep global funds fresh to match low-price scanner behavior
             await updateGlobalFunds(req.body.access_token);
 
             const crossoverVwmaPayload = buildCrossOnlyScannerPayload([
-                { "left": "EMA3|1", "operation": "crosses_above", "right": "EMA3|5" }
+                { "left": "EMA3|1", "operation": "crosses_above", "right": "EMA5|1" }
             ]);
 
             const scannerResult = await makeScannorCall(crossoverVwmaPayload, 'low-price-crossover-vwma9-scan', req.body);
@@ -260,7 +260,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
             const enrichedStocks = allStocks.map(enrichCrossOnlyStockData);
 
             // Final guard condition in app code
-            const crossoverStocks = enrichedStocks.filter(stock => Number(stock.ema3_1 || 0) > Number(stock.ema3_5 || 0));
+            const crossoverStocks = enrichedStocks.filter(stock => Number(stock.ema3_1 || 0) > Number(stock.ema5_1 || 0));
 
             lastScanTimestamp = new Date().toISOString();
 
@@ -268,7 +268,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
                 success: true,
                 timestamp: new Date().toISOString(),
                 scanType: 'low-price-crossover-vwma9',
-                condition: 'ema3_1 crosses above ema3_5',
+                condition: 'ema3_1 crosses above ema5_1',
                 totalScanned: enrichedStocks.length,
                 crossoverCount: crossoverStocks.length,
                 crossoverStocks: crossoverStocks
@@ -284,16 +284,16 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
         }
     });
 
-    // LOW PRICE CROSSDOWN ROUTE: EMA3|1 crosses below EMA3|5
+    // LOW PRICE CROSSDOWN ROUTE: EMA3|1 crosses below EMA5|1
     router.post('/stocks-crossdown-vwma9', async (req, res) => {
         try {
-            console.log('🚀 Processing CROSSDOWN scanner request (EMA3|1 crosses below EMA3|5)...');
+            console.log('🚀 Processing CROSSDOWN scanner request (EMA3|1 crosses below EMA5|1)...');
 
             // Keep global funds fresh to match low-price scanner behavior
             await updateGlobalFunds(req.body.access_token);
 
             const crossdownVwmaPayload = buildCrossOnlyScannerPayload([
-                { "left": "EMA3|1", "operation": "crosses_below", "right": "EMA3|5" }
+                { "left": "EMA3|1", "operation": "crosses_below", "right": "EMA5|1" }
             ]);
 
             const scannerResult = await makeScannorCall(crossdownVwmaPayload, 'low-price-crossdown-vwma9-scan', req.body);
@@ -301,7 +301,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
             const enrichedStocks = allStocks.map(enrichCrossOnlyStockData);
 
             // Final guard condition in app code
-            const crossdownStocks = enrichedStocks.filter(stock => Number(stock.ema3_1 || 0) < Number(stock.ema3_5 || 0));
+            const crossdownStocks = enrichedStocks.filter(stock => Number(stock.ema3_1 || 0) < Number(stock.ema5_1 || 0));
 
             lastScanTimestamp = new Date().toISOString();
 
@@ -309,7 +309,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
                 success: true,
                 timestamp: new Date().toISOString(),
                 scanType: 'low-price-crossdown-vwma9',
-                condition: 'ema3_1 crosses below ema3_5',
+                condition: 'ema3_1 crosses below ema5_1',
                 totalScanned: enrichedStocks.length,
                 crossdownCount: crossdownStocks.length,
                 crossdownStocks: crossdownStocks
@@ -408,7 +408,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
     }
 
     function getCrossOnlyScannerColumns() {
-        return ["close", "EMA3|1", "EMA3|5", "RSI|1", "RSI|5"];
+        return ["close", "EMA3|1", "EMA5|1", "RSI|1", "RSI|5"];
     }
 
     function buildCrossOnlyScannerPayload(extraFilters = []) {
@@ -432,7 +432,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
             d: stock.d,
             ltp: data[0] || 0,
             ema3_1: data[1] || 0,
-            ema3_5: data[2] || 0,
+            ema5_1: data[2] || 0,
             rsi1: data[3] || 0,
             rsi5: data[4] || 0
         };
@@ -3281,7 +3281,7 @@ router.post('/low-price-scanners', async (req, res) => {
         const separateCrossoverStocks = [];
         const separateCrossdownStocks = [];
 
-        console.log('ℹ️ Intersection checks disabled: using only buy/sell condition signals');
+        console.log('ℹ️ Intersection checks enabled: crossover/crossdown will be intersected with low-price buy/sell signals');
 
     
         // Classify stocks into buy/sell based on conditions
@@ -3304,8 +3304,8 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Track condition pass counts
         let conditionStats = {
             total_stocks: 0,
-            buy_condition_passes: Array(14).fill(0),
-            sell_condition_passes: Array(14).fill(0),
+            buy_condition_passes: Array(10).fill(0),
+            sell_condition_passes: Array(10).fill(0),
             ema_1min_issues: [],
             orders_attempted: 0,
             orders_successful: 0,
@@ -3321,16 +3321,12 @@ router.post('/low-price-scanners', async (req, res) => {
             macdAboveZero5m: [1],
             adxAbove25_5m: [2],
             plusDiAbove25_5m: [3],
-            plusDiAboveAdx_5m: [4],
-            minusDiBelow15_5m: [5],
-            ema3AboveEma5_5m: [6],
-            rsiAbove60_5m: [7],
-            macdAboveSignal1m: [8],
-            adxAbove25_1m: [9],
-            plusDiAbove25_1m: [10],
-            minusDiBelow15_1m: [11],
-            rsiAbove65_1m: [12],
-            ema3AboveEma5_1m: [13]
+            minusDiBelow15_5m: [4],
+            ema3AboveEma5_5m: [5],
+            rsiAbove60_5m: [6],
+            adxAbove25_1m: [7],
+            plusDiAbove25_1m: [8],
+            rsiAbove65_1m: [9]
         };
 
         const sellFilterIdToConditionIndexes = {
@@ -3338,16 +3334,12 @@ router.post('/low-price-scanners', async (req, res) => {
             macdBelowZero5mSell: [1],
             adxAbove25_5mSell: [2],
             minusDiAbove25_5mSell: [3],
-            minusDiAboveAdx_5mSell: [4],
-            plusDiBelow15_5mSell: [5],
-            ema3BelowEma5_5mSell: [6],
-            rsiBelow40_5mSell: [7],
-            macdBelowSignal1mSell: [8],
-            adxAbove25_1mSell: [9],
-            minusDiAbove25_1mSell: [10],
-            plusDiBelow15_1mSell: [11],
-            rsiBelow35_1mSell: [12],
-            ema3BelowEma5_1mSell: [13]
+            plusDiBelow15_5mSell: [4],
+            ema3BelowEma5_5mSell: [5],
+            rsiBelow40_5mSell: [6],
+            adxAbove25_1mSell: [7],
+            minusDiAbove25_1mSell: [8],
+            rsiBelow35_1mSell: [9]
         };
 
         const buyFilterOrder = [
@@ -3355,16 +3347,12 @@ router.post('/low-price-scanners', async (req, res) => {
             'macdAboveZero5m',
             'adxAbove25_5m',
             'plusDiAbove25_5m',
-            'plusDiAboveAdx_5m',
             'minusDiBelow15_5m',
             'ema3AboveEma5_5m',
             'rsiAbove60_5m',
-            'macdAboveSignal1m',
             'adxAbove25_1m',
             'plusDiAbove25_1m',
-            'minusDiBelow15_1m',
-            'rsiAbove65_1m',
-            'ema3AboveEma5_1m'
+            'rsiAbove65_1m'
         ];
 
         const sellFilterOrder = [
@@ -3372,16 +3360,12 @@ router.post('/low-price-scanners', async (req, res) => {
             'macdBelowZero5mSell',
             'adxAbove25_5mSell',
             'minusDiAbove25_5mSell',
-            'minusDiAboveAdx_5mSell',
             'plusDiBelow15_5mSell',
             'ema3BelowEma5_5mSell',
             'rsiBelow40_5mSell',
-            'macdBelowSignal1mSell',
             'adxAbove25_1mSell',
             'minusDiAbove25_1mSell',
-            'plusDiBelow15_1mSell',
-            'rsiBelow35_1mSell',
-            'ema3BelowEma5_1mSell'
+            'rsiBelow35_1mSell'
         ];
 
         const hasCompactBuyIndexes = Array.isArray(req.body?.enabledBuyFilterIndexes);
@@ -3431,33 +3415,25 @@ router.post('/low-price-scanners', async (req, res) => {
             // 2) MACD > 0
             // 3) ADX > 25
             // 4) +DI > 25
-            // 5) +DI > ADX
-            // 6) -DI < 15
-            // 7) EMA3 > EMA5
-            // 8) RSI > 60
+            // 5) -DI < 15
+            // 6) EMA3 > EMA5
+            // 7) RSI > 60
             // 1m conditions:
-            // 9) MACD > Signal
-            // 10) ADX > 20
-            // 11) +DI > 25
-            // 12) -DI < 15
-            // 13) RSI > 65
-            // 14) EMA3 > EMA5
+            // 8) ADX > 20
+            // 9) +DI > 25
+            // 10) RSI > 65
             
             const buyConditions = [
                 stock.macd5 > stock.signal5, // MACD(5m) > Signal(5m)
                 stock.macd5 > 0,             // MACD(5m) > 0
                 stock.adx5 > 20,             // ADX(5m) > 20
                 stock.plusDI5 > 25,          // +DI(5m) > 25
-                stock.plusDI5 > stock.adx5,  // +DI(5m) > ADX(5m)
                 stock.minusDI5 < 15,         // -DI(5m) < 15
                 stock.ema3_5 > stock.ema5_5, // EMA3(5m) > EMA5(5m)
                 stock.rsi5 > 60,             // RSI(5m) > 60
-                stock.macd1 > stock.signal1, // MACD(1m) > Signal(1m)
                 stock.adx1 > 20,             // ADX(1m) > 20
                 stock.plusDI1 > 25,          // +DI(1m) > 25
-                stock.minusDI1 < 15,         // -DI(1m) < 15
-                stock.rsi1 > 65,             // RSI(1m) > 65
-                stock.ema3_1 > stock.ema5_1  // EMA3(1m) > EMA5(1m)
+                stock.rsi1 > 65              // RSI(1m) > 65
             ];
 
             // Track condition pass counts
@@ -3486,16 +3462,12 @@ router.post('/low-price-scanners', async (req, res) => {
                 stock.macd5 < 0,             // MACD(5m) < 0
                 stock.adx5 > 20,             // ADX(5m) > 20
                 stock.minusDI5 > 25,         // -DI(5m) > 25
-                stock.minusDI5 > stock.adx5, // -DI(5m) > ADX(5m)
                 stock.plusDI5 < 15,          // +DI(5m) < 15
                 stock.ema3_5 < stock.ema5_5, // EMA3(5m) < EMA5(5m)
                 stock.rsi5 < 40,             // RSI(5m) < 40
-                stock.macd1 < stock.signal1, // MACD(1m) < Signal(1m)
                 stock.adx1 > 20,             // ADX(1m) > 20
                 stock.minusDI1 > 25,         // -DI(1m) > 25
-                stock.plusDI1 < 15,          // +DI(1m) < 15
-                stock.rsi1 < 35,             // RSI(1m) < 35
-                stock.ema3_1 < stock.ema5_1  // EMA3(1m) < EMA5(1m)
+                stock.rsi1 < 35              // RSI(1m) < 35
             ];
             
             
@@ -3623,17 +3595,41 @@ router.post('/low-price-scanners', async (req, res) => {
         console.log(`🎯 SCAN RESULTS: ${buyStocks.length} buy signals, ${sellStocks.length} sell signals`);
         console.log(`📊 ORDER EXECUTION: Attempted=${conditionStats.orders_attempted}, Success=${conditionStats.orders_successful}, Failed=${conditionStats.orders_failed}`);
 
+        // Build separate crossover/crossdown sets from low-price universe, then intersect with buy/sell signals.
+        const stockKey = (row) => String(row?.symbol || '').trim().toUpperCase();
+        const crossoverFromLowPrice = enrichedStocks.filter(stock => Number(stock.ema3_1 || 0) > Number(stock.ema5_1 || 0));
+        const crossdownFromLowPrice = enrichedStocks.filter(stock => Number(stock.ema3_1 || 0) < Number(stock.ema5_1 || 0));
+
+        separateCrossoverStocks.push(...crossoverFromLowPrice);
+        separateCrossdownStocks.push(...crossdownFromLowPrice);
+
+        const crossoverKeys = new Set(separateCrossoverStocks.map(stockKey));
+        const crossdownKeys = new Set(separateCrossdownStocks.map(stockKey));
+
+        const intersectedBuyStocks = buyStocks.filter((stock) => crossoverKeys.has(stockKey(stock)));
+        const intersectedSellStocks = sellStocks.filter((stock) => crossdownKeys.has(stockKey(stock)));
+        const buyWithoutIntersectionStocks = buyStocks.filter((stock) => !crossoverKeys.has(stockKey(stock)));
+        const sellWithoutIntersectionStocks = sellStocks.filter((stock) => !crossdownKeys.has(stockKey(stock)));
+
+        pureCrossoverStocks.push(...intersectedBuyStocks);
+        pureCrossdownStocks.push(...intersectedSellStocks);
+
+        const finalBuyStocks = intersectedBuyStocks;
+        const finalSellStocks = intersectedSellStocks;
+
+        console.log(`🔗 INTERSECTION: buy ${intersectedBuyStocks.length}/${buyStocks.length}, sell ${intersectedSellStocks.length}/${sellStocks.length}`);
+
         // NO AUTO-SUBSCRIPTION - Direct execution mode
         // Store buy/sell stocks globally for API access (if needed)
-        currentBuyStocks = buyStocks;
-        currentSellStocks = sellStocks;
+        currentBuyStocks = finalBuyStocks;
+        currentSellStocks = finalSellStocks;
         lastScanTimestamp = new Date().toISOString();
         
         // ✅ RE-ENABLED: Auto-subscription to manage unsubscribing old symbols
-        console.log(`🔄 Managing subscriptions for ${buyStocks.length} buy + ${sellStocks.length} sell signals...`);
+        console.log(`🔄 Managing subscriptions for ${finalBuyStocks.length} buy + ${finalSellStocks.length} sell signals...`);
         
         // ✅ FORCE CLEANUP: If no signals, ensure complete cleanup
-        if (buyStocks.length === 0 && sellStocks.length === 0 && currentlySubscribed.size > 0) {
+        if (finalBuyStocks.length === 0 && finalSellStocks.length === 0 && currentlySubscribed.size > 0) {
             console.log('🧹 FORCE CLEANUP: No signals detected, clearing all subscriptions immediately');
             console.log(`   - Current subscriptions: ${currentlySubscribed.size}`);
             console.log(`   - Ticker exists: ${globalTicker ? 'YES' : 'NO'}`);
@@ -3659,10 +3655,10 @@ router.post('/low-price-scanners', async (req, res) => {
                 console.error('❌ Error in force cleanup:', error);
             }
         } else {
-            console.log(`🔍 No force cleanup needed: buyStocks=${buyStocks.length}, sellStocks=${sellStocks.length}, subscriptions=${currentlySubscribed.size}`);
+            console.log(`🔍 No force cleanup needed: buyStocks=${finalBuyStocks.length}, sellStocks=${finalSellStocks.length}, subscriptions=${currentlySubscribed.size}`);
         }
         
-        await autoSubscribeToResults(buyStocks, sellStocks, req.body.access_token);
+        await autoSubscribeToResults(finalBuyStocks, finalSellStocks, req.body.access_token);
         
         console.log(`✅ SCAN COMPLETE - Direct execution with subscription management`);
 
@@ -3684,7 +3680,7 @@ router.post('/low-price-scanners', async (req, res) => {
         }
 
         // Prepare simplified data for UI tables
-        const buyTableData = buyStocks.map(stock => ({
+        const buyTableData = finalBuyStocks.map(stock => ({
             symbol: stock.symbol,
             ltp: stock.ltp,
             ema3_5: stock.ema3_5,
@@ -3694,7 +3690,7 @@ router.post('/low-price-scanners', async (req, res) => {
             token: symbolMappings.symbolMappings[stock.symbol] || null
         }));
         
-        const sellTableData = sellStocks.map(stock => ({
+        const sellTableData = finalSellStocks.map(stock => ({
             symbol: stock.symbol,
             ltp: stock.ltp,
             orderExecuted: stock.orderExecuted || false,
@@ -3722,7 +3718,7 @@ router.post('/low-price-scanners', async (req, res) => {
             symbol: stock.symbol,
             ltp: stock.ltp,
             ema3_1: stock.ema3_1,
-            ema3_5: stock.ema3_5,
+            ema5_1: stock.ema5_1,
             token: symbolMappings.symbolMappings[stock.symbol] || null
         }));
 
@@ -3730,7 +3726,25 @@ router.post('/low-price-scanners', async (req, res) => {
             symbol: stock.symbol,
             ltp: stock.ltp,
             ema3_1: stock.ema3_1,
+            ema5_1: stock.ema5_1,
+            token: symbolMappings.symbolMappings[stock.symbol] || null
+        }));
+
+        const buyWithoutIntersectionTableData = buyWithoutIntersectionStocks.map(stock => ({
+            symbol: stock.symbol,
+            ltp: stock.ltp,
             ema3_5: stock.ema3_5,
+            triggerMet: stock.ltp < stock.ema3_5,
+            orderExecuted: stock.orderExecuted || false,
+            orderError: stock.orderError || null,
+            token: symbolMappings.symbolMappings[stock.symbol] || null
+        }));
+
+        const sellWithoutIntersectionTableData = sellWithoutIntersectionStocks.map(stock => ({
+            symbol: stock.symbol,
+            ltp: stock.ltp,
+            orderExecuted: stock.orderExecuted || false,
+            orderError: stock.orderError || null,
             token: symbolMappings.symbolMappings[stock.symbol] || null
         }));
 
@@ -3754,20 +3768,20 @@ router.post('/low-price-scanners', async (req, res) => {
             crossdownTable: crossdownTableData,
             separateCrossoverTable: separateCrossoverTableData,
             separateCrossdownTable: separateCrossdownTableData,
-            buyWithoutIntersectionTable: [],
-            sellWithoutIntersectionTable: [],
+            buyWithoutIntersectionTable: buyWithoutIntersectionTableData,
+            sellWithoutIntersectionTable: sellWithoutIntersectionTableData,
             
             // Legacy data (for compatibility)
             totalStocks: enrichedStocks.length,
-            buyStocks: buyStocks,
-            sellStocks: sellStocks,
+            buyStocks: finalBuyStocks,
+            sellStocks: finalSellStocks,
             crossoverStocks: pureCrossoverStocks,
             crossdownStocks: pureCrossdownStocks,
             separateCrossoverStocks: separateCrossoverStocks,
             separateCrossdownStocks: separateCrossdownStocks,
             allStocks: enrichedStocks,
             
-            message: `Found ${buyStocks.length} buy and ${sellStocks.length} sell signals from ${enrichedStocks.length} low-price stocks. Crossover/crossdown scans are available via separate routes. ${conditionStats.orders_attempted} orders attempted, ${conditionStats.orders_successful} successful.`,
+            message: `Found ${buyStocks.length} buy and ${sellStocks.length} sell signals from ${enrichedStocks.length} low-price stocks. Intersected with crossover/crossdown: buy=${intersectedBuyStocks.length}, sell=${intersectedSellStocks.length}. ${conditionStats.orders_attempted} orders attempted, ${conditionStats.orders_successful} successful.`,
             
             // ORDER EXECUTION STATUS (replaces tick execution)
             orderExecution: {

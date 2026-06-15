@@ -134,32 +134,24 @@ function App() {
     macdAboveZero5m: true,
     adxAbove25_5m: true,
     plusDiAbove25_5m: true,
-    plusDiAboveAdx_5m: true,
     minusDiBelow15_5m: true,
     ema3AboveEma5_5m: true,
     rsiAbove60_5m: true,
-    macdAboveSignal1m: true,
     adxAbove25_1m: true,
     plusDiAbove25_1m: true,
-    minusDiBelow15_1m: true,
-    rsiAbove65_1m: true,
-    ema3AboveEma5_1m: true
+    rsiAbove65_1m: true
   }));
   const [sellFilterChecks, setSellFilterChecks] = useState(() => ({
     macdBelowSignal5mSell: true,
     macdBelowZero5mSell: true,
     adxAbove25_5mSell: true,
     minusDiAbove25_5mSell: true,
-    minusDiAboveAdx_5mSell: true,
     plusDiBelow15_5mSell: true,
     ema3BelowEma5_5mSell: true,
     rsiBelow40_5mSell: true,
-    macdBelowSignal1mSell: true,
     adxAbove25_1mSell: true,
     minusDiAbove25_1mSell: true,
-    plusDiBelow15_1mSell: true,
-    rsiBelow35_1mSell: true,
-    ema3BelowEma5_1mSell: true
+    rsiBelow35_1mSell: true
   }));
 
   const handleBuyChecksChange = useCallback((nextChecks) => {
@@ -1032,8 +1024,8 @@ function App() {
   // Scanner data fetch function
   const fetchScannerData = useCallback(async () => {
     try {
-      // STEP 1: Call main low-price scan + separate crossover/crossdown routes in parallel
-      console.log('🔍 Step 1: Fetching low price scanner data + separate crossover/crossdown scans...');
+      // STEP 1: Call main low-price scan (backend already applies intersection)
+      console.log('🔍 Step 1: Fetching low price scanner data (backend intersection source of truth)...');
 
       const scannerRequestBody = {
         autoTrade: autoTradingEnabled,
@@ -1045,52 +1037,26 @@ function App() {
         }
       };
 
-      // Crossover/crossdown routes do not consume UI filters, so keep payload lean.
-      const crossSignalRequestBody = {
-        access_token: scannerRequestBody.access_token
-      };
-
-      const [lowPriceResponse, crossoverResponse, crossdownResponse] = await Promise.all([
-        fetch('http://localhost:5000/api/low-price-scanners', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(scannerRequestBody)
-        }),
-        fetch('http://localhost:5000/api/stocks-crossover-vwma9', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(crossSignalRequestBody)
-        }),
-        fetch('http://localhost:5000/api/stocks-crossdown-vwma9', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(crossSignalRequestBody)
-        })
-      ]);
+      const lowPriceResponse = await fetch('http://localhost:5000/api/low-price-scanners', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(scannerRequestBody)
+      });
 
       if (lowPriceResponse.ok) {
-        const [lowPriceData, crossoverData, crossdownData] = await Promise.all([
-          lowPriceResponse.json(),
-          crossoverResponse.ok ? crossoverResponse.json() : Promise.resolve({ crossoverStocks: [] }),
-          crossdownResponse.ok ? crossdownResponse.json() : Promise.resolve({ crossdownStocks: [] })
-        ]);
+        const lowPriceData = await lowPriceResponse.json();
         
         console.log('📊 Low price scanner response received:');
         console.log('   - Full data:', lowPriceData);
         
-        // Use separate route outputs for crossover/crossdown tables
-        const rawCrossoverBuyStocks = crossoverData.crossoverStocks || [];
-        const rawCrossbelowSellStocks = crossdownData.crossdownStocks || [];
+        const rawCrossoverBuyStocks = lowPriceData.crossoverTable || lowPriceData.crossoverStocks || [];
+        const rawCrossbelowSellStocks = lowPriceData.crossdownTable || lowPriceData.crossdownStocks || [];
 
-        console.log('📊 Separate crossover route results:');
-        console.log(`   - Crossover(EMA3|1 over EMA3|5) stocks: ${rawCrossoverBuyStocks.length}`);
-        console.log(`   - Crossdown(EMA3|1 under EMA3|5) stocks: ${rawCrossbelowSellStocks.length}`);
+        console.log('📊 Backend crossover/crossdown (from low-price-scanners response):');
+        console.log(`   - Crossover(EMA3|1 over EMA5|1) stocks: ${rawCrossoverBuyStocks.length}`);
+        console.log(`   - Crossdown(EMA3|1 under EMA5|1) stocks: ${rawCrossbelowSellStocks.length}`);
 
         // Check if low price scanning was blocked due to timing constraints
         if (lowPriceData.success === false && lowPriceData.reason === 'last_two_minutes_block') {
@@ -1176,14 +1142,14 @@ function App() {
         
         const lowPriceSellStocks = formattedSellStocks;
         
-        // Map crossover stocks to display format (from separate EMA3 routes)
+        // Map crossover stocks to display format (from separate EMA3/EMA5 routes)
         const mappedCrossoverStocks = rawCrossoverBuyStocks.map(stock => ({
           symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
           ltp: stock.ltp || stock.d?.[0] || 0,
           volume: stock.volume || stock.d?.[1] || 0,
           change_percent: stock.change_percent || 0,
           ema3_1: stock.ema3_1 || stock.d?.[1] || 0, // EMA3|1
-          ema3_5: stock.ema3_5 || stock.d?.[2] || 0, // EMA3|5
+          ema5_1: stock.ema5_1 || stock.d?.[2] || 0, // EMA5|1
           rsi1: stock.rsi1 || stock.d?.[3] || 0, // RSI|1
           rsi5: stock.rsi5 || stock.d?.[4] || 0, // RSI|5
           token: stock.token || null,
@@ -1196,7 +1162,7 @@ function App() {
           volume: stock.volume || stock.d?.[1] || 0,
           change_percent: stock.change_percent || 0,
           ema3_1: stock.ema3_1 || stock.d?.[1] || 0, // EMA3|1
-          ema3_5: stock.ema3_5 || stock.d?.[2] || 0, // EMA3|5
+          ema5_1: stock.ema5_1 || stock.d?.[2] || 0, // EMA5|1
           rsi1: stock.rsi1 || stock.d?.[3] || 0, // RSI|1
           rsi5: stock.rsi5 || stock.d?.[4] || 0, // RSI|5
           token: stock.token || null,
@@ -1206,13 +1172,9 @@ function App() {
         setCrossoverBuyStocks(mappedCrossoverStocks);
         setCrossbelowSellStocks(mappedCrossdownStocks);
 
-        // Build intersection sets: low-price buy ∩ crossover, low-price sell ∩ crossdown.
-        const toKey = (row) => String(row?.token || row?.instrument_token || row?.symbol || '').toUpperCase();
-        const crossoverKeys = new Set(mappedCrossoverStocks.map(toKey).filter(Boolean));
-        const crossdownKeys = new Set(mappedCrossdownStocks.map(toKey).filter(Boolean));
-
-        const intersectedBuyStocks = lowPriceBuyStocks.filter((row) => crossoverKeys.has(toKey(row)));
-        const intersectedSellStocks = lowPriceSellStocks.filter((row) => crossdownKeys.has(toKey(row)));
+        // Backend is the single source of truth for intersection.
+        const intersectedBuyStocks = lowPriceBuyStocks;
+        const intersectedSellStocks = lowPriceSellStocks;
 
         setLowPriceSourceStocks({ buy: lowPriceBuyStocks, sell: lowPriceSellStocks });
         setIntersectedSourceStocks({ buy: intersectedBuyStocks, sell: intersectedSellStocks });
@@ -1239,9 +1201,12 @@ function App() {
         }
         
         // Extract intersection summary for display
+        const lowPriceBuyCount = intersectedBuyStocks.length + (lowPriceData.buyWithoutIntersectionTable?.length || 0);
+        const lowPriceSellCount = intersectedSellStocks.length + (lowPriceData.sellWithoutIntersectionTable?.length || 0);
+
         const intersectionData = {
-          lowPriceBuy: lowPriceBuyStocks.length,
-          lowPriceSell: lowPriceSellStocks.length,
+          lowPriceBuy: lowPriceBuyCount,
+          lowPriceSell: lowPriceSellCount,
           crossoverBuy: rawCrossoverBuyStocks.length,
           crossbelowSell: rawCrossbelowSellStocks.length,
           intersectedBuy: intersectedBuyStocks.length,
@@ -1938,16 +1903,12 @@ function App() {
                       <li>MACD(5m) &gt; 0</li>
                       <li>ADX(5m) &gt; 20</li>
                       <li>+DI(5m) &gt; 25</li>
-                      <li>+DI(5m) &gt; ADX(5m)</li>
                       <li>-DI(5m) &lt; 15</li>
                       <li>EMA3(5m) &gt; EMA5(5m)</li>
                       <li>RSI(5m) &gt; 60</li>
-                      <li>MACD(1m) &gt; Signal(1m)</li>
                       <li>ADX(1m) &gt; 20</li>
                       <li>+DI(1m) &gt; 25</li>
-                      <li>-DI(1m) &lt; 15</li>
                       <li>RSI(1m) &gt; 65</li>
-                      <li>EMA3(1m) &gt; EMA5(1m)</li>
                     </ol>
                   </div>
 
@@ -1960,16 +1921,12 @@ function App() {
                       <li>MACD(5m) &lt; 0</li>
                       <li>ADX(5m) &gt; 20</li>
                       <li>-DI(5m) &gt; 25</li>
-                      <li>-DI(5m) &gt; ADX(5m)</li>
                       <li>+DI(5m) &lt; 15</li>
                       <li>EMA3(5m) &lt; EMA5(5m)</li>
                       <li>RSI(5m) &lt; 40</li>
-                      <li>MACD(1m) &lt; Signal(1m)</li>
                       <li>ADX(1m) &gt; 20</li>
                       <li>-DI(1m) &gt; 25</li>
-                      <li>+DI(1m) &lt; 15</li>
                       <li>RSI(1m) &lt; 35</li>
-                      <li>EMA3(1m) &lt; EMA5(1m)</li>
                     </ol>
                   </div>
                 </div>
@@ -2020,12 +1977,12 @@ function App() {
 
             <div style={{ marginTop: '12px', border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
               <div style={{ padding: '10px', fontWeight: 800, color: '#e2e8f0', background: 'rgba(30, 41, 59, 0.75)' }}>
-                EMA3(1m) vs EMA3(5m) Crosses
+                EMA3(1m) vs EMA5(1m) Crosses
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', padding: '10px' }}>
                 <div style={{ border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
                   <div style={{ padding: '10px', fontWeight: 800, color: '#86efac', background: 'rgba(20, 83, 45, 0.22)' }}>
-                    Crossover (EMA3(1m) crosses above EMA3(5m))
+                    Crossover (EMA3(1m) crosses above EMA5(1m))
                   </div>
                   <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
@@ -2034,7 +1991,7 @@ function App() {
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Symbol</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>LTP</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA3(1m)</th>
-                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA3(5m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA5(1m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(1m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(5m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Chart</th>
@@ -2051,7 +2008,7 @@ function App() {
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{row.symbol || 'N/A'}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ltp || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema3_1 || 0).toFixed(2)}</td>
-                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema3_5 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema5_1 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi1 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi5 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{renderChartCell(row, 'sub-crossover')}</td>
@@ -2065,7 +2022,7 @@ function App() {
 
                 <div style={{ border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
                   <div style={{ padding: '10px', fontWeight: 800, color: '#fca5a5', background: 'rgba(127, 29, 29, 0.22)' }}>
-                    Crossdown (EMA3(1m) crosses below EMA3(5m))
+                    Crossdown (EMA3(1m) crosses below EMA5(1m))
                   </div>
                   <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
@@ -2074,7 +2031,7 @@ function App() {
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Symbol</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>LTP</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA3(1m)</th>
-                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA3(5m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA5(1m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(1m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(5m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Chart</th>
@@ -2091,7 +2048,7 @@ function App() {
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{row.symbol || 'N/A'}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ltp || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema3_1 || 0).toFixed(2)}</td>
-                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema3_5 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema5_1 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi1 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi5 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{renderChartCell(row, 'sub-crossdown')}</td>
