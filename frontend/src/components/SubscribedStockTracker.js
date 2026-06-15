@@ -1418,7 +1418,7 @@ const SubscribedStockTracker = ({
             })
             .filter(Boolean);
 
-          console.log('🔍 LOW-PRICE+EMA(side: ema3_1 vs ema5_1)+IMPACT PASSED rows:', passedRows.length, {
+          console.log('🔍 LOW-PRICE+EMA(side: (ema3_1 vs ema5_5) OR (ema5_1 vs ema5_5))+IMPACT PASSED rows:', passedRows.length, {
             buySignalRows: buySignalBySymbol.size,
             sellSignalRows: sellSignalBySymbol.size
           });
@@ -1437,8 +1437,10 @@ const SubscribedStockTracker = ({
                 fontFamily: '"Segoe UI", "Roboto", "Inter", system-ui, -apple-system, sans-serif',
                 lineHeight: '1.6'
               }}>
-                📡 No stocks passed low-price + EMA check (BUY: EMA3(1m) &gt; EMA5(1m), SELL: EMA3(1m) &lt; EMA5(1m)) + impact conditions yet.<br/>
-                Waiting for EMA-check rows and impact thresholds to pass.
+                📡 No stocks passed low-price + EMA check yet.<br/>
+                BUY rule: EMA3(1m) crosses above EMA5(5m) OR EMA5(1m) crosses above EMA5(5m).<br/>
+                SELL rule: EMA3(1m) crosses below EMA5(5m) OR EMA5(1m) crosses below EMA5(5m).<br/>
+                Waiting for these cross conditions and impact thresholds to pass.
               </div>
             );
           }
@@ -1476,7 +1478,7 @@ const SubscribedStockTracker = ({
                   fontFamily: 'system-ui, -apple-system, sans-serif',
                   letterSpacing: '0.025em'
                 }}>
-                  Market Scanner [Low-Price + EMA Check + Impact Passed: {passedRows.length}]
+                  Market Scanner [Low-Price + EMA Cross Check (1m vs 5m OR) + Impact Passed: {passedRows.length}]
                 </div>
                 
                 {passedRows.map((row, index) => {
