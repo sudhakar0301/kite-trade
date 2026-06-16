@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 
 const baseCard = {
   background: 'rgba(15, 23, 42, 0.68)',
@@ -79,8 +79,13 @@ const buyFilterDefs = [
   },
   {
     id: 'rsiAbove65_1m',
-    label: 'RSI(1m) > 65',
-    test: row => Number(row.rsi1 || row.rsi_1m) > 65
+    label: 'RSI(1m) > 60',
+    test: row => Number(row.rsi1 || row.rsi_1m) > 60
+  },
+  {
+    id: 'ema9BelowEma3_5m',
+    label: 'EMA9(1m) < EMA3(5m)',
+    test: row => Number(row.ema9_1 || row.ema9_1m) < Number(row.ema3_5 || row.ema3_5m)
   }
 ];
 
@@ -132,8 +137,13 @@ const sellFilterDefs = [
   },
   {
     id: 'rsiBelow35_1mSell',
-    label: 'RSI(1m) < 35',
-    test: row => Number(row.rsi1 || row.rsi_1m) < 35
+    label: 'RSI(1m) < 40',
+    test: row => Number(row.rsi1 || row.rsi_1m) < 40
+  },
+  {
+    id: 'ema9AboveEma3_5mSell',
+    label: 'EMA9(1m) > EMA3(5m)',
+    test: row => Number(row.ema9_1 || row.ema9_1m) > Number(row.ema3_5 || row.ema3_5m)
   }
 ];
 
@@ -150,6 +160,9 @@ function normalizeRows(rows) {
     ema5_15: Number(row.ema5_15 || row.ema5_15m || 0),
     ema5_5: Number(row.ema5_5 || row.ema5_5m || 0),
     ema5_1: Number(row.ema5_1 || row.ema5_1m || 0),
+    ema9_15: Number(row.ema9_15 || row.ema9_15m || 0),
+    ema9_5: Number(row.ema9_5 || row.ema9_5m || 0),
+    ema9_1: Number(row.ema9_1 || row.ema9_1m || 0),
     vwap1: Number(row.vwap1 || row.vwap_1m || row.vwap_1 || 0),
     ubb_5: Number(row.ubb_5 || row.ubb5 || row.bbUpper5 || 0),
     lbb_5: Number(row.lbb_5 || row.lbb5 || row.bbLower5 || 0),
@@ -173,6 +186,22 @@ function normalizeRows(rows) {
   }));
 }
 
+function sortRows(rows, option) {
+  const list = Array.isArray(rows) ? [...rows] : [];
+
+  switch (option) {
+    case 'ltpDesc':
+      return list.sort((a, b) => Number(b?.ltp || 0) - Number(a?.ltp || 0));
+    case 'ltpAsc':
+      return list.sort((a, b) => Number(a?.ltp || 0) - Number(b?.ltp || 0));
+    case 'symbolDesc':
+      return list.sort((a, b) => String(b?.symbol || '').localeCompare(String(a?.symbol || '')));
+    case 'symbolAsc':
+    default:
+      return list.sort((a, b) => String(a?.symbol || '').localeCompare(String(b?.symbol || '')));
+  }
+}
+
 export default function SignalFilterPlayground({
   buyData = [],
   sellData = [],
@@ -183,10 +212,13 @@ export default function SignalFilterPlayground({
   buyChecks: buyChecksProp,
   sellChecks: sellChecksProp,
   onBuyChecksChange,
-  onSellChecksChange
+  onSellChecksChange,
+  onFilteredBuyChange,
+  onFilteredSellChange
 }) {
   const [buyChecksState, setBuyChecksState] = useState({});
   const [sellChecksState, setSellChecksState] = useState({});
+  const [tableSortOption, setTableSortOption] = useState('symbolAsc');
   const buyChecks = buyChecksProp || buyChecksState;
   const sellChecks = sellChecksProp || sellChecksState;
   const setBuyChecks = onBuyChecksChange || setBuyChecksState;
@@ -234,6 +266,26 @@ export default function SignalFilterPlayground({
     return normalizedSell.filter(row => active.every(f => f.test(row)));
   }, [normalizedSell, sellChecks]);
 
+  const sortedFilteredBuy = useMemo(() => {
+    return sortRows(filteredBuy, tableSortOption);
+  }, [filteredBuy, tableSortOption]);
+
+  const sortedFilteredSell = useMemo(() => {
+    return sortRows(filteredSell, tableSortOption);
+  }, [filteredSell, tableSortOption]);
+
+  useEffect(() => {
+    if (onFilteredBuyChange) {
+      onFilteredBuyChange(filteredBuy);
+    }
+  }, [filteredBuy, onFilteredBuyChange]);
+
+  useEffect(() => {
+    if (onFilteredSellChange) {
+      onFilteredSellChange(filteredSell);
+    }
+  }, [filteredSell, onFilteredSellChange]);
+
   if (!showFilters && !showTables) {
     return null;
   }
@@ -244,207 +296,242 @@ export default function SignalFilterPlayground({
         {title}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-        <div style={baseCard}>
-          <div style={{ color: '#86efac', fontWeight: 800, marginBottom: '10px', fontSize: '15px' }}>
-            Buy Filters
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '10px' }}>
+        <label style={{ color: '#cbd5e1', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          Sort UI Filtered Tables
+          <select
+            value={tableSortOption}
+            onChange={(e) => setTableSortOption(e.target.value)}
+            style={{
+              background: 'rgba(15, 23, 42, 0.9)',
+              border: '1px solid rgba(148, 163, 184, 0.45)',
+              color: '#e2e8f0',
+              borderRadius: '6px',
+              padding: '4px 8px',
+              fontSize: '12px'
+            }}
+          >
+            <option value="symbolAsc">Symbol A-Z</option>
+            <option value="symbolDesc">Symbol Z-A</option>
+            <option value="ltpDesc">LTP High-Low</option>
+            <option value="ltpAsc">LTP Low-High</option>
+          </select>
+        </label>
+      </div>
+
+      <div style={{ overflowX: 'auto' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(280px, 1fr))', gap: '12px', minWidth: '1120px' }}>
+          <div style={baseCard}>
+            <div style={{ color: '#86efac', fontWeight: 800, marginBottom: '10px', fontSize: '15px' }}>
+              Buy Filters
+            </div>
+            {showFilters && (
+              <>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={selectAllBuyFilters}
+                    style={{
+                      background: 'rgba(16, 185, 129, 0.2)',
+                      border: '1px solid rgba(16, 185, 129, 0.45)',
+                      color: '#a7f3d0',
+                      borderRadius: '6px',
+                      padding: '4px 10px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearAllBuyFilters}
+                    style={{
+                      background: 'rgba(239, 68, 68, 0.2)',
+                      border: '1px solid rgba(239, 68, 68, 0.45)',
+                      color: '#fecaca',
+                      borderRadius: '6px',
+                      padding: '4px 10px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Clear All
+                  </button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr', rowGap: '18px' }}>
+                  {buyFilterDefs.map(filter => (
+                    <label key={filter.id} style={{ color: '#cbd5e1', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px', lineHeight: '1.35' }}>
+                      <input
+                        type="checkbox"
+                        checked={!!buyChecks[filter.id]}
+                        onChange={e => setBuyChecks(prev => ({ ...prev, [filter.id]: e.target.checked }))}
+                        style={{ width: '16px', height: '16px' }}
+                      />
+                      {filter.label}
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
-          {showFilters && (
-            <>
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
-                <button
-                  type="button"
-                  onClick={selectAllBuyFilters}
-                  style={{
-                    background: 'rgba(16, 185, 129, 0.2)',
-                    border: '1px solid rgba(16, 185, 129, 0.45)',
-                    color: '#a7f3d0',
-                    borderRadius: '6px',
-                    padding: '4px 10px',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}
-                >
-                  Select All
-                </button>
-                <button
-                  type="button"
-                  onClick={clearAllBuyFilters}
-                  style={{
-                    background: 'rgba(239, 68, 68, 0.2)',
-                    border: '1px solid rgba(239, 68, 68, 0.45)',
-                    color: '#fecaca',
-                    borderRadius: '6px',
-                    padding: '4px 10px',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}
-                >
-                  Clear All
-                </button>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr', rowGap: '18px', marginBottom: showTables ? '10px' : 0 }}>
-                {buyFilterDefs.map(filter => (
-                  <label key={filter.id} style={{ color: '#cbd5e1', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px', lineHeight: '1.35' }}>
-                    <input
-                      type="checkbox"
-                      checked={!!buyChecks[filter.id]}
-                      onChange={e => setBuyChecks(prev => ({ ...prev, [filter.id]: e.target.checked }))}
-                      style={{ width: '16px', height: '16px' }}
-                    />
-                    {filter.label}
-                  </label>
-                ))}
-              </div>
-            </>
-          )}
 
-          {showTables && (
-            <>
-              <div style={{ color: '#a7f3d0', fontSize: '11px', marginBottom: '8px' }}>
-                Showing {filteredBuy.length} / {normalizedBuy.length} rows
-              </div>
+          <div style={baseCard}>
+            <div style={{ color: '#86efac', fontWeight: 800, marginBottom: '10px', fontSize: '15px' }}>
+              Buy Stocks
+            </div>
+            {showTables && (
+              <>
+                <div style={{ color: '#a7f3d0', fontSize: '11px', marginBottom: '8px' }}>
+                  Showing {filteredBuy.length} / {normalizedBuy.length} rows
+                </div>
 
-              <div style={{ maxHeight: '250px', overflow: 'auto', border: '1px solid rgba(148, 163, 184, 0.3)', borderRadius: '8px' }}>
-                <table style={tableStyle}>
-                  <thead>
-                    <tr>
-                      <th style={thStyle}>Symbol</th>
-                      <th style={thStyle}>Chart</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredBuy.map((row, idx) => (
-                      <tr key={`${row.symbol}-${idx}`}>
-                        <td style={tdStyle}>{row.symbol}</td>
-                        <td style={tdStyle}>
-                          <button
-                            type="button"
-                            onClick={() => onSymbolClick && onSymbolClick(row)}
-                            style={{
-                              background: 'rgba(59, 130, 246, 0.2)',
-                              border: '1px solid rgba(59, 130, 246, 0.5)',
-                              color: '#bfdbfe',
-                              borderRadius: '6px',
-                              padding: '4px 8px',
-                              fontSize: '11px',
-                              fontWeight: 700,
-                              cursor: 'pointer'
-                            }}
-                          >
-                            Open
-                          </button>
-                        </td>
+                <div style={{ maxHeight: '250px', overflow: 'auto', border: '1px solid rgba(148, 163, 184, 0.3)', borderRadius: '8px' }}>
+                  <table style={tableStyle}>
+                    <thead>
+                      <tr>
+                        <th style={thStyle}>Symbol</th>
+                        <th style={thStyle}>Chart</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
-        </div>
-
-        <div style={baseCard}>
-          <div style={{ color: '#fca5a5', fontWeight: 800, marginBottom: '10px', fontSize: '15px' }}>
-            Sell Filters
+                    </thead>
+                    <tbody>
+                      {sortedFilteredBuy.map((row, idx) => (
+                        <tr key={`${row.symbol}-${idx}`}>
+                          <td style={tdStyle}>{row.symbol}</td>
+                          <td style={tdStyle}>
+                            <button
+                              type="button"
+                              onClick={() => onSymbolClick && onSymbolClick(row)}
+                              style={{
+                                background: 'rgba(59, 130, 246, 0.2)',
+                                border: '1px solid rgba(59, 130, 246, 0.5)',
+                                color: '#bfdbfe',
+                                borderRadius: '6px',
+                                padding: '4px 8px',
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                cursor: 'pointer'
+                              }}
+                            >
+                              Open
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </div>
-          {showFilters && (
-            <>
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
-                <button
-                  type="button"
-                  onClick={selectAllSellFilters}
-                  style={{
-                    background: 'rgba(16, 185, 129, 0.2)',
-                    border: '1px solid rgba(16, 185, 129, 0.45)',
-                    color: '#a7f3d0',
-                    borderRadius: '6px',
-                    padding: '4px 10px',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}
-                >
-                  Select All
-                </button>
-                <button
-                  type="button"
-                  onClick={clearAllSellFilters}
-                  style={{
-                    background: 'rgba(239, 68, 68, 0.2)',
-                    border: '1px solid rgba(239, 68, 68, 0.45)',
-                    color: '#fecaca',
-                    borderRadius: '6px',
-                    padding: '4px 10px',
-                    fontSize: '11px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}
-                >
-                  Clear All
-                </button>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr', rowGap: '18px', marginBottom: showTables ? '10px' : 0 }}>
-                {sellFilterDefs.map(filter => (
-                  <label key={filter.id} style={{ color: '#cbd5e1', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px', lineHeight: '1.35' }}>
-                    <input
-                      type="checkbox"
-                      checked={!!sellChecks[filter.id]}
-                      onChange={e => setSellChecks(prev => ({ ...prev, [filter.id]: e.target.checked }))}
-                      style={{ width: '16px', height: '16px' }}
-                    />
-                    {filter.label}
-                  </label>
-                ))}
-              </div>
-            </>
-          )}
 
-          {showTables && (
-            <>
-              <div style={{ color: '#fecaca', fontSize: '11px', marginBottom: '8px' }}>
-                Showing {filteredSell.length} / {normalizedSell.length} rows
-              </div>
+          <div style={baseCard}>
+            <div style={{ color: '#fca5a5', fontWeight: 800, marginBottom: '10px', fontSize: '15px' }}>
+              Sell Filters
+            </div>
+            {showFilters && (
+              <>
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={selectAllSellFilters}
+                    style={{
+                      background: 'rgba(16, 185, 129, 0.2)',
+                      border: '1px solid rgba(16, 185, 129, 0.45)',
+                      color: '#a7f3d0',
+                      borderRadius: '6px',
+                      padding: '4px 10px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearAllSellFilters}
+                    style={{
+                      background: 'rgba(239, 68, 68, 0.2)',
+                      border: '1px solid rgba(239, 68, 68, 0.45)',
+                      color: '#fecaca',
+                      borderRadius: '6px',
+                      padding: '4px 10px',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    Clear All
+                  </button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr', rowGap: '18px' }}>
+                  {sellFilterDefs.map(filter => (
+                    <label key={filter.id} style={{ color: '#cbd5e1', fontSize: '14px', display: 'flex', alignItems: 'center', gap: '10px', lineHeight: '1.35' }}>
+                      <input
+                        type="checkbox"
+                        checked={!!sellChecks[filter.id]}
+                        onChange={e => setSellChecks(prev => ({ ...prev, [filter.id]: e.target.checked }))}
+                        style={{ width: '16px', height: '16px' }}
+                      />
+                      {filter.label}
+                    </label>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
 
-              <div style={{ maxHeight: '250px', overflow: 'auto', border: '1px solid rgba(148, 163, 184, 0.3)', borderRadius: '8px' }}>
-                <table style={tableStyle}>
-                  <thead>
-                    <tr>
-                      <th style={thStyle}>Symbol</th>
-                      <th style={thStyle}>Chart</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredSell.map((row, idx) => (
-                      <tr key={`${row.symbol}-${idx}`}>
-                        <td style={tdStyle}>{row.symbol}</td>
-                        <td style={tdStyle}>
-                          <button
-                            type="button"
-                            onClick={() => onSymbolClick && onSymbolClick(row)}
-                            style={{
-                              background: 'rgba(59, 130, 246, 0.2)',
-                              border: '1px solid rgba(59, 130, 246, 0.5)',
-                              color: '#bfdbfe',
-                              borderRadius: '6px',
-                              padding: '4px 8px',
-                              fontSize: '11px',
-                              fontWeight: 700,
-                              cursor: 'pointer'
-                            }}
-                          >
-                            Open
-                          </button>
-                        </td>
+          <div style={baseCard}>
+            <div style={{ color: '#fca5a5', fontWeight: 800, marginBottom: '10px', fontSize: '15px' }}>
+              Sell Stocks
+            </div>
+            {showTables && (
+              <>
+                <div style={{ color: '#fecaca', fontSize: '11px', marginBottom: '8px' }}>
+                  Showing {filteredSell.length} / {normalizedSell.length} rows
+                </div>
+
+                <div style={{ maxHeight: '250px', overflow: 'auto', border: '1px solid rgba(148, 163, 184, 0.3)', borderRadius: '8px' }}>
+                  <table style={tableStyle}>
+                    <thead>
+                      <tr>
+                        <th style={thStyle}>Symbol</th>
+                        <th style={thStyle}>Chart</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
+                    </thead>
+                    <tbody>
+                      {sortedFilteredSell.map((row, idx) => (
+                        <tr key={`${row.symbol}-${idx}`}>
+                          <td style={tdStyle}>{row.symbol}</td>
+                          <td style={tdStyle}>
+                            <button
+                              type="button"
+                              onClick={() => onSymbolClick && onSymbolClick(row)}
+                              style={{
+                                background: 'rgba(59, 130, 246, 0.2)',
+                                border: '1px solid rgba(59, 130, 246, 0.5)',
+                                color: '#bfdbfe',
+                                borderRadius: '6px',
+                                padding: '4px 8px',
+                                fontSize: '11px',
+                                fontWeight: 700,
+                                cursor: 'pointer'
+                              }}
+                            >
+                              Open
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -1365,28 +1365,22 @@ const SubscribedStockTracker = ({
             ])
           );
 
-          const passedRows = subscribedStocks
+          const tableRows = subscribedStocks
             .map((symbol) => {
               const symbolKey = extractSymbolName(symbol);
               const symbolData = tickData?.[symbolKey];
               const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-              if (!latestTick) return null;
-
-              const scanType = latestTick?.scan_type;
+              const scanType = latestTick?.scan_type || 'PENDING';
               const side = scanType === 'BUY_SCAN' ? 'buy' : (scanType === 'SELL_SCAN' ? 'sell' : null);
-              if (!side) return null;
 
               const normalizedSymbolKey = normalizeSymbolKey(symbol);
 
               const signalRow = side === 'buy'
                 ? buySignalBySymbol.get(normalizedSymbolKey)
                 : sellSignalBySymbol.get(normalizedSymbolKey);
-              if (!signalRow) return null;
-
-              const ema3_1 = Number(signalRow?.ema3_1 || signalRow?.ema3_1m || 0);
-              const ema5_1 = Number(signalRow?.ema5_1 || signalRow?.ema5_1m || 0);
-              const emaPass = side === 'buy' ? (ema3_1 > ema5_1) : (ema3_1 < ema5_1);
-              if (!emaPass) return null;
+              const macd1 = Number(signalRow?.macd1 || signalRow?.macd_1m || 0);
+              const signal1 = Number(signalRow?.signal1 || signalRow?.signal_1m || 0);
+              const macdPass = side ? (side === 'buy' ? (macd1 > signal1) : (macd1 < signal1)) : null;
 
               const rsi1 = Number(signalRow?.rsi1 || signalRow?.rsi_1m || 0);
 
@@ -1399,8 +1393,9 @@ const SubscribedStockTracker = ({
               const bidQty5 = Number((depth?.buy || []).slice(0, 5).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
               const askQty5 = Number((depth?.sell || []).slice(0, 5).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
 
-              const impactPass = Number.isFinite(levels) && Number.isFinite(slippage) && levels <= IMPACT_MAX_LEVELS && Math.abs(slippage) <= IMPACT_MAX_SLIPPAGE;
-              if (!impactPass) return null;
+              const impactPass = side
+                ? (Number.isFinite(levels) && Number.isFinite(slippage) && levels <= IMPACT_MAX_LEVELS && Math.abs(slippage) <= IMPACT_MAX_SLIPPAGE)
+                : null;
 
               return {
                 symbol,
@@ -1413,18 +1408,25 @@ const SubscribedStockTracker = ({
                 rsi1,
                 levels,
                 slippage,
-                timestamp: latestTick?.timestamp || null
+                timestamp: latestTick?.timestamp || null,
+                hasLiveTick: Boolean(latestTick),
+                macdPass,
+                impactPass
               };
             })
             .filter(Boolean);
 
-          console.log('🔍 LOW-PRICE+EMA(side: (ema3_1 vs ema5_5) OR (ema5_1 vs ema5_5))+IMPACT PASSED rows:', passedRows.length, {
+          const passedRows = tableRows.filter((row) => {
+            const isDirectional = row.scanType === 'BUY_SCAN' || row.scanType === 'SELL_SCAN';
+            return row.hasLiveTick && isDirectional && row.macdPass === true && row.impactPass === true;
+          });
+
+          console.log('🔍 SUBSCRIBED TABLE rows/passed:', { total: tableRows.length, passed: passedRows.length }, {
             buySignalRows: buySignalBySymbol.size,
             sellSignalRows: sellSignalBySymbol.size
           });
           
-          // Only show real subscribed stocks, no test data
-          if (passedRows.length === 0) {
+          if (tableRows.length === 0) {
             return (
               <div style={{
                 textAlign: 'center',
@@ -1437,10 +1439,8 @@ const SubscribedStockTracker = ({
                 fontFamily: '"Segoe UI", "Roboto", "Inter", system-ui, -apple-system, sans-serif',
                 lineHeight: '1.6'
               }}>
-                📡 No stocks passed low-price + EMA check yet.<br/>
-                BUY rule: EMA3(1m) crosses above EMA5(5m) OR EMA5(1m) crosses above EMA5(5m).<br/>
-                SELL rule: EMA3(1m) crosses below EMA5(5m) OR EMA5(1m) crosses below EMA5(5m).<br/>
-                Waiting for these cross conditions and impact thresholds to pass.
+                📡 No subscribed stocks yet.<br/>
+                Stocks will appear here as soon as backend subscriptions are updated.
               </div>
             );
           }
@@ -1478,10 +1478,10 @@ const SubscribedStockTracker = ({
                   fontFamily: 'system-ui, -apple-system, sans-serif',
                   letterSpacing: '0.025em'
                 }}>
-                  Market Scanner [Low-Price + EMA Cross Check (1m vs 5m OR) + Impact Passed: {passedRows.length}]
+                  Market Scanner [Subscribed: {tableRows.length} | Passed MACD(1m)/Signal(1m)+Impact: {passedRows.length}]
                 </div>
                 
-                {passedRows.map((row, index) => {
+                {tableRows.map((row, index) => {
                   const symbol = row.symbol;
                   const scanType = row.scanType;
                   const rowLtp = Number(row.ltp || 0);

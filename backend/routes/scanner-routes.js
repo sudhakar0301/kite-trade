@@ -157,224 +157,6 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
     }
 }
 
-    // LOW PRICE CROSSOVER ROUTE: (EMA3|1 crosses above EMA5|5) OR (EMA5|1 crosses above EMA5|5)
-    router.post('/stocks-crossover', async (req, res) => {
-        try {
-            console.log('🚀 Processing CROSSOVER scanner request ((EMA3|1 > EMA5|5 cross) OR (EMA5|1 > EMA5|5 cross))...');
-
-            // Keep global funds fresh to match low-price scanner behavior
-            await updateGlobalFunds(req.body.access_token);
-
-            const crossoverEma3Payload = buildLowPriceScannerPayload([
-                { "left": "EMA3|1", "operation": "crosses_above", "right": "EMA5|5" }
-            ]);
-            const crossoverEma5Payload = buildLowPriceScannerPayload([
-                { "left": "EMA5|1", "operation": "crosses_above", "right": "EMA5|5" }
-            ]);
-
-            const [scannerResultEma3, scannerResultEma5] = await Promise.all([
-                makeScannorCall(crossoverEma3Payload, 'low-price-crossover-ema3-vs-ema5_5-scan', req.body),
-                makeScannorCall(crossoverEma5Payload, 'low-price-crossover-ema5-vs-ema5_5-scan', req.body)
-            ]);
-            const allStocks = mergeStocksBySymbol(
-                extractTradingViewStocks(scannerResultEma3),
-                extractTradingViewStocks(scannerResultEma5)
-            );
-            const enrichedStocks = allStocks.map(enrichLowPriceStockData);
-
-            // Final guard condition in app code (OR)
-            const crossoverStocks = enrichedStocks.filter(stock =>
-                Number(stock.ema3_1 || 0) > Number(stock.ema5_5 || 0) ||
-                Number(stock.ema5_1 || 0) > Number(stock.ema5_5 || 0)
-            );
-
-            currentBuyStocks = crossoverStocks;
-            currentSellStocks = [];
-            lastScanTimestamp = new Date().toISOString();
-
-            res.json({
-                success: true,
-                timestamp: new Date().toISOString(),
-                scanType: 'low-price-crossover',
-                condition: '(ema3_1 crosses above ema5_5) OR (ema5_1 crosses above ema5_5)',
-                totalScanned: enrichedStocks.length,
-                crossoverCount: crossoverStocks.length,
-                crossoverStocks: crossoverStocks
-            });
-        } catch (error) {
-            console.error('❌ Error in stocks-crossover route:', error);
-            res.json({
-                success: false,
-                error: error.message,
-                timestamp: new Date().toISOString(),
-                crossoverStocks: []
-            });
-        }
-    });
-
-    // LOW PRICE CROSSDOWN ROUTE: (EMA3|1 crosses below EMA5|5) OR (EMA5|1 crosses below EMA5|5)
-    router.post('/stocks-crossdown', async (req, res) => {
-        try {
-            console.log('🚀 Processing CROSSDOWN scanner request ((EMA3|1 < EMA5|5 cross) OR (EMA5|1 < EMA5|5 cross))...');
-
-            // Keep global funds fresh to match low-price scanner behavior
-            await updateGlobalFunds(req.body.access_token);
-
-            const crossdownEma3Payload = buildLowPriceScannerPayload([
-                { "left": "EMA3|1", "operation": "crosses_below", "right": "EMA5|5" }
-            ]);
-            const crossdownEma5Payload = buildLowPriceScannerPayload([
-                { "left": "EMA5|1", "operation": "crosses_below", "right": "EMA5|5" }
-            ]);
-
-            const [scannerResultEma3, scannerResultEma5] = await Promise.all([
-                makeScannorCall(crossdownEma3Payload, 'low-price-crossdown-ema3-vs-ema5_5-scan', req.body),
-                makeScannorCall(crossdownEma5Payload, 'low-price-crossdown-ema5-vs-ema5_5-scan', req.body)
-            ]);
-            const allStocks = mergeStocksBySymbol(
-                extractTradingViewStocks(scannerResultEma3),
-                extractTradingViewStocks(scannerResultEma5)
-            );
-            const enrichedStocks = allStocks.map(enrichLowPriceStockData);
-
-            // Final guard condition in app code (OR)
-            const crossdownStocks = enrichedStocks.filter(stock =>
-                Number(stock.ema3_1 || 0) < Number(stock.ema5_5 || 0) ||
-                Number(stock.ema5_1 || 0) < Number(stock.ema5_5 || 0)
-            );
-
-            currentBuyStocks = [];
-            currentSellStocks = crossdownStocks;
-            lastScanTimestamp = new Date().toISOString();
-
-            res.json({
-                success: true,
-                timestamp: new Date().toISOString(),
-                scanType: 'low-price-crossdown',
-                condition: '(ema3_1 crosses below ema5_5) OR (ema5_1 crosses below ema5_5)',
-                totalScanned: enrichedStocks.length,
-                crossdownCount: crossdownStocks.length,
-                crossdownStocks: crossdownStocks
-            });
-        } catch (error) {
-            console.error('❌ Error in stocks-crossdown route:', error);
-            res.json({
-                success: false,
-                error: error.message,
-                timestamp: new Date().toISOString(),
-                crossdownStocks: []
-            });
-        }
-    });
-
-    // LOW PRICE CROSSOVER ROUTE: (EMA3|1 crosses above EMA5|5) OR (EMA5|1 crosses above EMA5|5)
-    router.post('/stocks-crossover-vwma9', async (req, res) => {
-        try {
-            console.log('🚀 Processing CROSSOVER scanner request ((EMA3|1 > EMA5|5 cross) OR (EMA5|1 > EMA5|5 cross))...');
-
-            // Keep global funds fresh to match low-price scanner behavior
-            await updateGlobalFunds(req.body.access_token);
-
-            const crossoverEma3Payload = buildCrossOnlyScannerPayload([
-                { "left": "EMA3|1", "operation": "crosses_above", "right": "EMA5|5" }
-            ]);
-            const crossoverEma5Payload = buildCrossOnlyScannerPayload([
-                { "left": "EMA5|1", "operation": "crosses_above", "right": "EMA5|5" }
-            ]);
-
-            const [scannerResultEma3, scannerResultEma5] = await Promise.all([
-                makeScannorCall(crossoverEma3Payload, 'low-price-crossover-vwma9-ema3-vs-ema5_5-scan', req.body),
-                makeScannorCall(crossoverEma5Payload, 'low-price-crossover-vwma9-ema5-vs-ema5_5-scan', req.body)
-            ]);
-            const allStocks = mergeStocksBySymbol(
-                extractTradingViewStocks(scannerResultEma3),
-                extractTradingViewStocks(scannerResultEma5)
-            );
-            const enrichedStocks = allStocks.map(enrichCrossOnlyStockData);
-
-            // Final guard condition in app code (OR)
-            const crossoverStocks = enrichedStocks.filter(stock =>
-                Number(stock.ema3_1 || 0) > Number(stock.ema5_5 || 0) ||
-                Number(stock.ema5_1 || 0) > Number(stock.ema5_5 || 0)
-            );
-
-            lastScanTimestamp = new Date().toISOString();
-
-            res.json({
-                success: true,
-                timestamp: new Date().toISOString(),
-                scanType: 'low-price-crossover-vwma9',
-                condition: '(ema3_1 crosses above ema5_5) OR (ema5_1 crosses above ema5_5)',
-                totalScanned: enrichedStocks.length,
-                crossoverCount: crossoverStocks.length,
-                crossoverStocks: crossoverStocks
-            });
-        } catch (error) {
-            console.error('❌ Error in stocks-crossover-vwma9 route:', error);
-            res.json({
-                success: false,
-                error: error.message,
-                timestamp: new Date().toISOString(),
-                crossoverStocks: []
-            });
-        }
-    });
-
-    // LOW PRICE CROSSDOWN ROUTE: (EMA3|1 crosses below EMA5|5) OR (EMA5|1 crosses below EMA5|5)
-    router.post('/stocks-crossdown-vwma9', async (req, res) => {
-        try {
-            console.log('🚀 Processing CROSSDOWN scanner request ((EMA3|1 < EMA5|5 cross) OR (EMA5|1 < EMA5|5 cross))...');
-
-            // Keep global funds fresh to match low-price scanner behavior
-            await updateGlobalFunds(req.body.access_token);
-
-            const crossdownEma3Payload = buildCrossOnlyScannerPayload([
-                { "left": "EMA3|1", "operation": "crosses_below", "right": "EMA5|5" }
-            ]);
-            const crossdownEma5Payload = buildCrossOnlyScannerPayload([
-                { "left": "EMA5|1", "operation": "crosses_below", "right": "EMA5|5" }
-            ]);
-
-            const [scannerResultEma3, scannerResultEma5] = await Promise.all([
-                makeScannorCall(crossdownEma3Payload, 'low-price-crossdown-vwma9-ema3-vs-ema5_5-scan', req.body),
-                makeScannorCall(crossdownEma5Payload, 'low-price-crossdown-vwma9-ema5-vs-ema5_5-scan', req.body)
-            ]);
-            const allStocks = mergeStocksBySymbol(
-                extractTradingViewStocks(scannerResultEma3),
-                extractTradingViewStocks(scannerResultEma5)
-            );
-            const enrichedStocks = allStocks.map(enrichCrossOnlyStockData);
-
-            // Final guard condition in app code (OR)
-            const crossdownStocks = enrichedStocks.filter(stock =>
-                Number(stock.ema3_1 || 0) < Number(stock.ema5_5 || 0) ||
-                Number(stock.ema5_1 || 0) < Number(stock.ema5_5 || 0)
-            );
-
-            lastScanTimestamp = new Date().toISOString();
-
-            res.json({
-                success: true,
-                timestamp: new Date().toISOString(),
-                scanType: 'low-price-crossdown-vwma9',
-                condition: '(ema3_1 crosses below ema5_5) OR (ema5_1 crosses below ema5_5)',
-                totalScanned: enrichedStocks.length,
-                crossdownCount: crossdownStocks.length,
-                crossdownStocks: crossdownStocks
-            });
-        } catch (error) {
-            console.error('❌ Error in stocks-crossdown-vwma9 route:', error);
-            res.json({
-                success: false,
-                error: error.message,
-                timestamp: new Date().toISOString(),
-                crossdownStocks: []
-            });
-        }
-    });
-
-
-
     // Shared scanner config/helpers reused by low-price and crossover/crossdown routes
     function getLowPriceScannerCommonSettings() {
         return {
@@ -3344,39 +3126,21 @@ router.post('/low-price-scanners', async (req, res) => {
 
         const crossScanPayloads = [
             {
-                id: 'crossover_ema3_1_vs_ema5_5',
+                id: 'crossover_macd1_vs_signal1',
                 direction: 'up',
-                left: 'EMA3|1',
-                right: 'EMA5|5',
+                left: 'MACD.macd|1',
+                right: 'MACD.signal|1',
                 payload: buildLowPriceScannerPayload([
-                    { "left": "EMA3|1", "operation": "crosses_above", "right": "EMA5|5" }
+                    { "left": "MACD.macd|1", "operation": "crosses_above", "right": "MACD.signal|1" }
                 ])
             },
             {
-                id: 'crossover_ema5_1_vs_ema5_5',
-                direction: 'up',
-                left: 'EMA5|1',
-                right: 'EMA5|5',
-                payload: buildLowPriceScannerPayload([
-                    { "left": "EMA5|1", "operation": "crosses_above", "right": "EMA5|5" }
-                ])
-            },
-            {
-                id: 'crossdown_ema3_1_vs_ema5_5',
+                id: 'crossdown_macd1_vs_signal1',
                 direction: 'down',
-                left: 'EMA3|1',
-                right: 'EMA5|5',
+                left: 'MACD.macd|1',
+                right: 'MACD.signal|1',
                 payload: buildLowPriceScannerPayload([
-                    { "left": "EMA3|1", "operation": "crosses_below", "right": "EMA5|5" }
-                ])
-            },
-            {
-                id: 'crossdown_ema5_1_vs_ema5_5',
-                direction: 'down',
-                left: 'EMA5|1',
-                right: 'EMA5|5',
-                payload: buildLowPriceScannerPayload([
-                    { "left": "EMA5|1", "operation": "crosses_below", "right": "EMA5|5" }
+                    { "left": "MACD.macd|1", "operation": "crosses_below", "right": "MACD.signal|1" }
                 ])
             }
         ];
@@ -3425,8 +3189,8 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Track condition pass counts
         let conditionStats = {
             total_stocks: 0,
-            buy_condition_passes: Array(10).fill(0),
-            sell_condition_passes: Array(10).fill(0),
+            buy_condition_passes: Array(11).fill(0),
+            sell_condition_passes: Array(11).fill(0),
             ema_1min_issues: [],
             orders_attempted: 0,
             orders_successful: 0,
@@ -3447,7 +3211,8 @@ router.post('/low-price-scanners', async (req, res) => {
             rsiAbove60_5m: [6],
             adxAbove25_1m: [7],
             plusDiAbove25_1m: [8],
-            rsiAbove65_1m: [9]
+            rsiAbove65_1m: [9],
+            ema9BelowEma3_5m: [10]
         };
 
         const sellFilterIdToConditionIndexes = {
@@ -3460,7 +3225,8 @@ router.post('/low-price-scanners', async (req, res) => {
             rsiBelow40_5mSell: [6],
             adxAbove25_1mSell: [7],
             minusDiAbove25_1mSell: [8],
-            rsiBelow35_1mSell: [9]
+            rsiBelow35_1mSell: [9],
+            ema9AboveEma3_5mSell: [10]
         };
 
         const buyFilterOrder = [
@@ -3473,7 +3239,8 @@ router.post('/low-price-scanners', async (req, res) => {
             'rsiAbove60_5m',
             'adxAbove25_1m',
             'plusDiAbove25_1m',
-            'rsiAbove65_1m'
+            'rsiAbove65_1m',
+            'ema9BelowEma3_5m'
         ];
 
         const sellFilterOrder = [
@@ -3486,7 +3253,8 @@ router.post('/low-price-scanners', async (req, res) => {
             'rsiBelow40_5mSell',
             'adxAbove25_1mSell',
             'minusDiAbove25_1mSell',
-            'rsiBelow35_1mSell'
+            'rsiBelow35_1mSell',
+            'ema9AboveEma3_5mSell'
         ];
 
         const hasCompactBuyIndexes = Array.isArray(req.body?.enabledBuyFilterIndexes);
@@ -3542,7 +3310,8 @@ router.post('/low-price-scanners', async (req, res) => {
             // 1m conditions:
             // 8) ADX > 20
             // 9) +DI > 25
-            // 10) RSI > 65
+            // 10) RSI > 60
+            // 11) EMA9(1m) < EMA3(5m)
             
             const buyConditions = [
                 stock.macd5 > stock.signal5, // MACD(5m) > Signal(5m)
@@ -3554,7 +3323,8 @@ router.post('/low-price-scanners', async (req, res) => {
                 stock.rsi5 > 60,             // RSI(5m) > 60
                 stock.adx1 > 20,             // ADX(1m) > 20
                 stock.plusDI1 > 25,          // +DI(1m) > 25
-                stock.rsi1 > 65              // RSI(1m) > 65
+                stock.rsi1 > 60,             // RSI(1m) > 60
+                stock.ema9_1 < stock.ema3_5  // EMA9(1m) < EMA3(5m)
             ];
 
             // Track condition pass counts
@@ -3588,7 +3358,8 @@ router.post('/low-price-scanners', async (req, res) => {
                 stock.rsi5 < 40,             // RSI(5m) < 40
                 stock.adx1 > 20,             // ADX(1m) > 20
                 stock.minusDI1 > 25,         // -DI(1m) > 25
-                stock.rsi1 < 35              // RSI(1m) < 35
+                stock.rsi1 < 40,             // RSI(1m) < 40
+                stock.ema9_1 > stock.ema3_5  // EMA9(1m) > EMA3(5m)
             ];
             
             
@@ -3706,7 +3477,7 @@ router.post('/low-price-scanners', async (req, res) => {
             'ADX (1m) > 25',
             '+DI (1m) > 25',
             '-DI (1m) < 15',
-            'RSI (1m) > 65',
+            'RSI (1m) > 60',
             'EMA3 (1m) > EMA5 (1m)'
         ];
        
@@ -3718,14 +3489,8 @@ router.post('/low-price-scanners', async (req, res) => {
 
         // Build separate crossover/crossdown sets from dedicated 4 cross scans, then intersect with buy/sell signals.
         const stockKey = (row) => String(row?.symbol || '').trim().toUpperCase();
-        const crossoverFromLowPrice = mergeStocksBySymbol(
-            crossScanResponses.find((item) => item.id === 'crossover_ema3_1_vs_ema5_5')?.stocks || [],
-            crossScanResponses.find((item) => item.id === 'crossover_ema5_1_vs_ema5_5')?.stocks || []
-        );
-        const crossdownFromLowPrice = mergeStocksBySymbol(
-            crossScanResponses.find((item) => item.id === 'crossdown_ema3_1_vs_ema5_5')?.stocks || [],
-            crossScanResponses.find((item) => item.id === 'crossdown_ema5_1_vs_ema5_5')?.stocks || []
-        );
+        const crossoverFromLowPrice = crossScanResponses.find((item) => item.id === 'crossover_macd1_vs_signal1')?.stocks || [];
+        const crossdownFromLowPrice = crossScanResponses.find((item) => item.id === 'crossdown_macd1_vs_signal1')?.stocks || [];
 
         separateCrossoverStocks.push(...crossoverFromLowPrice);
         separateCrossdownStocks.push(...crossdownFromLowPrice);
@@ -3828,38 +3593,36 @@ router.post('/low-price-scanners', async (req, res) => {
         const crossoverTableData = pureCrossoverStocks.map(stock => ({
             symbol: stock.symbol,
             ltp: stock.ltp,
-            ema3_1: stock.ema3_1,
-            ema5_1: stock.ema5_1,
-            ema5_5: stock.ema5_5,
-            vwma_9: stock.vwma_9,
+            macd1: stock.macd1,
+            signal1: stock.signal1,
+            rsi1: stock.rsi1,
+            rsi5: stock.rsi5,
             token: symbolMappings.symbolMappings[stock.symbol] || null
         }));
 
         const crossdownTableData = pureCrossdownStocks.map(stock => ({
             symbol: stock.symbol,
             ltp: stock.ltp,
-            ema3_1: stock.ema3_1,
-            ema5_1: stock.ema5_1,
-            ema5_5: stock.ema5_5,
-            vwma_9: stock.vwma_9,
+            macd1: stock.macd1,
+            signal1: stock.signal1,
+            rsi1: stock.rsi1,
+            rsi5: stock.rsi5,
             token: symbolMappings.symbolMappings[stock.symbol] || null
         }));
 
         const separateCrossoverTableData = separateCrossoverStocks.map(stock => ({
             symbol: stock.symbol,
             ltp: stock.ltp,
-            ema3_1: stock.ema3_1,
-            ema5_1: stock.ema5_1,
-            ema5_5: stock.ema5_5,
+            macd1: stock.macd1,
+            signal1: stock.signal1,
             token: symbolMappings.symbolMappings[stock.symbol] || null
         }));
 
         const separateCrossdownTableData = separateCrossdownStocks.map(stock => ({
             symbol: stock.symbol,
             ltp: stock.ltp,
-            ema3_1: stock.ema3_1,
-            ema5_1: stock.ema5_1,
-            ema5_5: stock.ema5_5,
+            macd1: stock.macd1,
+            signal1: stock.signal1,
             token: symbolMappings.symbolMappings[stock.symbol] || null
         }));
 

@@ -28,6 +28,61 @@ import {
 } from './App.styles';
 import './App.css';
 
+const FINAL_BUY_HISTORY_STORAGE_KEY = 'final_buy_history';
+const FINAL_SELL_HISTORY_STORAGE_KEY = 'final_sell_history';
+const QUALIFIED_LOW_PRICE_STORAGE_KEY = 'qualified_low_price_filtered_stocks';
+const STORAGE_RESET_FLAG_KEY = 'storage_reset_done_v1';
+const BUY_FILTER_KEYS = [
+  'macdAboveSignal5m',
+  'macdAboveZero5m',
+  'adxAbove25_5m',
+  'plusDiAbove25_5m',
+  'minusDiBelow15_5m',
+  'ema3AboveEma5_5m',
+  'rsiAbove60_5m',
+  'adxAbove25_1m',
+  'plusDiAbove25_1m',
+  'rsiAbove65_1m',
+  'ema9BelowEma3_5m'
+];
+const SELL_FILTER_KEYS = [
+  'macdBelowSignal5mSell',
+  'macdBelowZero5mSell',
+  'adxAbove25_5mSell',
+  'minusDiAbove25_5mSell',
+  'plusDiBelow15_5mSell',
+  'ema3BelowEma5_5mSell',
+  'rsiBelow40_5mSell',
+  'adxAbove25_1mSell',
+  'minusDiAbove25_1mSell',
+  'rsiBelow35_1mSell',
+  'ema9AboveEma3_5mSell'
+];
+
+const areAllFiltersSelected = (checks, keys) => {
+  return keys.every((key) => checks?.[key] === true);
+};
+
+const loadPersistedHistory = (storageKey) => {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    console.warn(`Failed to read persisted history for key: ${storageKey}`, error);
+    return [];
+  }
+};
+
+const persistHistory = (storageKey, value) => {
+  try {
+    localStorage.setItem(storageKey, JSON.stringify(Array.isArray(value) ? value : []));
+  } catch (error) {
+    console.warn(`Failed to persist history for key: ${storageKey}`, error);
+  }
+};
+
 
 
 function App() {
@@ -65,9 +120,13 @@ function App() {
   const [intersectionSummary, setIntersectionSummary] = useState(null); // Intersection results summary
   const [uiFilterStockSource, setUiFilterStockSource] = useState('intersected'); // 'intersected' | 'lowPrice'
   const [lowPriceSourceStocks, setLowPriceSourceStocks] = useState({ buy: [], sell: [] });
+  const [lowPriceScanStocks, setLowPriceScanStocks] = useState([]);
   const [intersectedSourceStocks, setIntersectedSourceStocks] = useState({ buy: [], sell: [] });
-  const [finalBuyHistory, setFinalBuyHistory] = useState([]); // Historical final buy signals with timestamps
-  const [finalSellHistory, setFinalSellHistory] = useState([]); // Historical final sell signals with timestamps
+  const [finalBuyHistory, setFinalBuyHistory] = useState(() => loadPersistedHistory(FINAL_BUY_HISTORY_STORAGE_KEY)); // Historical final buy signals with timestamps
+  const [finalSellHistory, setFinalSellHistory] = useState(() => loadPersistedHistory(FINAL_SELL_HISTORY_STORAGE_KEY)); // Historical final sell signals with timestamps
+  const [qualifiedLowPriceStocks, setQualifiedLowPriceStocks] = useState(() => loadPersistedHistory(QUALIFIED_LOW_PRICE_STORAGE_KEY));
+  const [filteredBuyStocks, setFilteredBuyStocks] = useState([]);
+  const [filteredSellStocks, setFilteredSellStocks] = useState([]);
   const [symbolMappings, setSymbolMappings] = useState({});
   const [lastUpdate, setLastUpdate] = useState('Never');
   const [orderNotification, setOrderNotification] = useState(null);
@@ -145,7 +204,8 @@ function App() {
     rsiAbove60_5m: true,
     adxAbove25_1m: true,
     plusDiAbove25_1m: true,
-    rsiAbove65_1m: true
+    rsiAbove65_1m: true,
+    ema9BelowEma3_5m: true
   }));
   const [sellFilterChecks, setSellFilterChecks] = useState(() => ({
     macdBelowSignal5mSell: true,
@@ -157,8 +217,42 @@ function App() {
     rsiBelow40_5mSell: true,
     adxAbove25_1mSell: true,
     minusDiAbove25_1mSell: true,
-    rsiBelow35_1mSell: true
+    rsiBelow35_1mSell: true,
+    ema9AboveEma3_5mSell: true
   }));
+  const [subscribedCrossSortOption, setSubscribedCrossSortOption] = useState('symbolAsc');
+
+  const sortRowsForDisplay = useCallback((rows, option) => {
+    const list = Array.isArray(rows) ? [...rows] : [];
+
+    switch (option) {
+      case 'ltpDesc':
+        return list.sort((a, b) => Number(b?.ltp || 0) - Number(a?.ltp || 0));
+      case 'ltpAsc':
+        return list.sort((a, b) => Number(a?.ltp || 0) - Number(b?.ltp || 0));
+      case 'rsi1Desc':
+        return list.sort((a, b) => Number(b?.rsi1 || 0) - Number(a?.rsi1 || 0));
+      case 'rsi1Asc':
+        return list.sort((a, b) => Number(a?.rsi1 || 0) - Number(b?.rsi1 || 0));
+      case 'symbolDesc':
+        return list.sort((a, b) => String(b?.symbol || '').localeCompare(String(a?.symbol || '')));
+      case 'symbolAsc':
+      default:
+        return list.sort((a, b) => String(a?.symbol || '').localeCompare(String(b?.symbol || '')));
+    }
+  }, []);
+
+  const sortedSubscribedCrossoverRows = sortRowsForDisplay(scanResults.crossoverTable || [], subscribedCrossSortOption);
+  const sortedSubscribedCrossdownRows = sortRowsForDisplay(scanResults.crossdownTable || [], subscribedCrossSortOption);
+  const allFiltersSelected = areAllFiltersSelected(buyFilterChecks, BUY_FILTER_KEYS)
+    && areAllFiltersSelected(sellFilterChecks, SELL_FILTER_KEYS);
+
+  const persistedFinalRows = [
+    ...(qualifiedLowPriceStocks || []).map((row, index) => ({
+      ...row,
+      _key: `persisted-qualified-${row?.side || 'NA'}-${row?.symbol || 'na'}-${row?.timestamp || index}-${index}`
+    }))
+  ].sort((a, b) => new Date(b?.timestamp || 0) - new Date(a?.timestamp || 0));
 
   const handleBuyChecksChange = useCallback((nextChecks) => {
     setBuyFilterChecks(nextChecks || {});
@@ -179,6 +273,54 @@ function App() {
       console.log(`  ${index + 1}. ${order.symbol} ${order.type} ${order.status}`);
     });
   }, [orderExecutions]);
+
+  useEffect(() => {
+    persistHistory(QUALIFIED_LOW_PRICE_STORAGE_KEY, qualifiedLowPriceStocks);
+  }, [qualifiedLowPriceStocks]);
+
+  useEffect(() => {
+    try {
+      const resetDone = localStorage.getItem(STORAGE_RESET_FLAG_KEY);
+      if (resetDone === 'true') {
+        return;
+      }
+
+      localStorage.removeItem(FINAL_BUY_HISTORY_STORAGE_KEY);
+      localStorage.removeItem(FINAL_SELL_HISTORY_STORAGE_KEY);
+      localStorage.removeItem('filtered_buy_history');
+      localStorage.removeItem('filtered_sell_history');
+      localStorage.removeItem(QUALIFIED_LOW_PRICE_STORAGE_KEY);
+
+      setFinalBuyHistory([]);
+      setFinalSellHistory([]);
+      setQualifiedLowPriceStocks([]);
+
+      localStorage.setItem(STORAGE_RESET_FLAG_KEY, 'true');
+      console.log('🧹 One-time storage reset complete. Fresh history starts now.');
+    } catch (error) {
+      console.warn('Failed to reset old local storage history:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!allFiltersSelected) {
+      return;
+    }
+
+    const stamp = new Date().toISOString();
+    const buyRows = (Array.isArray(filteredBuyStocks) ? filteredBuyStocks : []).map((row) => ({
+      ...row,
+      side: 'BUY',
+      timestamp: row?.timestamp || stamp
+    }));
+    const sellRows = (Array.isArray(filteredSellStocks) ? filteredSellStocks : []).map((row) => ({
+      ...row,
+      side: 'SELL',
+      timestamp: row?.timestamp || stamp
+    }));
+
+    setQualifiedLowPriceStocks([...buyRows, ...sellRows]);
+  }, [filteredBuyStocks, filteredSellStocks, allFiltersSelected]);
 
   // Force auto trading OFF on initial load.
   // This ensures trading is enabled only via explicit user toggle click.
@@ -1064,19 +1206,24 @@ function App() {
         });
         
         const crossResponses = Array.isArray(lowPriceData.crossResponses) ? lowPriceData.crossResponses : [];
+        const scanResponses = Array.isArray(lowPriceData.scanResponses) ? lowPriceData.scanResponses : [];
+        const lowPriceScanResponse = scanResponses.find((item) => item.id === 'low_price_scan');
+        const lowPriceRawRows = Array.isArray(lowPriceScanResponse?.rawResponse?.data)
+          ? lowPriceScanResponse.rawResponse.data
+          : [];
         const responseStocksById = (id) => crossResponses.find((item) => item.id === id)?.stocks || [];
         const rawCrossoverBuyStocks =
           lowPriceData.crossoverTable ||
           lowPriceData.crossoverStocks ||
-          [...responseStocksById('crossover_ema3_1_vs_ema5_5'), ...responseStocksById('crossover_ema5_1_vs_ema5_5')];
+          responseStocksById('crossover_macd1_vs_signal1');
         const rawCrossbelowSellStocks =
           lowPriceData.crossdownTable ||
           lowPriceData.crossdownStocks ||
-          [...responseStocksById('crossdown_ema3_1_vs_ema5_5'), ...responseStocksById('crossdown_ema5_1_vs_ema5_5')];
+          responseStocksById('crossdown_macd1_vs_signal1');
 
         console.log('📊 Backend crossover/crossdown (from low-price-scanners response):');
-        console.log(`   - Crossover((EMA3|1 over EMA5|5) OR (EMA5|1 over EMA5|5)) stocks: ${rawCrossoverBuyStocks.length}`);
-        console.log(`   - Crossdown((EMA3|1 under EMA5|5) OR (EMA5|1 under EMA5|5)) stocks: ${rawCrossbelowSellStocks.length}`);
+        console.log(`   - Crossover(MACD|1 crosses above Signal|1) stocks: ${rawCrossoverBuyStocks.length}`);
+        console.log(`   - Crossdown(MACD|1 crosses below Signal|1) stocks: ${rawCrossbelowSellStocks.length}`);
 
         // Check if low price scanning was blocked due to timing constraints
         if (lowPriceData.success === false && lowPriceData.reason === 'last_two_minutes_block') {
@@ -1127,6 +1274,7 @@ function App() {
         console.log(`   - Buy signals: ${buyStocks.length}`);
         console.log(`   - Sell signals: ${sellStocks.length}`);
         console.log(`   - Total stocks scanned: ${lowPriceData.totalStocks || 0}`);
+        console.log(`   - Raw low-price-scan rows (scanResponses): ${lowPriceRawRows.length}`);
 
         // Map buy stocks to TradingDashboard format
         const currentTimestamp = new Date().toISOString();
@@ -1161,18 +1309,47 @@ function App() {
         }));
         
         const lowPriceSellStocks = formattedSellStocks;
+
+        // Fallback display rows for low-price-scan response shape (scanResponses -> low_price_scan -> rawResponse.data)
+        const formattedLowPriceScanRows = lowPriceRawRows.map((stock) => ({
+          ...stock,
+          symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
+          ltp: stock.ltp || stock.d?.[0] || 0,
+          macd5: stock.macd5 || stock.d?.[9] || 0,
+          signal5: stock.signal5 || stock.d?.[10] || 0,
+          adx5: stock.adx5 || stock.d?.[11] || 0,
+          plusDI5: stock.plusDI5 || stock.plus_di5 || stock.d?.[18] || 0,
+          minusDI5: stock.minusDI5 || stock.minus_di5 || stock.d?.[19] || 0,
+          ema3_5: stock.ema3_5 || stock.d?.[32] || 0,
+          ema5_5: stock.ema5_5 || stock.d?.[16] || 0,
+          rsi5: stock.rsi5 || stock.d?.[38] || 0,
+          adx1: stock.adx1 || stock.d?.[20] || 0,
+          plusDI1: stock.plusDI1 || stock.plus_di1 || stock.d?.[14] || 0,
+          minusDI1: stock.minusDI1 || stock.minus_di1 || stock.d?.[15] || 0,
+          rsi1: stock.rsi1 || stock.d?.[39] || 0,
+          ema9_1: stock.ema9_1 || stock.d?.[23] || 0,
+          timestamp: currentTimestamp,
+          timeFormatted: currentTime,
+          side: stock.side || stock.signalType || 'LOW_PRICE'
+        }));
+
+        // Prefer explicit lowPriceScanStocks field when provided, otherwise use scanResponses fallback.
+        const displayLowPriceScanRows = Array.isArray(lowPriceData.lowPriceScanStocks) && lowPriceData.lowPriceScanStocks.length > 0
+          ? lowPriceData.lowPriceScanStocks
+          : formattedLowPriceScanRows;
+
+        setLowPriceScanStocks(displayLowPriceScanRows);
         
-        // Map crossover stocks to display format (EMA3|1/EMA5|1 vs EMA5|5 OR logic)
+        // Map crossover stocks to display format (MACD|1 vs Signal|1)
         const mappedCrossoverStocks = rawCrossoverBuyStocks.map(stock => ({
           symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
           ltp: stock.ltp || stock.d?.[0] || 0,
           volume: stock.volume || stock.d?.[1] || 0,
           change_percent: stock.change_percent || 0,
-          ema3_1: stock.ema3_1 || stock.d?.[1] || 0, // EMA3|1
-          ema5_1: stock.ema5_1 || stock.d?.[2] || 0, // EMA5|1
-          ema5_5: stock.ema5_5 || stock.d?.[3] || 0, // EMA5|5
-          rsi1: stock.rsi1 || stock.d?.[4] || 0, // RSI|1
-          rsi5: stock.rsi5 || stock.d?.[5] || 0, // RSI|5
+          macd1: stock.macd1 || stock.d?.[12] || 0,
+          signal1: stock.signal1 || stock.d?.[13] || 0,
+          rsi1: stock.rsi1 || stock.d?.[39] || 0,
+          rsi5: stock.rsi5 || stock.d?.[38] || 0,
           token: stock.token || null,
           signalStrength: 80 // Crossover strength
         }));
@@ -1182,11 +1359,10 @@ function App() {
           ltp: stock.ltp || stock.d?.[0] || 0,
           volume: stock.volume || stock.d?.[1] || 0,
           change_percent: stock.change_percent || 0,
-          ema3_1: stock.ema3_1 || stock.d?.[1] || 0, // EMA3|1
-          ema5_1: stock.ema5_1 || stock.d?.[2] || 0, // EMA5|1
-          ema5_5: stock.ema5_5 || stock.d?.[3] || 0, // EMA5|5
-          rsi1: stock.rsi1 || stock.d?.[4] || 0, // RSI|1
-          rsi5: stock.rsi5 || stock.d?.[5] || 0, // RSI|5
+          macd1: stock.macd1 || stock.d?.[12] || 0,
+          signal1: stock.signal1 || stock.d?.[13] || 0,
+          rsi1: stock.rsi1 || stock.d?.[39] || 0,
+          rsi5: stock.rsi5 || stock.d?.[38] || 0,
           token: stock.token || null,
           signalStrength: 80 // Crossbelow strength
         }));
@@ -1211,14 +1387,14 @@ function App() {
         if (activeBuyStocks.length > 0) {
           setFinalBuyHistory(prev => {
             const newHistory = [...activeBuyStocks, ...prev];
-            return newHistory.slice(0, 50);
+            return newHistory;
           });
         }
 
         if (activeSellStocks.length > 0) {
           setFinalSellHistory(prev => {
             const newHistory = [...activeSellStocks, ...prev];
-            return newHistory.slice(0, 50);
+            return newHistory;
           });
         }
         
@@ -1881,6 +2057,26 @@ function App() {
     ? (intersectedSourceStocks.sell || [])
     : (lowPriceSourceStocks.sell || []);
 
+  const toSymbolKey = (rowOrSymbol) => {
+    const raw = typeof rowOrSymbol === 'string'
+      ? rowOrSymbol
+      : (rowOrSymbol?.symbol || rowOrSymbol?.s || '');
+    return String(raw).replace('NSE:', '').replace('BSE:', '').trim().toUpperCase();
+  };
+
+  const crossoverSymbolKeys = new Set((scanResults.crossoverTable || []).map((row) => toSymbolKey(row)).filter(Boolean));
+  const crossdownSymbolKeys = new Set((scanResults.crossdownTable || []).map((row) => toSymbolKey(row)).filter(Boolean));
+
+  const filteredBuyIntersectedRows = (filteredBuyStocks || []).filter((row) => crossoverSymbolKeys.has(toSymbolKey(row)));
+  const filteredSellIntersectedRows = (filteredSellStocks || []).filter((row) => crossdownSymbolKeys.has(toSymbolKey(row)));
+
+  const subscribedFilteredSymbols = [
+    ...filteredBuyIntersectedRows.map((row) => toSymbolKey(row)),
+    ...filteredSellIntersectedRows.map((row) => toSymbolKey(row))
+  ].filter(Boolean);
+
+  const uniqueSubscribedFilteredSymbols = [...new Set(subscribedFilteredSymbols)];
+
   return (
     <AppContainer>
       <ContentWrapper>
@@ -1921,6 +2117,7 @@ function App() {
                       <li>ADX(1m) &gt; 20</li>
                       <li>+DI(1m) &gt; 25</li>
                       <li>RSI(1m) &gt; 65</li>
+                      <li>EMA9(1m) &lt; EMA3(5m)</li>
                     </ol>
                   </div>
 
@@ -1939,6 +2136,7 @@ function App() {
                       <li>ADX(1m) &gt; 20</li>
                       <li>-DI(1m) &gt; 25</li>
                       <li>RSI(1m) &lt; 35</li>
+                      <li>EMA9(1m) &gt; EMA3(5m)</li>
                     </ol>
                   </div>
                 </div>
@@ -1970,31 +2168,55 @@ function App() {
             <SubscribedStockTracker 
               tickData={tickData}
               onOpenChart={openNamedChart}
-              subscribedCount={realSubscriptionCount}
-              buySignalsCount={(intersectedSourceStocks.buy || []).length}
-              sellSignalsCount={(intersectedSourceStocks.sell || []).length}
+              subscribedCount={uniqueSubscribedFilteredSymbols.length}
+              buySignalsCount={filteredBuyIntersectedRows.length}
+              sellSignalsCount={filteredSellIntersectedRows.length}
               pollCountdown={pollCountdown}
-              subscribedSymbols={scannerSubscriptionData.subscribedSymbols}
+              subscribedSymbols={uniqueSubscribedFilteredSymbols}
               signalStocks={signalStocks}
               intersectionSignalStocks={{
-                buySignals: intersectedSourceStocks.buy || [],
-                sellSignals: intersectedSourceStocks.sell || []
+                buySignals: filteredBuyIntersectedRows,
+                sellSignals: filteredSellIntersectedRows
               }}
               emaCheckSignalStocks={{
-                buySignals: lowPriceSourceStocks.buy || [],
-                sellSignals: lowPriceSourceStocks.sell || []
+                buySignals: filteredBuyIntersectedRows,
+                sellSignals: filteredSellIntersectedRows
               }}
               marginsData={scannerMargins}
             />
 
             <div style={{ marginTop: '12px', border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
               <div style={{ padding: '10px', fontWeight: 800, color: '#e2e8f0', background: 'rgba(30, 41, 59, 0.75)' }}>
-                EMA(1m) vs EMA5(5m) Crosses (OR Logic)
+                MACD(1m) vs Signal(1m) Crosses
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '10px', borderBottom: '1px solid rgba(148, 163, 184, 0.25)' }}>
+                <label style={{ color: '#cbd5e1', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  Sort Subscribed Cross Tables
+                  <select
+                    value={subscribedCrossSortOption}
+                    onChange={(e) => setSubscribedCrossSortOption(e.target.value)}
+                    style={{
+                      background: 'rgba(15, 23, 42, 0.9)',
+                      border: '1px solid rgba(148, 163, 184, 0.45)',
+                      color: '#e2e8f0',
+                      borderRadius: '6px',
+                      padding: '4px 8px',
+                      fontSize: '12px'
+                    }}
+                  >
+                    <option value="symbolAsc">Symbol A-Z</option>
+                    <option value="symbolDesc">Symbol Z-A</option>
+                    <option value="ltpDesc">LTP High-Low</option>
+                    <option value="ltpAsc">LTP Low-High</option>
+                    <option value="rsi1Desc">RSI(1m) High-Low</option>
+                    <option value="rsi1Asc">RSI(1m) Low-High</option>
+                  </select>
+                </label>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', padding: '10px' }}>
                 <div style={{ border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
                   <div style={{ padding: '10px', fontWeight: 800, color: '#86efac', background: 'rgba(20, 83, 45, 0.22)' }}>
-                    Crossover ((EMA3(1m) crosses above EMA5(5m)) OR (EMA5(1m) crosses above EMA5(5m)))
+                    Crossover (MACD(1m) crosses above Signal(1m))
                   </div>
                   <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
@@ -2002,27 +2224,25 @@ function App() {
                         <tr>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Symbol</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>LTP</th>
-                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA3(1m)</th>
-                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA5(1m)</th>
-                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA5(5m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>MACD(1m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Signal(1m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(1m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(5m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Chart</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {(scanResults.crossoverTable || []).length === 0 ? (
+                        {sortedSubscribedCrossoverRows.length === 0 ? (
                           <tr>
-                            <td colSpan={8} style={{ padding: '10px', color: '#94a3b8' }}>No crossover stocks in latest scan.</td>
+                            <td colSpan={7} style={{ padding: '10px', color: '#94a3b8' }}>No crossover stocks in latest scan.</td>
                           </tr>
                         ) : (
-                          (scanResults.crossoverTable || []).map((row, idx) => (
+                          sortedSubscribedCrossoverRows.map((row, idx) => (
                             <tr key={`sub-cross-${row.symbol || idx}`}>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{row.symbol || 'N/A'}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ltp || 0).toFixed(2)}</td>
-                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema3_1 || 0).toFixed(2)}</td>
-                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema5_1 || 0).toFixed(2)}</td>
-                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema5_5 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.macd1 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.signal1 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi1 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi5 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{renderChartCell(row, 'sub-crossover')}</td>
@@ -2036,7 +2256,7 @@ function App() {
 
                 <div style={{ border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
                   <div style={{ padding: '10px', fontWeight: 800, color: '#fca5a5', background: 'rgba(127, 29, 29, 0.22)' }}>
-                    Crossdown ((EMA3(1m) crosses below EMA5(5m)) OR (EMA5(1m) crosses below EMA5(5m)))
+                    Crossdown (MACD(1m) crosses below Signal(1m))
                   </div>
                   <div style={{ maxHeight: '220px', overflowY: 'auto' }}>
                     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
@@ -2044,27 +2264,25 @@ function App() {
                         <tr>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Symbol</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>LTP</th>
-                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA3(1m)</th>
-                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA5(1m)</th>
-                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>EMA5(5m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>MACD(1m)</th>
+                          <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Signal(1m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(1m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>RSI(5m)</th>
                           <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Chart</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {(scanResults.crossdownTable || []).length === 0 ? (
+                        {sortedSubscribedCrossdownRows.length === 0 ? (
                           <tr>
-                            <td colSpan={8} style={{ padding: '10px', color: '#94a3b8' }}>No crossdown stocks in latest scan.</td>
+                            <td colSpan={7} style={{ padding: '10px', color: '#94a3b8' }}>No crossdown stocks in latest scan.</td>
                           </tr>
                         ) : (
-                          (scanResults.crossdownTable || []).map((row, idx) => (
+                          sortedSubscribedCrossdownRows.map((row, idx) => (
                             <tr key={`sub-crossdown-${row.symbol || idx}`}>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{row.symbol || 'N/A'}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ltp || 0).toFixed(2)}</td>
-                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema3_1 || 0).toFixed(2)}</td>
-                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema5_1 || 0).toFixed(2)}</td>
-                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.ema5_5 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.macd1 || 0).toFixed(2)}</td>
+                              <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.signal1 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi1 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{Number(row.rsi5 || 0).toFixed(2)}</td>
                               <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>{renderChartCell(row, 'sub-crossdown')}</td>
@@ -2078,76 +2296,20 @@ function App() {
               </div>
             </div>
 
-            <div style={{ marginTop: '12px', border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
-              <div style={{ padding: '10px', fontWeight: 800, color: '#e2e8f0', background: 'rgba(30, 41, 59, 0.75)' }}>
-                Scan Audit (All 5 Scans: Payload / Response)
-              </div>
-
-              <div style={{ display: 'flex', gap: '8px', padding: '10px', borderBottom: '1px solid rgba(148, 163, 184, 0.25)' }}>
-                <button
-                  type="button"
-                  onClick={() => setScanAuditTab('payload')}
-                  style={{
-                    background: scanAuditTab === 'payload' ? 'rgba(59, 130, 246, 0.28)' : 'rgba(30, 41, 59, 0.55)',
-                    border: '1px solid rgba(148, 163, 184, 0.45)',
-                    color: '#e2e8f0',
-                    borderRadius: '6px',
-                    padding: '6px 10px',
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}
-                >
-                  Payload Tab
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setScanAuditTab('response')}
-                  style={{
-                    background: scanAuditTab === 'response' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(30, 41, 59, 0.55)',
-                    border: '1px solid rgba(148, 163, 184, 0.45)',
-                    color: '#e2e8f0',
-                    borderRadius: '6px',
-                    padding: '6px 10px',
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}
-                >
-                  Response Tab
-                </button>
-                <div style={{ marginLeft: 'auto', color: '#94a3b8', fontSize: '12px' }}>
-                  Last update: {scanAudit.lastUpdated ? new Date(scanAudit.lastUpdated).toLocaleTimeString() : 'Never'}
-                </div>
-              </div>
-
-              <div style={{ maxHeight: '340px', overflowY: 'auto', padding: '10px' }}>
-                {scanAuditTab === 'payload' ? (
-                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', color: '#cbd5e1', fontSize: '11px', lineHeight: 1.45 }}>
-                    {JSON.stringify(scanAudit.scanPayloads || [], null, 2)}
-                  </pre>
-                ) : (
-                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', color: '#cbd5e1', fontSize: '11px', lineHeight: 1.45 }}>
-                    {JSON.stringify(scanAudit.scanResponses || [], null, 2)}
-                  </pre>
-                )}
-              </div>
-            </div>
-
-            {/* Commented out for later use */}
-            {/*
             <SignalFilterPlayground
-              buyData={buySignals}
-              sellData={sellSignals}
+              buyData={lowPriceScanStocks}
+              sellData={lowPriceScanStocks}
               showFilters={true}
-              showTables={false}
-              title="Signal Filters"
+              showTables={true}
+              title="Low-Price Scan Filter Playground (Existing Conditions)"
+              onSymbolClick={openNamedChart}
               buyChecks={buyFilterChecks}
               sellChecks={sellFilterChecks}
               onBuyChecksChange={handleBuyChecksChange}
               onSellChecksChange={handleSellChecksChange}
+              onFilteredBuyChange={setFilteredBuyStocks}
+              onFilteredSellChange={setFilteredSellStocks}
             />
-            */}
           </SectionBody>
         </SectionCard>
 
@@ -2242,6 +2404,62 @@ function App() {
         </SectionCard>
 
         </TopSectionsGrid>
+
+        <SectionCard style={{ marginTop: '16px' }}>
+          <SectionHeader>
+            <SectionTitle>Persisted Filtered Results</SectionTitle>
+            <SectionSubTitle>Filtered stocks from playground stored in localStorage and never cleared on refresh</SectionSubTitle>
+          </SectionHeader>
+          <SectionBody>
+            <div style={{ border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
+              <div style={{ padding: '10px', fontWeight: 800, color: '#e2e8f0', background: 'rgba(30, 41, 59, 0.75)' }}>
+                Local Storage Stocks ({persistedFinalRows.length})
+              </div>
+              <div style={{ maxHeight: '360px', overflowY: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                  <thead style={{ position: 'sticky', top: 0, background: 'rgba(15, 23, 42, 0.95)' }}>
+                    <tr>
+                      <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Timestamp</th>
+                      <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Type</th>
+                      <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Symbol</th>
+                      <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>LTP</th>
+                      <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid rgba(148, 163, 184, 0.35)' }}>Chart</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {persistedFinalRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} style={{ padding: '10px', color: '#94a3b8' }}>
+                          No persisted final results available yet.
+                        </td>
+                      </tr>
+                    ) : (
+                      persistedFinalRows.map((row) => (
+                        <tr key={row._key}>
+                          <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>
+                            {row.timestamp ? new Date(row.timestamp).toLocaleString() : 'N/A'}
+                          </td>
+                          <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)', color: row.side === 'BUY' ? '#86efac' : '#fca5a5', fontWeight: 700 }}>
+                            {row.side}
+                          </td>
+                          <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>
+                            {row.symbol || 'N/A'}
+                          </td>
+                          <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>
+                            {Number(row.ltp || 0).toFixed(2)}
+                          </td>
+                          <td style={{ padding: '8px', borderBottom: '1px solid rgba(71, 85, 105, 0.35)' }}>
+                            {renderChartCell(row, 'persisted-results')}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </SectionBody>
+        </SectionCard>
 
         {/* Commented out for later use: Pure Crossover and Crossdown tables */}
         {/*
