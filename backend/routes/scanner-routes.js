@@ -3508,20 +3508,26 @@ router.post('/low-price-scanners', async (req, res) => {
 
         const finalBuyStocks = intersectedBuyStocks;
         const finalSellStocks = intersectedSellStocks;
+        const hasIntersectedSignals = finalBuyStocks.length > 0 || finalSellStocks.length > 0;
+        const fallbackTestBuyStocks = hasIntersectedSignals ? [] : buyStocks.slice(0, 1);
+        const fallbackTestSellStocks = hasIntersectedSignals ? [] : sellStocks.slice(0, 1);
+        const subscriptionBuyStocks = hasIntersectedSignals ? finalBuyStocks : fallbackTestBuyStocks;
+        const subscriptionSellStocks = hasIntersectedSignals ? finalSellStocks : fallbackTestSellStocks;
 
         console.log(`🔗 INTERSECTION: buy ${intersectedBuyStocks.length}/${buyStocks.length}, sell ${intersectedSellStocks.length}/${sellStocks.length}`);
+        console.log(`📡 SUBSCRIPTION MODE: ${hasIntersectedSignals ? 'INTERSECTED' : 'FALLBACK_TEST'} (buy=${subscriptionBuyStocks.length}, sell=${subscriptionSellStocks.length})`);
 
         // NO AUTO-SUBSCRIPTION - Direct execution mode
         // Store buy/sell stocks globally for API access (if needed)
-        currentBuyStocks = finalBuyStocks;
-        currentSellStocks = finalSellStocks;
+        currentBuyStocks = subscriptionBuyStocks;
+        currentSellStocks = subscriptionSellStocks;
         lastScanTimestamp = new Date().toISOString();
         
         // ✅ RE-ENABLED: Auto-subscription to manage unsubscribing old symbols
-        console.log(`🔄 Managing subscriptions for ${finalBuyStocks.length} buy + ${finalSellStocks.length} sell signals...`);
+        console.log(`🔄 Managing subscriptions for ${subscriptionBuyStocks.length} buy + ${subscriptionSellStocks.length} sell signals...`);
         
         // ✅ FORCE CLEANUP: If no signals, ensure complete cleanup
-        if (finalBuyStocks.length === 0 && finalSellStocks.length === 0 && currentlySubscribed.size > 0) {
+        if (subscriptionBuyStocks.length === 0 && subscriptionSellStocks.length === 0 && currentlySubscribed.size > 0) {
             console.log('🧹 FORCE CLEANUP: No signals detected, clearing all subscriptions immediately');
             console.log(`   - Current subscriptions: ${currentlySubscribed.size}`);
             console.log(`   - Ticker exists: ${globalTicker ? 'YES' : 'NO'}`);
@@ -3547,10 +3553,10 @@ router.post('/low-price-scanners', async (req, res) => {
                 console.error('❌ Error in force cleanup:', error);
             }
         } else {
-            console.log(`🔍 No force cleanup needed: buyStocks=${finalBuyStocks.length}, sellStocks=${finalSellStocks.length}, subscriptions=${currentlySubscribed.size}`);
+            console.log(`🔍 No force cleanup needed: buyStocks=${subscriptionBuyStocks.length}, sellStocks=${subscriptionSellStocks.length}, subscriptions=${currentlySubscribed.size}`);
         }
         
-        await autoSubscribeToResults(finalBuyStocks, finalSellStocks, req.body.access_token);
+        await autoSubscribeToResults(subscriptionBuyStocks, subscriptionSellStocks, req.body.access_token);
         
         console.log(`✅ SCAN COMPLETE - Direct execution with subscription management`);
 
@@ -3649,6 +3655,32 @@ router.post('/low-price-scanners', async (req, res) => {
             success: true,
             timestamp: new Date().toISOString(),
             scanType: 'low-price-stocks-direct',
+            autoTrade: Boolean(global.autoTrade),
+            mainOrdersAllowed: mainOrdersAllowedInScan,
+            positionsFound: precheckActivePositions.length > 0,
+            openOrdersFound: precheckOpenOrders.length > 0,
+            totalStocks: enrichedStocks.length,
+            allStocks: enrichedStocks,
+            lowPriceScanStocks: enrichedStocks,
+            qualifiedBuyStocks: buyStocks,
+            qualifiedSellStocks: sellStocks,
+            fallbackTestBuyStocks,
+            fallbackTestSellStocks,
+            subscriptionMode: hasIntersectedSignals ? 'INTERSECTED' : 'FALLBACK_TEST',
+            buyStocks: finalBuyStocks,
+            sellStocks: finalSellStocks,
+            buyTable: buyTableData,
+            sellTable: sellTableData,
+            crossoverTable: crossoverTableData,
+            crossdownTable: crossdownTableData,
+            buyWithoutIntersectionTable: buyWithoutIntersectionTableData,
+            sellWithoutIntersectionTable: sellWithoutIntersectionTableData,
+            orderExecution: {
+                autoTrade: Boolean(global.autoTrade),
+                mainOrdersAllowed: mainOrdersAllowedInScan,
+                positionsFound: precheckActivePositions.length > 0,
+                openOrdersFound: precheckOpenOrders.length > 0
+            },
             scanPayloads: [
                 {
                     id: 'low_price_scan',

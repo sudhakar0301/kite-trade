@@ -142,7 +142,7 @@ function App() {
     nextScanAllowedAt: null
   });
   const [pollCountdown, setPollCountdown] = useState(0);
-  const [pollInterval, setPollInterval] = useState(15); // Default 15 seconds
+  const [pollInterval, setPollInterval] = useState(5); // Default 5 seconds
   const [orderExecutions, setOrderExecutions] = useState([]); // Track order attempts and results
   const [orderPanelOpen, setOrderPanelOpen] = useState(false); // Show/hide order panel
   const [lastSpokenMessage, setLastSpokenMessage] = useState('');
@@ -521,6 +521,8 @@ function App() {
   const autoTradingEnabledRef = useRef(autoTradingEnabled);
   const kiteLoginStatusRef = useRef(kiteLoginStatus);
   const signalStocksRef = useRef(signalStocks);
+  const filteredBuyStocksRef = useRef(filteredBuyStocks);
+  const filteredSellStocksRef = useRef(filteredSellStocks);
   const executeAutoTradingRef = useRef(null);
 
   // Update refs when values change
@@ -535,6 +537,14 @@ function App() {
   useEffect(() => {
     signalStocksRef.current = signalStocks;
   }, [signalStocks]);
+
+  useEffect(() => {
+    filteredBuyStocksRef.current = filteredBuyStocks;
+  }, [filteredBuyStocks]);
+
+  useEffect(() => {
+    filteredSellStocksRef.current = filteredSellStocks;
+  }, [filteredSellStocks]);
 
 
 
@@ -1276,6 +1286,9 @@ function App() {
         console.log(`   - Total stocks scanned: ${lowPriceData.totalStocks || 0}`);
         console.log(`   - Raw low-price-scan rows (scanResponses): ${lowPriceRawRows.length}`);
 
+        const qualifiedBuyStocksRaw = Array.isArray(lowPriceData.qualifiedBuyStocks) ? lowPriceData.qualifiedBuyStocks : [];
+        const qualifiedSellStocksRaw = Array.isArray(lowPriceData.qualifiedSellStocks) ? lowPriceData.qualifiedSellStocks : [];
+
         // Map buy stocks to TradingDashboard format
         const currentTimestamp = new Date().toISOString();
         const currentTime = new Date().toLocaleString();
@@ -1298,6 +1311,28 @@ function App() {
         // Map sell stocks to TradingDashboard format  
         const formattedSellStocks = sellStocks.map(stock => ({
           // Keep all backend-provided technical fields intact for UI filtering.
+          ...stock,
+          symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
+          ltp: stock.ltp || stock.d?.[0] || 0,
+          volume: stock.volume || stock.d?.[1] || 0,
+          change_percent: stock.change_percent || 0,
+          signalStrength: stock.signalStrength || 75,
+          timestamp: currentTimestamp,
+          timeFormatted: currentTime
+        }));
+
+        const formattedQualifiedBuyStocks = qualifiedBuyStocksRaw.map(stock => ({
+          ...stock,
+          symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
+          ltp: stock.ltp || stock.d?.[0] || 0,
+          volume: stock.volume || stock.d?.[1] || 0,
+          change_percent: stock.change_percent || 0,
+          signalStrength: stock.signalStrength || 75,
+          timestamp: currentTimestamp,
+          timeFormatted: currentTime
+        }));
+
+        const formattedQualifiedSellStocks = qualifiedSellStocksRaw.map(stock => ({
           ...stock,
           symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
           ltp: stock.ltp || stock.d?.[0] || 0,
@@ -1492,13 +1527,68 @@ function App() {
         console.log(`   - Auto trading enabled: ${autoTradingEnabled}`);
         console.log(`   - Kite login status: ${kiteLoginStatus}`);
 
+        // TEST FALLBACK SIGNAL FEED: If no intersected signals, push first qualified buy/sell into signalStocks
+        // so normal tick-driven flow (conditions -> impact analysis -> order path) can operate.
+        // Guard: fallback test mode is enabled only OUTSIDE Indian market hours (IST 09:15-15:30, Mon-Fri).
+        const hasIntersectedSignals = activeBuyStocks.length > 0 || activeSellStocks.length > 0;
+        const fallbackSymbolKey = (row) => String(row?.symbol || row?.s || '')
+          .replace('NSE:', '')
+          .replace('BSE:', '')
+          .trim()
+          .toUpperCase();
+
+        const qualifiedBuyBySymbol = new Map(
+          formattedQualifiedBuyStocks.map((row) => [fallbackSymbolKey(row), row])
+        );
+        const qualifiedSellBySymbol = new Map(
+          formattedQualifiedSellStocks.map((row) => [fallbackSymbolKey(row), row])
+        );
+
+        const filteredFallbackBuyCandidates = (filteredBuyStocksRef.current || [])
+          .map((row) => {
+            const key = fallbackSymbolKey(row);
+            return qualifiedBuyBySymbol.get(key) || row;
+          })
+          .filter((row) => Boolean(fallbackSymbolKey(row)));
+
+        const filteredFallbackSellCandidates = (filteredSellStocksRef.current || [])
+          .map((row) => {
+            const key = fallbackSymbolKey(row);
+            return qualifiedSellBySymbol.get(key) || row;
+          })
+          .filter((row) => Boolean(fallbackSymbolKey(row)));
+
+        const fallbackBuy = (filteredFallbackBuyCandidates.length > 0
+          ? filteredFallbackBuyCandidates
+          : formattedQualifiedBuyStocks).slice(0, 1);
+
+        const fallbackSell = (filteredFallbackSellCandidates.length > 0
+          ? filteredFallbackSellCandidates
+          : formattedQualifiedSellStocks).slice(0, 1);
+        const now = new Date();
+        const istNow = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+        const day = istNow.getDay();
+        const minutes = istNow.getHours() * 60 + istNow.getMinutes();
+        const isWeekday = day >= 1 && day <= 5;
+        const marketOpen = 9 * 60 + 15;
+        const marketClose = 15 * 60 + 30;
+        const isIndianMarketOpen = isWeekday && minutes >= marketOpen && minutes <= marketClose;
+        const useFallbackSignals = !hasIntersectedSignals && !isIndianMarketOpen;
+
+        const executionBuySignals = useFallbackSignals ? fallbackBuy : activeBuyStocks;
+        const executionSellSignals = useFallbackSignals ? fallbackSell : activeSellStocks;
+
+        if (useFallbackSignals) {
+          console.log(`🧪 [FALLBACK-TEST] Using fallback signal feed for normal tick-driven flow: buy=${executionBuySignals.length}, sell=${executionSellSignals.length}`);
+        }
+
         setSignalStocks({
-          buySignals: activeBuyStocks,
-          sellSignals: activeSellStocks,
+          buySignals: executionBuySignals,
+          sellSignals: executionSellSignals,
           lastUpdate: new Date().toISOString()
         });
 
-        if (activeBuyStocks.length > 0 || activeSellStocks.length > 0) {
+        if (executionBuySignals.length > 0 || executionSellSignals.length > 0) {
           console.log('✅ Signal stocks synced locally - backend subscription already reconciled after scan');
         } else {
           console.log('⚠️ No signal stocks from scan - local signal state cleared');
@@ -2070,12 +2160,12 @@ function App() {
   const filteredBuyIntersectedRows = (filteredBuyStocks || []).filter((row) => crossoverSymbolKeys.has(toSymbolKey(row)));
   const filteredSellIntersectedRows = (filteredSellStocks || []).filter((row) => crossdownSymbolKeys.has(toSymbolKey(row)));
 
-  const subscribedFilteredSymbols = [
+  const intersectedSubscribedSymbols = [
     ...filteredBuyIntersectedRows.map((row) => toSymbolKey(row)),
     ...filteredSellIntersectedRows.map((row) => toSymbolKey(row))
   ].filter(Boolean);
 
-  const uniqueSubscribedFilteredSymbols = [...new Set(subscribedFilteredSymbols)];
+  const uniqueIntersectedSubscribedSymbols = [...new Set(intersectedSubscribedSymbols)];
 
   return (
     <AppContainer>
@@ -2168,11 +2258,11 @@ function App() {
             <SubscribedStockTracker 
               tickData={tickData}
               onOpenChart={openNamedChart}
-              subscribedCount={uniqueSubscribedFilteredSymbols.length}
+              subscribedCount={uniqueIntersectedSubscribedSymbols.length}
               buySignalsCount={filteredBuyIntersectedRows.length}
               sellSignalsCount={filteredSellIntersectedRows.length}
               pollCountdown={pollCountdown}
-              subscribedSymbols={uniqueSubscribedFilteredSymbols}
+              subscribedSymbols={uniqueIntersectedSubscribedSymbols}
               signalStocks={signalStocks}
               intersectionSignalStocks={{
                 buySignals: filteredBuyIntersectedRows,

@@ -441,7 +441,7 @@ const TradingControlPanel = ({
   isPolling = false,
   pollCountdown = 0,
   onTogglePolling,
-  pollInterval = 15,
+  pollInterval = 5,
   onChangePollInterval,
   subscribedStocksCount = 0,
   marginsData = { availableFunds: 0, leverageFunds: 0, usableFunds: 0 },
@@ -669,6 +669,18 @@ const TradingControlPanel = ({
             ⏱️ Polling Interval
           </div>
           <div style={{ display: 'flex', gap: '10px', marginBottom: '15px' }}>
+            <QuickActionButton
+              onClick={() => onChangePollInterval && onChangePollInterval(5)}
+              style={{
+                background: pollInterval === 5
+                  ? 'linear-gradient(135deg, #3b82f6, #1d4ed8)'
+                  : 'linear-gradient(135deg, #6b7280, #4b5563)',
+                fontSize: '11px'
+              }}
+              disabled={!onChangePollInterval}
+            >
+              5s
+            </QuickActionButton>
             <QuickActionButton
               onClick={() => onChangePollInterval && onChangePollInterval(15)}
               style={{
