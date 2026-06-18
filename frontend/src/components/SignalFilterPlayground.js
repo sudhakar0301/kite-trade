@@ -91,54 +91,34 @@ const buyFilterDefs = [
 
 const sellFilterDefs = [
   {
-    id: 'macdBelowSignal5mSell',
-    label: 'MACD(5m) < Signal(5m)',
-    test: row => Number(row.macd5 || row.macd_5m) < Number(row.signal5 || row.signal_5m)
-  },
-  {
-    id: 'macdBelowZero5mSell',
-    label: 'MACD(5m) < 0',
-    test: row => Number(row.macd5 || row.macd_5m) < 0
-  },
-  {
-    id: 'adxAbove25_5mSell',
-    label: 'ADX(5m) > 20',
-    test: row => Number(row.adx5 || row.adx_5m) > 20
-  },
-  {
-    id: 'minusDiAbove25_5mSell',
-    label: '-DI(5m) > 25',
-    test: row => Number(row.minus_di5 || row.minusDI5 || row.mdi5) > 25
-  },
-  {
-    id: 'plusDiBelow15_5mSell',
-    label: '+DI(5m) < 15',
-    test: row => Number(row.plus_di5 || row.plusDI5 || row.pdi5) < 15
-  },
-  {
-    id: 'ema3BelowEma5_5mSell',
-    label: 'EMA3(5m) < EMA5(5m)',
-    test: row => Number(row.ema3_5 || row.ema3_5m) < Number(row.ema5_5 || row.ema5_5m)
-  },
-  {
-    id: 'rsiBelow40_5mSell',
-    label: 'RSI(5m) < 40',
-    test: row => Number(row.rsi5 || row.rsi_5m) < 40
-  },
-  {
-    id: 'adxAbove25_1mSell',
-    label: 'ADX(1m) > 20',
-    test: row => Number(row.adx1 || row.adx_1m) > 20
-  },
-  {
     id: 'minusDiAbove25_1mSell',
     label: '-DI(1m) > 25',
     test: row => Number(row.minus_di1 || row.minusDI1 || row.mdi1) > 25
   },
   {
+    id: 'minusDiAboveAdx_1mSell',
+    label: '-DI(1m) > ADX(1m)',
+    test: row => Number(row.minus_di1 || row.minusDI1 || row.mdi1) > Number(row.adx1 || row.adx_1m)
+  },
+  {
+    id: 'plusDiBelow15_1mSell',
+    label: '+DI(1m) < 15',
+    test: row => Number(row.plus_di1 || row.plusDI1 || row.pdi1) < 15
+  },
+  {
+    id: 'macdBelowZero_1mSell',
+    label: 'MACD(1m) < 0',
+    test: row => Number(row.macd1 || row.macd_1m) < 0
+  },
+  {
+    id: 'ema3BelowEma5_1mSell',
+    label: 'EMA3(1m) < EMA5(1m)',
+    test: row => Number(row.ema3_1 || row.ema3_1m) < Number(row.ema5_1 || row.ema5_1m)
+  },
+  {
     id: 'rsiBelow35_1mSell',
-    label: 'RSI(1m) < 40',
-    test: row => Number(row.rsi1 || row.rsi_1m) < 40
+    label: 'RSI(1m) < 35',
+    test: row => Number(row.rsi1 || row.rsi_1m) < 35
   },
   {
     id: 'ema9AboveEma3_5mSell',

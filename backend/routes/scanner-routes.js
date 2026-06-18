@@ -1810,6 +1810,14 @@ async function getTradePrecheckSnapshot(accessToken, options = {}) {
 // Helper functions to call SEPARATE order routes
 async function callSeparateBuyOrderRoute(accessToken, symbol, ltp, requestedQuantity = null) {
     try {
+        // Sell-only mode: skip direct/main BUY execution from tick-driven path.
+        return {
+            success: false,
+            error: 'Main BUY orders are disabled (sell-only mode)',
+            order_category: 'BUY',
+            symbol: symbol
+        };
+
         const productType = 'MIS'; // Force MIS for all orders
         const roundedPrice = roundToTickSize(ltp, ltp);
         
@@ -3166,7 +3174,7 @@ router.post('/low-price-scanners', async (req, res) => {
             };
         });
 
-        console.log('ℹ️ Intersection checks enabled: crossover/crossdown will be intersected with low-price buy/sell signals');
+        console.log('ℹ️ Sell crossdown intersection disabled: sell signals use technical filters only');
 
     
         // Classify stocks into buy/sell based on conditions
@@ -3190,7 +3198,7 @@ router.post('/low-price-scanners', async (req, res) => {
         let conditionStats = {
             total_stocks: 0,
             buy_condition_passes: Array(11).fill(0),
-            sell_condition_passes: Array(11).fill(0),
+            sell_condition_passes: Array(7).fill(0),
             ema_1min_issues: [],
             orders_attempted: 0,
             orders_successful: 0,
@@ -3216,17 +3224,13 @@ router.post('/low-price-scanners', async (req, res) => {
         };
 
         const sellFilterIdToConditionIndexes = {
-            macdBelowSignal5mSell: [0],
-            macdBelowZero5mSell: [1],
-            adxAbove25_5mSell: [2],
-            minusDiAbove25_5mSell: [3],
-            plusDiBelow15_5mSell: [4],
-            ema3BelowEma5_5mSell: [5],
-            rsiBelow40_5mSell: [6],
-            adxAbove25_1mSell: [7],
-            minusDiAbove25_1mSell: [8],
-            rsiBelow35_1mSell: [9],
-            ema9AboveEma3_5mSell: [10]
+            minusDiAbove25_1mSell: [0],
+            minusDiAboveAdx_1mSell: [1],
+            plusDiBelow15_1mSell: [2],
+            macdBelowZero_1mSell: [3],
+            ema3BelowEma5_1mSell: [4],
+            rsiBelow35_1mSell: [5],
+            ema9AboveEma3_5mSell: [6]
         };
 
         const buyFilterOrder = [
@@ -3244,15 +3248,11 @@ router.post('/low-price-scanners', async (req, res) => {
         ];
 
         const sellFilterOrder = [
-            'macdBelowSignal5mSell',
-            'macdBelowZero5mSell',
-            'adxAbove25_5mSell',
-            'minusDiAbove25_5mSell',
-            'plusDiBelow15_5mSell',
-            'ema3BelowEma5_5mSell',
-            'rsiBelow40_5mSell',
-            'adxAbove25_1mSell',
             'minusDiAbove25_1mSell',
+            'minusDiAboveAdx_1mSell',
+            'plusDiBelow15_1mSell',
+            'macdBelowZero_1mSell',
+            'ema3BelowEma5_1mSell',
             'rsiBelow35_1mSell',
             'ema9AboveEma3_5mSell'
         ];
@@ -3347,19 +3347,15 @@ router.post('/low-price-scanners', async (req, res) => {
                 });
             }
             
-            // SELL CONDITIONS (opposite of combined BUY conditions)
+            // SELL CONDITIONS (default timeframe 1m unless specified)
             const sellConditions = [
-                stock.macd5 < stock.signal5, // MACD(5m) < Signal(5m)
-                stock.macd5 < 0,             // MACD(5m) < 0
-                stock.adx5 > 20,             // ADX(5m) > 20
-                stock.minusDI5 > 25,         // -DI(5m) > 25
-                stock.plusDI5 < 15,          // +DI(5m) < 15
-                stock.ema3_5 < stock.ema5_5, // EMA3(5m) < EMA5(5m)
-                stock.rsi5 < 40,             // RSI(5m) < 40
-                stock.adx1 > 20,             // ADX(1m) > 20
-                stock.minusDI1 > 25,         // -DI(1m) > 25
-                stock.rsi1 < 40,             // RSI(1m) < 40
-                stock.ema9_1 > stock.ema3_5  // EMA9(1m) > EMA3(5m)
+                stock.minusDI1 > 25,          // -DI(1m) > 25
+                stock.minusDI1 > stock.adx1,  // -DI(1m) > ADX(1m)
+                stock.plusDI1 < 15,           // +DI(1m) < 15
+                stock.macd1 < 0,              // MACD(1m) < 0
+                stock.ema3_1 < stock.ema5_1,  // EMA3(1m) < EMA5(1m)
+                stock.rsi1 < 35,              // RSI(1m) < 35
+                stock.ema9_1 > stock.ema3_5   // EMA9(1m) > EMA3(5m)
             ];
             
             
@@ -3487,7 +3483,8 @@ router.post('/low-price-scanners', async (req, res) => {
         console.log(`🎯 SCAN RESULTS: ${buyStocks.length} buy signals, ${sellStocks.length} sell signals`);
         console.log(`📊 ORDER EXECUTION: Attempted=${conditionStats.orders_attempted}, Success=${conditionStats.orders_successful}, Failed=${conditionStats.orders_failed}`);
 
-        // Build separate crossover/crossdown sets from dedicated 4 cross scans, then intersect with buy/sell signals.
+        // Build separate crossover/crossdown sets from dedicated 4 cross scans.
+        // Sell crossdown intersection is intentionally disabled.
         const stockKey = (row) => String(row?.symbol || '').trim().toUpperCase();
         const crossoverFromLowPrice = crossScanResponses.find((item) => item.id === 'crossover_macd1_vs_signal1')?.stocks || [];
         const crossdownFromLowPrice = crossScanResponses.find((item) => item.id === 'crossdown_macd1_vs_signal1')?.stocks || [];
@@ -3507,15 +3504,15 @@ router.post('/low-price-scanners', async (req, res) => {
         pureCrossdownStocks.push(...intersectedSellStocks);
 
         const finalBuyStocks = intersectedBuyStocks;
-        const finalSellStocks = intersectedSellStocks;
+        const finalSellStocks = sellStocks;
         const hasIntersectedSignals = finalBuyStocks.length > 0 || finalSellStocks.length > 0;
         const fallbackTestBuyStocks = hasIntersectedSignals ? [] : buyStocks.slice(0, 1);
         const fallbackTestSellStocks = hasIntersectedSignals ? [] : sellStocks.slice(0, 1);
         const subscriptionBuyStocks = hasIntersectedSignals ? finalBuyStocks : fallbackTestBuyStocks;
-        const subscriptionSellStocks = hasIntersectedSignals ? finalSellStocks : fallbackTestSellStocks;
+        const subscriptionSellStocks = finalSellStocks;
 
-        console.log(`🔗 INTERSECTION: buy ${intersectedBuyStocks.length}/${buyStocks.length}, sell ${intersectedSellStocks.length}/${sellStocks.length}`);
-        console.log(`📡 SUBSCRIPTION MODE: ${hasIntersectedSignals ? 'INTERSECTED' : 'FALLBACK_TEST'} (buy=${subscriptionBuyStocks.length}, sell=${subscriptionSellStocks.length})`);
+        console.log(`🔗 INTERSECTION: buy ${intersectedBuyStocks.length}/${buyStocks.length}, sell DISABLED (${sellStocks.length} filtered sell signals)`);
+        console.log(`📡 SUBSCRIPTION MODE: SELL_FILTERED_ONLY (buy=${subscriptionBuyStocks.length}, sell=${subscriptionSellStocks.length})`);
 
         // NO AUTO-SUBSCRIPTION - Direct execution mode
         // Store buy/sell stocks globally for API access (if needed)
@@ -3966,6 +3963,16 @@ router.post('/buy-order', async (req, res) => {
         
         // 🔄 ACCEPT SIMPLE FORMAT: symbol, ltp, access_token from frontend
         const { symbol, ltp, orderParams: existingOrderParams, isTargetOrder } = req.body;
+
+        // Sell-only mode: block main BUY orders, but allow target BUY orders when explicitly requested.
+        if (!isTargetOrder) {
+            return res.status(403).json({
+                success: false,
+                error: 'Main BUY orders are disabled (sell-only mode). Only SELL main orders and target BUY are allowed.',
+                order_category: 'BUY',
+                symbol: symbol || null
+            });
+        }
         
         // 🔒 SIGNAL EXECUTION TRACKING: Prevent repeated orders for same signal
         if (!isTargetOrder && symbol) {

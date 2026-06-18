@@ -46,15 +46,11 @@ const BUY_FILTER_KEYS = [
   'ema9BelowEma3_5m'
 ];
 const SELL_FILTER_KEYS = [
-  'macdBelowSignal5mSell',
-  'macdBelowZero5mSell',
-  'adxAbove25_5mSell',
-  'minusDiAbove25_5mSell',
-  'plusDiBelow15_5mSell',
-  'ema3BelowEma5_5mSell',
-  'rsiBelow40_5mSell',
-  'adxAbove25_1mSell',
   'minusDiAbove25_1mSell',
+  'minusDiAboveAdx_1mSell',
+  'plusDiBelow15_1mSell',
+  'macdBelowZero_1mSell',
+  'ema3BelowEma5_1mSell',
   'rsiBelow35_1mSell',
   'ema9AboveEma3_5mSell'
 ];
@@ -208,15 +204,11 @@ function App() {
     ema9BelowEma3_5m: true
   }));
   const [sellFilterChecks, setSellFilterChecks] = useState(() => ({
-    macdBelowSignal5mSell: true,
-    macdBelowZero5mSell: true,
-    adxAbove25_5mSell: true,
-    minusDiAbove25_5mSell: true,
-    plusDiBelow15_5mSell: true,
-    ema3BelowEma5_5mSell: true,
-    rsiBelow40_5mSell: true,
-    adxAbove25_1mSell: true,
     minusDiAbove25_1mSell: true,
+    minusDiAboveAdx_1mSell: true,
+    plusDiBelow15_1mSell: true,
+    macdBelowZero_1mSell: true,
+    ema3BelowEma5_1mSell: true,
     rsiBelow35_1mSell: true,
     ema9AboveEma3_5mSell: true
   }));
@@ -817,6 +809,7 @@ function App() {
   // Auto trading via DIRECT ORDER ROUTES with POSITION MANAGEMENT
   const executeAutoTradingViaSeparateRoutes = useCallback(async (buyStocks, sellStocks) => {
     console.log('🎯 [AUTO-TRADE] === DIRECT ORDER EXECUTION WITH PRE-CALCULATED QUANTITIES ===');
+    console.log('⚙️ [AUTO-TRADE] SELL-ONLY MODE ACTIVE: BUY orders are skipped');
     console.log('🎯 [AUTO-TRADE] autoTradingEnabled:', autoTradingEnabled);
     console.log('🎯 [AUTO-TRADE] buyStocks count:', buyStocks.length);
     console.log('🎯 [AUTO-TRADE] sellStocks count:', sellStocks.length);
@@ -866,7 +859,7 @@ function App() {
 
       // 🎯 LIMIT TRADING: Only trade the FIRST stock from each category to avoid overwhelming orders
       const maxOrdersPerType = 1;
-      const buyStocksToTrade = buyStocks.slice(0, maxOrdersPerType);
+      const buyStocksToTrade = [];
       const sellStocksToTrade = sellStocks.slice(0, maxOrdersPerType);
       
       console.log(`🎯 CONTROLLED TRADING: Selected ${buyStocksToTrade.length} BUY + ${sellStocksToTrade.length} SELL from ${buyStocks.length + sellStocks.length} total signals`);
@@ -1715,12 +1708,7 @@ function App() {
             const cleanSymbol = symbol.replace('NSE:', '').replace('BSE:', '');
             console.log(`🔍 [TICK-TRADE] Checking signals for cleaned symbol: ${cleanSymbol}`);
             
-            const hasBuySignal = currentSignalStocks.buySignals.some(stock => {
-              const stockSymbol = stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s);
-              const match = stockSymbol === cleanSymbol;
-              if (match) console.log(`✅ [TICK-TRADE] Found BUY signal match: ${stockSymbol}`);
-              return match;
-            });
+            const hasBuySignal = false;
             
             const hasSellSignal = currentSignalStocks.sellSignals.some(stock => {
               const stockSymbol = stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s);
@@ -1749,10 +1737,7 @@ function App() {
               lastTickTradeAttemptRef.current[cleanSymbol] = now;
               console.log(`🚀 [TICK-TRADE] *** EXECUTING ORDERS FOR ${symbol} *** - triggering execution`);
               
-              const buySignalStocks = hasBuySignal ? currentSignalStocks.buySignals.filter(stock => {
-                const stockSymbol = stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s);
-                return stockSymbol === cleanSymbol;
-              }) : [];
+              const buySignalStocks = [];
               
               const sellSignalStocks = hasSellSignal ? currentSignalStocks.sellSignals.filter(stock => {
                 const stockSymbol = stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s);
@@ -2158,7 +2143,7 @@ function App() {
   const crossdownSymbolKeys = new Set((scanResults.crossdownTable || []).map((row) => toSymbolKey(row)).filter(Boolean));
 
   const filteredBuyIntersectedRows = (filteredBuyStocks || []).filter((row) => crossoverSymbolKeys.has(toSymbolKey(row)));
-  const filteredSellIntersectedRows = (filteredSellStocks || []).filter((row) => crossdownSymbolKeys.has(toSymbolKey(row)));
+  const filteredSellIntersectedRows = filteredSellStocks || [];
 
   const intersectedSubscribedSymbols = [
     ...filteredBuyIntersectedRows.map((row) => toSymbolKey(row)),
