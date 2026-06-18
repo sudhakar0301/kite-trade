@@ -216,7 +216,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
             "ADX|5", "MACD.macd|1", "MACD.signal|1", "ADX+DI|1", "ADX-DI|1",
             "EMA5|5", "EMA9|5", "ADX+DI|5", "ADX-DI|5", "ADX|1", "open|5",
             "EMA5|1", "EMA9|1", "VWAP|5", "BB.basis|1", "VWAP|1", "BB.upper|5", "BB.lower|5",
-            "low|15", "high|15", "EMA3|15", "EMA3|5", "ADX|15", "ADX+DI|15", "ADX-DI|15", "EMA3|1", "VWMA|9", "RSI|5", "RSI|1"
+            "low|15", "high|15", "EMA3|15", "EMA3|5", "ADX|15", "ADX+DI|15", "ADX-DI|15", "EMA3|1", "VWMA|9", "RSI|5", "RSI|1", "EMA4|1", "BB.lower|1", "BB.upper|1"
         ];
     }
 
@@ -322,6 +322,7 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
             open5: data[21] || 0,
             ema5_1: data[22] || 0,
             ema9_1: data[23] || 0,
+            mbb_1: data[25] || 0,
             vwap1: data[26] || 0,
             ubb_5: data[27] || 0,
             lbb_5: data[28] || 0,
@@ -333,7 +334,10 @@ function disableAutoTradingAfterTargetOrder(context = 'target_order_placed', det
             ema3_1: data[36] || 0,
             vwma_9: data[37] || 0,
             rsi5: data[38] || 0,
-            rsi1: data[39] || 0
+            rsi1: data[39] || 0,
+            ema4_1: data[40] || 0,
+            lbb_1: data[41] || 0,
+            ubb_1: data[42] || 0
         };
     }
 
@@ -3197,8 +3201,8 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Track condition pass counts
         let conditionStats = {
             total_stocks: 0,
-            buy_condition_passes: Array(11).fill(0),
-            sell_condition_passes: Array(7).fill(0),
+            buy_condition_passes: Array(13).fill(0),
+            sell_condition_passes: Array(13).fill(0),
             ema_1min_issues: [],
             orders_attempted: 0,
             orders_successful: 0,
@@ -3210,51 +3214,67 @@ router.post('/low-price-scanners', async (req, res) => {
         const requestedSellFilters = req.body?.appliedFilters?.sell || {};
 
         const buyFilterIdToConditionIndexes = {
-            macdAboveSignal5m: [0],
-            macdAboveZero5m: [1],
-            adxAbove25_5m: [2],
-            plusDiAbove25_5m: [3],
-            minusDiBelow15_5m: [4],
-            ema3AboveEma5_5m: [5],
-            rsiAbove60_5m: [6],
-            adxAbove25_1m: [7],
-            plusDiAbove25_1m: [8],
-            rsiAbove65_1m: [9],
-            ema9BelowEma3_5m: [10]
+            plusDiAbove25_1mBuy: [0],
+            plusDiAboveAdx_1mBuy: [1],
+            adxAboveMinusDi_1mBuy: [2],
+            macdAboveSignal_1mBuy: [3],
+            macdAboveZero_1mBuy: [4],
+            ema3AboveEma5_1mBuy: [5],
+            ema3AboveEma4_1mBuy: [6],
+            rsiAbove65_1mBuy: [7],
+            ema9AboveMbb_1mBuy: [8],
+            ema3UbbGapWithinPoint1Pct_1mBuy: [9],
+            ltpUbbGapWithinPoint1Pct_1mBuy: [10],
+            macdAboveZero_5mBuy: [11],
+            plusDiAboveMinusDi_5mBuy: [12]
         };
 
         const sellFilterIdToConditionIndexes = {
             minusDiAbove25_1mSell: [0],
             minusDiAboveAdx_1mSell: [1],
-            plusDiBelow15_1mSell: [2],
-            macdBelowZero_1mSell: [3],
-            ema3BelowEma5_1mSell: [4],
-            rsiBelow35_1mSell: [5],
-            ema9AboveEma3_5mSell: [6]
+            adxAbovePlusDi_1mSell: [2],
+            macdBelowSignal_1mSell: [3],
+            macdBelowZero_1mSell: [4],
+            ema3BelowEma5_1mSell: [5],
+            ema3BelowEma4_1mSell: [6],
+            rsiBelow35_1mSell: [7],
+            ema9BelowMbb_1mSell: [8],
+            ema3LbbGapWithinPoint1Pct_1mSell: [9],
+            ltpLbbGapWithinPoint1Pct_1mSell: [10],
+            macdBelowZero_5mSell: [11],
+            minusDiAbovePlusDi_5mSell: [12]
         };
 
         const buyFilterOrder = [
-            'macdAboveSignal5m',
-            'macdAboveZero5m',
-            'adxAbove25_5m',
-            'plusDiAbove25_5m',
-            'minusDiBelow15_5m',
-            'ema3AboveEma5_5m',
-            'rsiAbove60_5m',
-            'adxAbove25_1m',
-            'plusDiAbove25_1m',
-            'rsiAbove65_1m',
-            'ema9BelowEma3_5m'
+            'plusDiAbove25_1mBuy',
+            'plusDiAboveAdx_1mBuy',
+            'adxAboveMinusDi_1mBuy',
+            'macdAboveSignal_1mBuy',
+            'macdAboveZero_1mBuy',
+            'ema3AboveEma5_1mBuy',
+            'ema3AboveEma4_1mBuy',
+            'rsiAbove65_1mBuy',
+            'ema9AboveMbb_1mBuy',
+            'ema3UbbGapWithinPoint1Pct_1mBuy',
+            'ltpUbbGapWithinPoint1Pct_1mBuy',
+            'macdAboveZero_5mBuy',
+            'plusDiAboveMinusDi_5mBuy'
         ];
 
         const sellFilterOrder = [
             'minusDiAbove25_1mSell',
             'minusDiAboveAdx_1mSell',
-            'plusDiBelow15_1mSell',
+            'adxAbovePlusDi_1mSell',
+            'macdBelowSignal_1mSell',
             'macdBelowZero_1mSell',
             'ema3BelowEma5_1mSell',
             'rsiBelow35_1mSell',
-            'ema9AboveEma3_5mSell'
+            'ema3BelowEma4_1mSell',
+            'ema9BelowMbb_1mSell',
+            'ema3LbbGapWithinPoint1Pct_1mSell',
+            'ltpLbbGapWithinPoint1Pct_1mSell',
+            'macdBelowZero_5mSell',
+            'minusDiAbovePlusDi_5mSell'
         ];
 
         const hasCompactBuyIndexes = Array.isArray(req.body?.enabledBuyFilterIndexes);
@@ -3298,33 +3318,29 @@ router.post('/low-price-scanners', async (req, res) => {
         enrichedStocks.forEach(async (stock) => {
             conditionStats.total_stocks++;
             
-            // BUY CONDITIONS (combined):
-            // 5m conditions:
-            // 1) MACD > Signal
-            // 2) MACD > 0
-            // 3) ADX > 25
-            // 4) +DI > 25
-            // 5) -DI < 15
-            // 6) EMA3 > EMA5
-            // 7) RSI > 60
-            // 1m conditions:
-            // 8) ADX > 20
-            // 9) +DI > 25
-            // 10) RSI > 60
-            // 11) EMA9(1m) < EMA3(5m)
-            
+            const ubb1 = Number(stock.ubb_1 || 0);
+            const ema3GapPctFromUbb = ubb1 > 0
+                ? (Math.abs(Number(stock.ema3_1 || 0) - ubb1) / ubb1) * 100
+                : Number.POSITIVE_INFINITY;
+            const ltpGapPctFromUbb = ubb1 > 0
+                ? (Math.abs(Number(stock.ltp || 0) - ubb1) / ubb1) * 100
+                : Number.POSITIVE_INFINITY;
+
+            // BUY CONDITIONS (default timeframe 1m unless specified)
             const buyConditions = [
-                stock.macd5 > stock.signal5, // MACD(5m) > Signal(5m)
-                stock.macd5 > 0,             // MACD(5m) > 0
-                stock.adx5 > 20,             // ADX(5m) > 20
-                stock.plusDI5 > 25,          // +DI(5m) > 25
-                stock.minusDI5 < 15,         // -DI(5m) < 15
-                stock.ema3_5 > stock.ema5_5, // EMA3(5m) > EMA5(5m)
-                stock.rsi5 > 60,             // RSI(5m) > 60
-                stock.adx1 > 20,             // ADX(1m) > 20
-                stock.plusDI1 > 25,          // +DI(1m) > 25
-                stock.rsi1 > 60,             // RSI(1m) > 60
-                stock.ema9_1 < stock.ema3_5  // EMA9(1m) < EMA3(5m)
+                stock.plusDI1 > 25,           // +DI(1m) > 25
+                stock.plusDI1 > stock.adx1,   // +DI(1m) > ADX(1m)
+                stock.adx1 > stock.minusDI1,  // ADX(1m) > -DI(1m)
+                stock.macd1 > stock.signal1,  // MACD(1m) > Signal(1m)
+                stock.macd1 > 0,              // MACD(1m) > 0
+                stock.ema3_1 > stock.ema5_1,  // EMA3(1m) > EMA5(1m)
+                stock.ema3_1 > stock.ema4_1,  // EMA3(1m) > EMA4(1m)
+                stock.rsi1 > 65,              // RSI(1m) > 65
+                stock.ema9_1 > stock.mbb_1,   // EMA9(1m) > MBB(1m)
+                ema3GapPctFromUbb <= 0.1,     // |UBB(1m)-EMA3(1m)| / UBB(1m) <= 0.1%
+                ltpGapPctFromUbb <= 0.1,      // |LTP-UBB(1m)| / UBB(1m) <= 0.1%
+                stock.macd5 > 0,              // MACD(5m) > 0
+                stock.plusDI5 > stock.minusDI5 // +DI(5m) > -DI(5m)
             ];
 
             // Track condition pass counts
@@ -3348,14 +3364,28 @@ router.post('/low-price-scanners', async (req, res) => {
             }
             
             // SELL CONDITIONS (default timeframe 1m unless specified)
+            const lbb1 = Number(stock.lbb_1 || 0);
+            const ema3GapPctFromLbb = lbb1 > 0
+                ? (Math.abs(Number(stock.ema3_1 || 0) - lbb1) / lbb1) * 100
+                : Number.POSITIVE_INFINITY;
+            const ltpGapPctFromLbb = lbb1 > 0
+                ? (Math.abs(Number(stock.ltp || 0) - lbb1) / lbb1) * 100
+                : Number.POSITIVE_INFINITY;
+
             const sellConditions = [
                 stock.minusDI1 > 25,          // -DI(1m) > 25
                 stock.minusDI1 > stock.adx1,  // -DI(1m) > ADX(1m)
-                stock.plusDI1 < 15,           // +DI(1m) < 15
+                stock.adx1 > stock.plusDI1,   // ADX(1m) > +DI(1m)
+                stock.macd1 < stock.signal1,  // MACD(1m) < Signal(1m)
                 stock.macd1 < 0,              // MACD(1m) < 0
                 stock.ema3_1 < stock.ema5_1,  // EMA3(1m) < EMA5(1m)
+                stock.ema3_1 < stock.ema4_1,  // EMA3(1m) < EMA4(1m)
                 stock.rsi1 < 35,              // RSI(1m) < 35
-                stock.ema9_1 > stock.ema3_5   // EMA9(1m) > EMA3(5m)
+                stock.ema9_1 < stock.mbb_1,   // EMA9(1m) < MBB(1m)
+                ema3GapPctFromLbb <= 0.1,     // |LBB(1m)-EMA3(1m)| / LBB(1m) <= 0.1%
+                ltpGapPctFromLbb <= 0.1,      // |LTP-LBB(1m)| / LBB(1m) <= 0.1%
+                stock.macd5 < 0,              // MACD(5m) < 0
+                stock.minusDI5 > stock.plusDI5 // -DI(5m) > +DI(5m)
             ];
             
             
@@ -3462,19 +3492,19 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Print condition statistics
         console.log('🔍 CONDITION ANALYSIS:');
         const conditionLabels = [
-            'MACD (5m) > Signal (5m)',
-            'MACD (5m) > 0',
-            'ADX (5m) > 25',
-            '+DI (5m) > 25',
-            '-DI (5m) < 15',
-            'EMA3 (5m) > EMA5 (5m)',
-            'RSI (5m) > 60',
-            'MACD (1m) > Signal (1m)',
-            'ADX (1m) > 25',
             '+DI (1m) > 25',
-            '-DI (1m) < 15',
-            'RSI (1m) > 60',
-            'EMA3 (1m) > EMA5 (1m)'
+            '+DI (1m) > ADX (1m)',
+            'ADX (1m) > -DI (1m)',
+            'MACD (1m) > Signal (1m)',
+            'MACD (1m) > 0',
+            'EMA3 (1m) > EMA5 (1m)',
+            'EMA3 (1m) > EMA4 (1m)',
+            'RSI (1m) > 65',
+            'EMA9 (1m) > MBB (1m)',
+            '|UBB (1m) - EMA3 (1m)| <= 0.1%',
+            '|LTP - UBB (1m)| <= 0.1%',
+            'MACD (5m) > 0',
+            '+DI (5m) > -DI (5m)'
         ];
        
     

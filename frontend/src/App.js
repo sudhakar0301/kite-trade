@@ -33,26 +33,34 @@ const FINAL_SELL_HISTORY_STORAGE_KEY = 'final_sell_history';
 const QUALIFIED_LOW_PRICE_STORAGE_KEY = 'qualified_low_price_filtered_stocks';
 const STORAGE_RESET_FLAG_KEY = 'storage_reset_done_v1';
 const BUY_FILTER_KEYS = [
-  'macdAboveSignal5m',
-  'macdAboveZero5m',
-  'adxAbove25_5m',
-  'plusDiAbove25_5m',
-  'minusDiBelow15_5m',
-  'ema3AboveEma5_5m',
-  'rsiAbove60_5m',
-  'adxAbove25_1m',
-  'plusDiAbove25_1m',
-  'rsiAbove65_1m',
-  'ema9BelowEma3_5m'
+  'plusDiAbove25_1mBuy',
+  'plusDiAboveAdx_1mBuy',
+  'adxAboveMinusDi_1mBuy',
+  'macdAboveSignal_1mBuy',
+  'macdAboveZero_1mBuy',
+  'ema3AboveEma5_1mBuy',
+  'ema3AboveEma4_1mBuy',
+  'rsiAbove65_1mBuy',
+  'ema9AboveMbb_1mBuy',
+  'ema3UbbGapWithinPoint1Pct_1mBuy',
+  'ltpUbbGapWithinPoint1Pct_1mBuy',
+  'macdAboveZero_5mBuy',
+  'plusDiAboveMinusDi_5mBuy'
 ];
 const SELL_FILTER_KEYS = [
   'minusDiAbove25_1mSell',
   'minusDiAboveAdx_1mSell',
-  'plusDiBelow15_1mSell',
+  'adxAbovePlusDi_1mSell',
+  'macdBelowSignal_1mSell',
   'macdBelowZero_1mSell',
   'ema3BelowEma5_1mSell',
   'rsiBelow35_1mSell',
-  'ema9AboveEma3_5mSell'
+  'ema3BelowEma4_1mSell',
+  'ema9BelowMbb_1mSell',
+  'ema3LbbGapWithinPoint1Pct_1mSell',
+  'ltpLbbGapWithinPoint1Pct_1mSell',
+  'macdBelowZero_5mSell',
+  'minusDiAbovePlusDi_5mSell'
 ];
 
 const areAllFiltersSelected = (checks, keys) => {
@@ -191,26 +199,34 @@ function App() {
     lastUpdate: null
   });
   const [buyFilterChecks, setBuyFilterChecks] = useState(() => ({
-    macdAboveSignal5m: true,
-    macdAboveZero5m: true,
-    adxAbove25_5m: true,
-    plusDiAbove25_5m: true,
-    minusDiBelow15_5m: true,
-    ema3AboveEma5_5m: true,
-    rsiAbove60_5m: true,
-    adxAbove25_1m: true,
-    plusDiAbove25_1m: true,
-    rsiAbove65_1m: true,
-    ema9BelowEma3_5m: true
+    plusDiAbove25_1mBuy: true,
+    plusDiAboveAdx_1mBuy: true,
+    adxAboveMinusDi_1mBuy: true,
+    macdAboveSignal_1mBuy: true,
+    macdAboveZero_1mBuy: true,
+    ema3AboveEma5_1mBuy: true,
+    ema3AboveEma4_1mBuy: true,
+    rsiAbove65_1mBuy: true,
+    ema9AboveMbb_1mBuy: true,
+    ema3UbbGapWithinPoint1Pct_1mBuy: true,
+    ltpUbbGapWithinPoint1Pct_1mBuy: true,
+    macdAboveZero_5mBuy: true,
+    plusDiAboveMinusDi_5mBuy: true
   }));
   const [sellFilterChecks, setSellFilterChecks] = useState(() => ({
     minusDiAbove25_1mSell: true,
     minusDiAboveAdx_1mSell: true,
-    plusDiBelow15_1mSell: true,
+    adxAbovePlusDi_1mSell: true,
+    macdBelowSignal_1mSell: true,
     macdBelowZero_1mSell: true,
     ema3BelowEma5_1mSell: true,
     rsiBelow35_1mSell: true,
-    ema9AboveEma3_5mSell: true
+    ema3BelowEma4_1mSell: true,
+    ema9BelowMbb_1mSell: true,
+    ema3LbbGapWithinPoint1Pct_1mSell: true,
+    ltpLbbGapWithinPoint1Pct_1mSell: true,
+    macdBelowZero_5mSell: true,
+    minusDiAbovePlusDi_5mSell: true
   }));
   const [subscribedCrossSortOption, setSubscribedCrossSortOption] = useState('symbolAsc');
 
