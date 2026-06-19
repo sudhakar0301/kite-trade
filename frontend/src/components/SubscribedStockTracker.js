@@ -317,6 +317,8 @@ const SubscribedStockTracker = ({
   // State to track if we're in RELIANCE fallback mode
   const [isRelianceFallback, setIsRelianceFallback] = useState(false);
   const [relianceScanType, setRelianceScanType] = useState('FALLBACK');
+  const [buySignalMetricsOpen, setBuySignalMetricsOpen] = useState(true);
+  const [sellSignalMetricsOpen, setSellSignalMetricsOpen] = useState(true);
   
   // Add ref to track manual symbol selections to prevent auto-override
   const manualSelectionRef = useRef(null);
@@ -983,6 +985,22 @@ const SubscribedStockTracker = ({
     return price ? `₹${parseFloat(price).toFixed(2)}` : 'N/A';
   };
 
+  const formatMetricPrice = (value) => {
+    const num = Number(value || 0);
+    return Number.isFinite(num) && num > 0 ? num.toFixed(2) : '-';
+  };
+
+  const formatGapPercent = (a, b, emaBase, priceBase) => {
+    const emaDenominator = Number(emaBase || 0);
+    const priceDenominator = Number(priceBase || 0);
+    const denominator = emaDenominator > 0
+      ? emaDenominator
+      : (priceDenominator > 0 ? priceDenominator : 0);
+    if (!(denominator > 0)) return '-';
+    const pct = (Math.abs(Number(a || 0) - Number(b || 0)) / denominator) * 100;
+    return `${pct.toFixed(4)}%`;
+  };
+
   const formatQuantity = (qty) => {
     if (!qty) return '0';
     if (qty >= 1000000) return `${(qty / 1000000).toFixed(1)}M`;
@@ -1310,6 +1328,159 @@ const SubscribedStockTracker = ({
             <div style={{ opacity: '0.8' }}>Auto-Sub/Unsub</div>
           </div>
         </div>
+
+        {/* Buy/Sell Signal Metrics (1m + 5m) */}
+        {(() => {
+          const effectiveSignalStocks = emaCheckSignalStocks || signalStocks;
+          const buySignalRows = Array.isArray(effectiveSignalStocks?.buySignals) ? effectiveSignalStocks.buySignals : [];
+          const sellSignalRows = Array.isArray(effectiveSignalStocks?.sellSignals) ? effectiveSignalStocks.sellSignals : [];
+
+          const getSymbol = (row) => row?.symbol || extractSymbolName(row?.s) || '-';
+
+          return (
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{
+                fontSize: '13px',
+                fontWeight: 700,
+                color: '#f8fafc',
+                marginBottom: '8px',
+                fontFamily: 'system-ui, -apple-system, sans-serif'
+              }}>
+                Signal Metrics (1m + 5m)
+              </div>
+
+              <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden', marginBottom: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => setBuySignalMetricsOpen((prev) => !prev)}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    background: 'linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%)',
+                    border: 'none',
+                    borderBottom: buySignalMetricsOpen ? '1px solid #bbf7d0' : 'none',
+                    color: '#065f46',
+                    padding: '10px 12px',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {buySignalMetricsOpen ? '▼' : '▶'} Buy Signals Metrics ({buySignalRows.length})
+                </button>
+
+                {buySignalMetricsOpen && (
+                  <div style={{ maxHeight: '220px', overflow: 'auto', background: '#ffffff' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', color: '#111827' }}>
+                      <thead>
+                        <tr style={{ background: '#f8fafc' }}>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937' }}>Symbol</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>LBB1</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>UBB1</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>EMA3(1m)</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Gap1%</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>LBB5</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>UBB5</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>EMA3(5m)</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Gap5%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {buySignalRows.map((row, idx) => {
+                          const lbb1 = Number(row?.lbb_1 || row?.lbb_1m || 0);
+                          const ubb1 = Number(row?.ubb_1 || row?.ubb_1m || 0);
+                          const ema31 = Number(row?.ema3_1 || row?.ema3_1m || 0);
+                          const lbb5 = Number(row?.lbb_5 || row?.lbb5 || 0);
+                          const ubb5 = Number(row?.ubb_5 || row?.ubb5 || 0);
+                          const ema35 = Number(row?.ema3_5 || row?.ema3_5m || 0);
+
+                          return (
+                            <tr key={`${getSymbol(row)}-buy-metric-${idx}`}>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a' }}>{getSymbol(row)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(lbb1)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ubb1)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ema31)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatGapPercent(ubb1, ema31, ema31, row?.ltp)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(lbb5)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ubb5)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ema35)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatGapPercent(ubb5, ema35, ema35, row?.ltp)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden' }}>
+                <button
+                  type="button"
+                  onClick={() => setSellSignalMetricsOpen((prev) => !prev)}
+                  style={{
+                    width: '100%',
+                    textAlign: 'left',
+                    background: 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)',
+                    border: 'none',
+                    borderBottom: sellSignalMetricsOpen ? '1px solid #fecaca' : 'none',
+                    color: '#7f1d1d',
+                    padding: '10px 12px',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {sellSignalMetricsOpen ? '▼' : '▶'} Sell Signals Metrics ({sellSignalRows.length})
+                </button>
+
+                {sellSignalMetricsOpen && (
+                  <div style={{ maxHeight: '220px', overflow: 'auto', background: '#ffffff' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', color: '#111827' }}>
+                      <thead>
+                        <tr style={{ background: '#f8fafc' }}>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937' }}>Symbol</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>LBB1</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>UBB1</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>EMA3(1m)</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Gap1%</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>LBB5</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>UBB5</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>EMA3(5m)</th>
+                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Gap5%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sellSignalRows.map((row, idx) => {
+                          const lbb1 = Number(row?.lbb_1 || row?.lbb_1m || 0);
+                          const ubb1 = Number(row?.ubb_1 || row?.ubb_1m || 0);
+                          const ema31 = Number(row?.ema3_1 || row?.ema3_1m || 0);
+                          const lbb5 = Number(row?.lbb_5 || row?.lbb5 || 0);
+                          const ubb5 = Number(row?.ubb_5 || row?.ubb5 || 0);
+                          const ema35 = Number(row?.ema3_5 || row?.ema3_5m || 0);
+
+                          return (
+                            <tr key={`${getSymbol(row)}-sell-metric-${idx}`}>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a' }}>{getSymbol(row)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(lbb1)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ubb1)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ema31)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatGapPercent(ema31, lbb1, ema31, row?.ltp)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(lbb5)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ubb5)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ema35)}</td>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatGapPercent(ema35, lbb5, ema35, row?.ltp)}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
         
         {/* Table Header */}
         <div style={{

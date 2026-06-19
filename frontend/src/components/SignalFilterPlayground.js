@@ -63,11 +63,6 @@ const buyFilterDefs = [
     test: row => Number(row.ema3_1 || row.ema3_1m) > Number(row.ema5_1 || row.ema5_1m)
   },
   {
-    id: 'ema3AboveEma4_1mBuy',
-    label: 'EMA3(1m) > EMA4(1m)',
-    test: row => Number(row.ema3_1 || row.ema3_1m) > Number(row.ema4_1 || row.ema4_1m)
-  },
-  {
     id: 'rsiAbove65_1mBuy',
     label: 'RSI(1m) > 65',
     test: row => Number(row.rsi1 || row.rsi_1m) > 65
@@ -79,22 +74,32 @@ const buyFilterDefs = [
   },
   {
     id: 'ema3UbbGapWithinPoint1Pct_1mBuy',
-    label: '|UBB(1m)-EMA3(1m)| <= 0.1%',
+    label: '|UBB(1m)-EMA3(1m)| <= 0.05%',
     test: row => {
-      const ubb = Number(row.ubb_1 || row.ubb_1m || 0);
+      const ubb = Number(row.ubb_1 || row.ubb_1m || row.bbUpper1 || 0);
       if (!(ubb > 0)) return false;
       const ema3 = Number(row.ema3_1 || row.ema3_1m || 0);
-      return (Math.abs(ubb - ema3) / ubb) * 100 <= 0.1;
+      return (Math.abs(ubb - ema3) / ubb) * 100 <= 0.05;
     }
   },
   {
-    id: 'ltpUbbGapWithinPoint1Pct_1mBuy',
-    label: '|LTP-UBB(1m)| <= 0.1%',
+    id: 'ltpBelowUbb_5mBuy',
+    label: 'LTP < UBB(5m)',
     test: row => {
-      const ubb = Number(row.ubb_1 || row.ubb_1m || 0);
+      const ubb = Number(row.ubb_5 || row.ubb5 || row.bbUpper5 || 0);
       if (!(ubb > 0)) return false;
       const ltp = Number(row.ltp || row.last_price || row.price || 0);
-      return (Math.abs(ltp - ubb) / ubb) * 100 <= 0.1;
+      return ltp < ubb;
+    }
+  },
+  {
+    id: 'ltpBelowUbb_15mBuy',
+    label: 'LTP < UBB(15m)',
+    test: row => {
+      const ubb = Number(row.ubb_15 || row.ubb15 || row.bbUpper15 || 0);
+      if (!(ubb > 0)) return false;
+      const ltp = Number(row.ltp || row.last_price || row.price || 0);
+      return ltp < ubb;
     }
   },
   {
@@ -141,11 +146,6 @@ const sellFilterDefs = [
     test: row => Number(row.ema3_1 || row.ema3_1m) < Number(row.ema5_1 || row.ema5_1m)
   },
   {
-    id: 'ema3BelowEma4_1mSell',
-    label: 'EMA3(1m) < EMA4(1m)',
-    test: row => Number(row.ema3_1 || row.ema3_1m) < Number(row.ema4_1 || row.ema4_1m)
-  },
-  {
     id: 'rsiBelow35_1mSell',
     label: 'RSI(1m) < 35',
     test: row => Number(row.rsi1 || row.rsi_1m) < 35
@@ -157,22 +157,32 @@ const sellFilterDefs = [
   },
   {
     id: 'ema3LbbGapWithinPoint1Pct_1mSell',
-    label: '|LBB(1m)-EMA3(1m)| <= 0.1%',
+    label: '|LBB(1m)-EMA3(1m)| <= 0.05%',
     test: row => {
-      const lbb = Number(row.lbb_1 || row.lbb_1m || 0);
+      const lbb = Number(row.lbb_1 || row.lbb_1m || row.bbLower1 || 0);
       if (!(lbb > 0)) return false;
       const ema3 = Number(row.ema3_1 || row.ema3_1m || 0);
-      return (Math.abs(lbb - ema3) / lbb) * 100 <= 0.1;
+      return (Math.abs(lbb - ema3) / lbb) * 100 <= 0.05;
     }
   },
   {
-    id: 'ltpLbbGapWithinPoint1Pct_1mSell',
-    label: '|LTP-LBB(1m)| <= 0.1%',
+    id: 'ltpAboveLbb_5mSell',
+    label: 'LTP > LBB(5m)',
     test: row => {
-      const lbb = Number(row.lbb_1 || row.lbb_1m || 0);
+      const lbb = Number(row.lbb_5 || row.lbb5 || row.bbLower5 || 0);
       if (!(lbb > 0)) return false;
       const ltp = Number(row.ltp || row.last_price || row.price || 0);
-      return (Math.abs(ltp - lbb) / lbb) * 100 <= 0.1;
+      return ltp > lbb;
+    }
+  },
+  {
+    id: 'ltpAboveLbb_15mSell',
+    label: 'LTP > LBB(15m)',
+    test: row => {
+      const lbb = Number(row.lbb_15 || row.lbb15 || row.bbLower15 || 0);
+      if (!(lbb > 0)) return false;
+      const ltp = Number(row.ltp || row.last_price || row.price || 0);
+      return ltp > lbb;
     }
   },
   {
@@ -210,6 +220,8 @@ function normalizeRows(rows) {
     vwap1: Number(row.vwap1 || row.vwap_1m || row.vwap_1 || 0),
     ubb_5: Number(row.ubb_5 || row.ubb5 || row.bbUpper5 || 0),
     lbb_5: Number(row.lbb_5 || row.lbb5 || row.bbLower5 || 0),
+    ubb_15: Number(row.ubb_15 || row.ubb15 || row.bbUpper15 || 0),
+    lbb_15: Number(row.lbb_15 || row.lbb15 || row.bbLower15 || 0),
     macd15: Number(row.macd15 || row.macd_15m || 0),
     macd5: Number(row.macd5 || 0),
     macd1: Number(row.macd1 || row.macd_1m || 0),
@@ -263,6 +275,8 @@ export default function SignalFilterPlayground({
   const [buyChecksState, setBuyChecksState] = useState({});
   const [sellChecksState, setSellChecksState] = useState({});
   const [tableSortOption, setTableSortOption] = useState('symbolAsc');
+  const [buyBandsOpen, setBuyBandsOpen] = useState(false);
+  const [sellBandsOpen, setSellBandsOpen] = useState(false);
   const buyChecks = buyChecksProp || buyChecksState;
   const sellChecks = sellChecksProp || sellChecksState;
   const setBuyChecks = onBuyChecksChange || setBuyChecksState;
@@ -317,6 +331,18 @@ export default function SignalFilterPlayground({
   const sortedFilteredSell = useMemo(() => {
     return sortRows(filteredSell, tableSortOption);
   }, [filteredSell, tableSortOption]);
+
+  const formatPrice = (value) => {
+    const num = Number(value || 0);
+    return Number.isFinite(num) ? num.toFixed(2) : '--';
+  };
+
+  const formatGapPct = (numerator, denominator) => {
+    const base = Number(denominator || 0);
+    if (!(base > 0)) return '--';
+    const pct = (Math.abs(Number(numerator || 0)) / base) * 100;
+    return `${pct.toFixed(4)}%`;
+  };
 
   useEffect(() => {
     if (onFilteredBuyChange) {
@@ -467,6 +493,54 @@ export default function SignalFilterPlayground({
                     </tbody>
                   </table>
                 </div>
+
+                <div style={{ marginTop: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setBuyBandsOpen((prev) => !prev)}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      background: 'rgba(30, 41, 59, 0.85)',
+                      border: '1px solid rgba(148, 163, 184, 0.35)',
+                      color: '#a7f3d0',
+                      borderRadius: '8px',
+                      padding: '8px 10px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {buyBandsOpen ? '▼' : '▶'} Buy Bands Table (LBB / UBB / EMA3 / Gap%)
+                  </button>
+
+                  {buyBandsOpen && (
+                    <div style={{ marginTop: '8px', maxHeight: '240px', overflow: 'auto', border: '1px solid rgba(148, 163, 184, 0.3)', borderRadius: '8px' }}>
+                      <table style={tableStyle}>
+                        <thead>
+                          <tr>
+                            <th style={thStyle}>Symbol</th>
+                            <th style={thStyle}>LBB(1m)</th>
+                            <th style={thStyle}>UBB(1m)</th>
+                            <th style={thStyle}>EMA3(1m)</th>
+                            <th style={thStyle}>Gap %</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sortedFilteredBuy.map((row, idx) => (
+                            <tr key={`${row.symbol}-buy-bands-${idx}`}>
+                              <td style={tdStyle}>{row.symbol}</td>
+                              <td style={tdStyle}>{formatPrice(row.lbb_1)}</td>
+                              <td style={tdStyle}>{formatPrice(row.ubb_1)}</td>
+                              <td style={tdStyle}>{formatPrice(row.ema3_1)}</td>
+                              <td style={tdStyle}>{formatGapPct(Number(row.ubb_1 || 0) - Number(row.ema3_1 || 0), row.ubb_1)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -572,6 +646,54 @@ export default function SignalFilterPlayground({
                       ))}
                     </tbody>
                   </table>
+                </div>
+
+                <div style={{ marginTop: '10px' }}>
+                  <button
+                    type="button"
+                    onClick={() => setSellBandsOpen((prev) => !prev)}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      background: 'rgba(30, 41, 59, 0.85)',
+                      border: '1px solid rgba(148, 163, 184, 0.35)',
+                      color: '#fecaca',
+                      borderRadius: '8px',
+                      padding: '8px 10px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {sellBandsOpen ? '▼' : '▶'} Sell Bands Table (LBB / UBB / EMA3 / Gap%)
+                  </button>
+
+                  {sellBandsOpen && (
+                    <div style={{ marginTop: '8px', maxHeight: '240px', overflow: 'auto', border: '1px solid rgba(148, 163, 184, 0.3)', borderRadius: '8px' }}>
+                      <table style={tableStyle}>
+                        <thead>
+                          <tr>
+                            <th style={thStyle}>Symbol</th>
+                            <th style={thStyle}>LBB(1m)</th>
+                            <th style={thStyle}>UBB(1m)</th>
+                            <th style={thStyle}>EMA3(1m)</th>
+                            <th style={thStyle}>Gap %</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {sortedFilteredSell.map((row, idx) => (
+                            <tr key={`${row.symbol}-sell-bands-${idx}`}>
+                              <td style={tdStyle}>{row.symbol}</td>
+                              <td style={tdStyle}>{formatPrice(row.lbb_1)}</td>
+                              <td style={tdStyle}>{formatPrice(row.ubb_1)}</td>
+                              <td style={tdStyle}>{formatPrice(row.ema3_1)}</td>
+                              <td style={tdStyle}>{formatGapPct(Number(row.ema3_1 || 0) - Number(row.lbb_1 || 0), row.lbb_1)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               </>
             )}

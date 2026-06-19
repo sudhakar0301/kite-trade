@@ -39,11 +39,11 @@ const BUY_FILTER_KEYS = [
   'macdAboveSignal_1mBuy',
   'macdAboveZero_1mBuy',
   'ema3AboveEma5_1mBuy',
-  'ema3AboveEma4_1mBuy',
   'rsiAbove65_1mBuy',
   'ema9AboveMbb_1mBuy',
   'ema3UbbGapWithinPoint1Pct_1mBuy',
-  'ltpUbbGapWithinPoint1Pct_1mBuy',
+  'ltpBelowUbb_5mBuy',
+  'ltpBelowUbb_15mBuy',
   'macdAboveZero_5mBuy',
   'plusDiAboveMinusDi_5mBuy'
 ];
@@ -55,10 +55,10 @@ const SELL_FILTER_KEYS = [
   'macdBelowZero_1mSell',
   'ema3BelowEma5_1mSell',
   'rsiBelow35_1mSell',
-  'ema3BelowEma4_1mSell',
   'ema9BelowMbb_1mSell',
   'ema3LbbGapWithinPoint1Pct_1mSell',
-  'ltpLbbGapWithinPoint1Pct_1mSell',
+  'ltpAboveLbb_5mSell',
+  'ltpAboveLbb_15mSell',
   'macdBelowZero_5mSell',
   'minusDiAbovePlusDi_5mSell'
 ];
@@ -205,11 +205,11 @@ function App() {
     macdAboveSignal_1mBuy: true,
     macdAboveZero_1mBuy: true,
     ema3AboveEma5_1mBuy: true,
-    ema3AboveEma4_1mBuy: true,
     rsiAbove65_1mBuy: true,
     ema9AboveMbb_1mBuy: true,
     ema3UbbGapWithinPoint1Pct_1mBuy: true,
-    ltpUbbGapWithinPoint1Pct_1mBuy: true,
+    ltpBelowUbb_5mBuy: true,
+    ltpBelowUbb_15mBuy: true,
     macdAboveZero_5mBuy: true,
     plusDiAboveMinusDi_5mBuy: true
   }));
@@ -221,10 +221,10 @@ function App() {
     macdBelowZero_1mSell: true,
     ema3BelowEma5_1mSell: true,
     rsiBelow35_1mSell: true,
-    ema3BelowEma4_1mSell: true,
     ema9BelowMbb_1mSell: true,
     ema3LbbGapWithinPoint1Pct_1mSell: true,
-    ltpLbbGapWithinPoint1Pct_1mSell: true,
+    ltpAboveLbb_5mSell: true,
+    ltpAboveLbb_15mSell: true,
     macdBelowZero_5mSell: true,
     minusDiAbovePlusDi_5mSell: true
   }));
@@ -1245,7 +1245,7 @@ function App() {
         console.log(`   - Crossdown(MACD|1 crosses below Signal|1) stocks: ${rawCrossbelowSellStocks.length}`);
 
         // Check if low price scanning was blocked due to timing constraints
-        if (lowPriceData.success === false && lowPriceData.reason === 'last_two_minutes_block') {
+        if (lowPriceData.success === false && (lowPriceData.reason === 'last_two_minutes_block' || lowPriceData.reason === 'scan_throttled')) {
           console.log('⏸️ LOW PRICE SCANNER BLOCKED:', lowPriceData.message);
           setBuySignals([]);
           setSellSignals([]);
@@ -2137,7 +2137,8 @@ function App() {
   }, []);
 
   const handleChangePollInterval = useCallback((interval) => {
-    setPollInterval(interval);
+    const safeInterval = Math.max(5, Number(interval) || 5);
+    setPollInterval(safeInterval);
   }, []);
 
   const selectedFilterBuyData = uiFilterStockSource === 'intersected'
