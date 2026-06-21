@@ -289,7 +289,6 @@ const SubscribedStockTracker = ({
   pollCountdown = 0,
   subscribedSymbols = [],
   signalStocks = { buySignals: [], sellSignals: [] },
-  intersectionSignalStocks = null,
   emaCheckSignalStocks = null,
   marginsData = null
 }) => {
@@ -317,8 +316,6 @@ const SubscribedStockTracker = ({
   // State to track if we're in RELIANCE fallback mode
   const [isRelianceFallback, setIsRelianceFallback] = useState(false);
   const [relianceScanType, setRelianceScanType] = useState('FALLBACK');
-  const [buySignalMetricsOpen, setBuySignalMetricsOpen] = useState(true);
-  const [sellSignalMetricsOpen, setSellSignalMetricsOpen] = useState(true);
   
   // Add ref to track manual symbol selections to prevent auto-override
   const manualSelectionRef = useRef(null);
@@ -985,22 +982,6 @@ const SubscribedStockTracker = ({
     return price ? `₹${parseFloat(price).toFixed(2)}` : 'N/A';
   };
 
-  const formatMetricPrice = (value) => {
-    const num = Number(value || 0);
-    return Number.isFinite(num) && num > 0 ? num.toFixed(2) : '-';
-  };
-
-  const formatGapPercent = (a, b, emaBase, priceBase) => {
-    const emaDenominator = Number(emaBase || 0);
-    const priceDenominator = Number(priceBase || 0);
-    const denominator = emaDenominator > 0
-      ? emaDenominator
-      : (priceDenominator > 0 ? priceDenominator : 0);
-    if (!(denominator > 0)) return '-';
-    const pct = (Math.abs(Number(a || 0) - Number(b || 0)) / denominator) * 100;
-    return `${pct.toFixed(4)}%`;
-  };
-
   const formatQuantity = (qty) => {
     if (!qty) return '0';
     if (qty >= 1000000) return `${(qty / 1000000).toFixed(1)}M`;
@@ -1295,6 +1276,16 @@ const SubscribedStockTracker = ({
         </div>
 
         {/* Scanner Status */}
+        {(() => {
+          const effectiveSignalStocks = emaCheckSignalStocks || signalStocks;
+          const buySignalCount = Array.isArray(effectiveSignalStocks?.buySignals)
+            ? effectiveSignalStocks.buySignals.length
+            : Number(buySignalsCount || 0);
+          const sellSignalCount = Array.isArray(effectiveSignalStocks?.sellSignals)
+            ? effectiveSignalStocks.sellSignals.length
+            : Number(sellSignalsCount || 0);
+
+          return (
         <div style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(5, 1fr)',
@@ -1312,12 +1303,12 @@ const SubscribedStockTracker = ({
             <div style={{ opacity: '0.8' }}>Subscribed</div>
           </div>
           <div style={{ textAlign: 'center', color: '#3b82f6' }}>
-            <div style={{ fontWeight: '600', fontSize: '16px' }}>{buySignalsCount || 0}</div>
-            <div style={{ opacity: '0.8' }}>Buy Intersections</div>
+            <div style={{ fontWeight: '600', fontSize: '16px' }}>{buySignalCount || 0}</div>
+            <div style={{ opacity: '0.8' }}>Buy Signals</div>
           </div>
           <div style={{ textAlign: 'center', color: '#ef4444' }}>
-            <div style={{ fontWeight: '600', fontSize: '16px' }}>{sellSignalsCount || 0}</div>
-            <div style={{ opacity: '0.8' }}>Sell Intersections</div>
+            <div style={{ fontWeight: '600', fontSize: '16px' }}>{sellSignalCount || 0}</div>
+            <div style={{ opacity: '0.8' }}>Sell Signals</div>
           </div>
           <div style={{ textAlign: 'center', color: '#f59e0b' }}>
             <div style={{ fontWeight: '600', fontSize: '16px' }}>{pollCountdown || 0}s</div>
@@ -1328,275 +1319,239 @@ const SubscribedStockTracker = ({
             <div style={{ opacity: '0.8' }}>Auto-Sub/Unsub</div>
           </div>
         </div>
-
-        {/* Buy/Sell Signal Metrics (1m + 5m) */}
-        {(() => {
-          const effectiveSignalStocks = emaCheckSignalStocks || signalStocks;
-          const buySignalRows = Array.isArray(effectiveSignalStocks?.buySignals) ? effectiveSignalStocks.buySignals : [];
-          const sellSignalRows = Array.isArray(effectiveSignalStocks?.sellSignals) ? effectiveSignalStocks.sellSignals : [];
-
-          const getSymbol = (row) => row?.symbol || extractSymbolName(row?.s) || '-';
-
-          return (
-            <div style={{ marginBottom: '10px' }}>
-              <div style={{
-                fontSize: '13px',
-                fontWeight: 700,
-                color: '#f8fafc',
-                marginBottom: '8px',
-                fontFamily: 'system-ui, -apple-system, sans-serif'
-              }}>
-                Signal Metrics (1m + 5m)
-              </div>
-
-              <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden', marginBottom: '8px' }}>
-                <button
-                  type="button"
-                  onClick={() => setBuySignalMetricsOpen((prev) => !prev)}
-                  style={{
-                    width: '100%',
-                    textAlign: 'left',
-                    background: 'linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%)',
-                    border: 'none',
-                    borderBottom: buySignalMetricsOpen ? '1px solid #bbf7d0' : 'none',
-                    color: '#065f46',
-                    padding: '10px 12px',
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}
-                >
-                  {buySignalMetricsOpen ? '▼' : '▶'} Buy Signals Metrics ({buySignalRows.length})
-                </button>
-
-                {buySignalMetricsOpen && (
-                  <div style={{ maxHeight: '220px', overflow: 'auto', background: '#ffffff' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', color: '#111827' }}>
-                      <thead>
-                        <tr style={{ background: '#f8fafc' }}>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937' }}>Symbol</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>LBB1</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>UBB1</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>EMA3(1m)</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Gap1%</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>LBB5</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>UBB5</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>EMA3(5m)</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Gap5%</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {buySignalRows.map((row, idx) => {
-                          const lbb1 = Number(row?.lbb_1 || row?.lbb_1m || 0);
-                          const ubb1 = Number(row?.ubb_1 || row?.ubb_1m || 0);
-                          const ema31 = Number(row?.ema3_1 || row?.ema3_1m || 0);
-                          const lbb5 = Number(row?.lbb_5 || row?.lbb5 || 0);
-                          const ubb5 = Number(row?.ubb_5 || row?.ubb5 || 0);
-                          const ema35 = Number(row?.ema3_5 || row?.ema3_5m || 0);
-
-                          return (
-                            <tr key={`${getSymbol(row)}-buy-metric-${idx}`}>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a' }}>{getSymbol(row)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(lbb1)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ubb1)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ema31)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatGapPercent(ubb1, ema31, ema31, row?.ltp)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(lbb5)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ubb5)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ema35)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatGapPercent(ubb5, ema35, ema35, row?.ltp)}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-
-              <div style={{ border: '1px solid #e5e7eb', borderRadius: '8px', overflow: 'hidden' }}>
-                <button
-                  type="button"
-                  onClick={() => setSellSignalMetricsOpen((prev) => !prev)}
-                  style={{
-                    width: '100%',
-                    textAlign: 'left',
-                    background: 'linear-gradient(135deg, #fee2e2 0%, #fecaca 100%)',
-                    border: 'none',
-                    borderBottom: sellSignalMetricsOpen ? '1px solid #fecaca' : 'none',
-                    color: '#7f1d1d',
-                    padding: '10px 12px',
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    cursor: 'pointer'
-                  }}
-                >
-                  {sellSignalMetricsOpen ? '▼' : '▶'} Sell Signals Metrics ({sellSignalRows.length})
-                </button>
-
-                {sellSignalMetricsOpen && (
-                  <div style={{ maxHeight: '220px', overflow: 'auto', background: '#ffffff' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', color: '#111827' }}>
-                      <thead>
-                        <tr style={{ background: '#f8fafc' }}>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937' }}>Symbol</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>LBB1</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>UBB1</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>EMA3(1m)</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Gap1%</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>LBB5</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>UBB5</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>EMA3(5m)</th>
-                          <th style={{ padding: '6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Gap5%</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sellSignalRows.map((row, idx) => {
-                          const lbb1 = Number(row?.lbb_1 || row?.lbb_1m || 0);
-                          const ubb1 = Number(row?.ubb_1 || row?.ubb_1m || 0);
-                          const ema31 = Number(row?.ema3_1 || row?.ema3_1m || 0);
-                          const lbb5 = Number(row?.lbb_5 || row?.lbb5 || 0);
-                          const ubb5 = Number(row?.ubb_5 || row?.ubb5 || 0);
-                          const ema35 = Number(row?.ema3_5 || row?.ema3_5m || 0);
-
-                          return (
-                            <tr key={`${getSymbol(row)}-sell-metric-${idx}`}>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a' }}>{getSymbol(row)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(lbb1)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ubb1)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ema31)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatGapPercent(ema31, lbb1, ema31, row?.ltp)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(lbb5)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ubb5)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatMetricPrice(ema35)}</td>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{formatGapPercent(ema35, lbb5, ema35, row?.ltp)}</td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </div>
           );
         })()}
-        
-        {/* Table Header */}
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: window.innerWidth <= 768 ? '85px 40px 55px 55px 55px 60px 65px 70px 80px 80px 75px 160px' : '130px 60px 85px 90px 90px 85px 100px 100px 130px 130px 120px 260px',
-          gap: '8px',
-          padding: '8px 12px',
-          fontSize: '11px',
-          fontWeight: '500',
-          color: '#374151',
-          background: '#f9fafb',
-          borderRadius: '4px',
-          marginBottom: '4px',
-          fontFamily: 'system-ui, -apple-system, sans-serif',
-          letterSpacing: '0.025em',
-          textTransform: 'uppercase',
-          border: '1px solid #e5e7eb',
-          whiteSpace: 'nowrap',
-          overflow: 'hidden'
-        }}>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SYMBOL</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>TYPE</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>LTP</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>BID QTY</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>ASK QTY</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>RSI(1m)</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>IMPACT LVLS</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>SLIPPAGE</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>LAST UPDATE</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>LEVERAGED FUNDS</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>CALCULATED QTY</div>
-          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontSize: window.innerWidth <= 480 ? '9px' : '11px' }}>5L DEPTH CHECK</div>
-        </div>
-      
-        {/* Table Data */}
+
+        {/* Signal metrics removed: subscribed table is now orderbook-only (BUY/SELL). */}
+
+        {/* Subscribed Stocks Order Book Analyzer (Buy/Sell Tables) */}
         {(() => {
           const subscribedStocks = getSubscribedStocks();
-          const IMPACT_MAX_LEVELS = 3;
-          const IMPACT_MAX_SLIPPAGE = 0.08;
           const effectiveSignalStocks = emaCheckSignalStocks || signalStocks;
-
-          const normalizeSymbolKey = (value) => String(extractSymbolName(value || '') || '').toUpperCase();
-          const buySignalBySymbol = new Map(
-            (effectiveSignalStocks?.buySignals || []).map((row) => [
-              normalizeSymbolKey(row?.symbol || row?.s),
-              row
-            ])
+          const normalizeSymbol = (value) => String(extractSymbolName(value || '') || '').trim().toUpperCase();
+          const buySymbolSet = new Set(
+            (effectiveSignalStocks?.buySignals || []).map((row) =>
+              normalizeSymbol(typeof row === 'string' ? row : (row?.symbol || row?.s))
+            )
           );
-          const sellSignalBySymbol = new Map(
-            (effectiveSignalStocks?.sellSignals || []).map((row) => [
-              normalizeSymbolKey(row?.symbol || row?.s),
-              row
-            ])
+          const sellSymbolSet = new Set(
+            (effectiveSignalStocks?.sellSignals || []).map((row) =>
+              normalizeSymbol(typeof row === 'string' ? row : (row?.symbol || row?.s))
+            )
           );
 
           const tableRows = subscribedStocks
             .map((symbol) => {
               const symbolKey = extractSymbolName(symbol);
+              const normalizedSymbol = normalizeSymbol(symbol);
               const symbolData = tickData?.[symbolKey];
               const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-              const scanType = latestTick?.scan_type || 'PENDING';
-              const side = scanType === 'BUY_SCAN' ? 'buy' : (scanType === 'SELL_SCAN' ? 'sell' : null);
+              const inferredScanType = buySymbolSet.has(normalizedSymbol)
+                ? 'BUY_SCAN'
+                : (sellSymbolSet.has(normalizedSymbol) ? 'SELL_SCAN' : 'PENDING');
 
-              const normalizedSymbolKey = normalizeSymbolKey(symbol);
+              if (!latestTick) {
+                return {
+                  symbol,
+                  scanType: inferredScanType,
+                  ltp: 0,
+                  bestBid: 0,
+                  bestAsk: 0,
+                  spreadPct: 0,
+                  bidQty5: 0,
+                  askQty5: 0,
+                  imbalancePct: 0,
+                  calcQty: 0,
+                  depthCheckPass: false,
+                  ratio: 0,
+                  ratioLabel: '-',
+                  timestamp: null,
+                  hasLiveTick: false
+                };
+              }
 
-              const signalRow = side === 'buy'
-                ? buySignalBySymbol.get(normalizedSymbolKey)
-                : sellSignalBySymbol.get(normalizedSymbolKey);
-              const macd1 = Number(signalRow?.macd1 || signalRow?.macd_1m || 0);
-              const signal1 = Number(signalRow?.signal1 || signalRow?.signal_1m || 0);
-              const macdPass = side ? (side === 'buy' ? (macd1 > signal1) : (macd1 < signal1)) : null;
-
-              const rsi1 = Number(signalRow?.rsi1 || signalRow?.rsi_1m || 0);
-
-              const impact = latestTick?.marketImpact?.[side] || {};
-              const levels = Number(impact.levels);
-              const slippage = Number(impact.slippage);
+              const rawScanType = latestTick?.scan_type;
+              const scanType = (rawScanType === 'BUY_SCAN' || rawScanType === 'SELL_SCAN')
+                ? rawScanType
+                : inferredScanType;
               const depth = latestTick?.depth || latestTick?.rawTick?.depth || {};
-              const bidQty = Number((depth?.buy || []).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
-              const askQty = Number((depth?.sell || []).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
-              const bidQty5 = Number((depth?.buy || []).slice(0, 5).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
-              const askQty5 = Number((depth?.sell || []).slice(0, 5).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
+              const buyDepth = Array.isArray(depth?.buy) ? depth.buy : [];
+              const sellDepth = Array.isArray(depth?.sell) ? depth.sell : [];
 
-              const impactPass = side
-                ? (Number.isFinite(levels) && Number.isFinite(slippage) && levels <= IMPACT_MAX_LEVELS && Math.abs(slippage) <= IMPACT_MAX_SLIPPAGE)
-                : null;
+              const ltp = Number(latestTick?.last_price || 0);
+              const bestBid = Number(buyDepth[0]?.price || 0);
+              const bestAsk = Number(sellDepth[0]?.price || 0);
+              const spreadPct = bestBid > 0 && bestAsk > 0
+                ? ((bestAsk - bestBid) / bestBid) * 100
+                : 0;
+
+              const bidQty5 = Number(buyDepth.slice(0, 5).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
+              const askQty5 = Number(sellDepth.slice(0, 5).reduce((sum, level) => sum + Number(level?.quantity || 0), 0));
+              const total5 = bidQty5 + askQty5;
+              const imbalancePct = total5 > 0 ? ((bidQty5 - askQty5) / total5) * 100 : 0;
+
+              const calcQty = ltp > 0 ? calculateQuantityFromFunds(ltp) : 0;
+              const bidHasDouble = calcQty > 0 && bidQty5 >= (2 * calcQty);
+              const askHasDouble = calcQty > 0 && askQty5 >= (2 * calcQty);
+
+              const BUY_IMBALANCE_MIN = 1.2;
+              const BUY_IMBALANCE_MAX = 4;
+              const SELL_IMBALANCE_MIN = 1.2;
+              const SELL_IMBALANCE_MAX = 4;
+
+              const buyRatio = askQty5 > 0 ? (bidQty5 / askQty5) : 0;
+              const sellRatio = bidQty5 > 0 ? (askQty5 / bidQty5) : 0;
+              const buyRatioOk = buyRatio >= BUY_IMBALANCE_MIN && buyRatio <= BUY_IMBALANCE_MAX;
+              const sellRatioOk = sellRatio >= SELL_IMBALANCE_MIN && sellRatio <= SELL_IMBALANCE_MAX;
+
+              const buyDepthCheckPass = askHasDouble && bidHasDouble && buyRatioOk;
+              const sellDepthCheckPass = bidHasDouble && askHasDouble && sellRatioOk;
+
+              const depthCheckPass = scanType === 'BUY_SCAN'
+                ? buyDepthCheckPass
+                : (scanType === 'SELL_SCAN' ? sellDepthCheckPass : false);
+
+              const ratio = scanType === 'BUY_SCAN' ? buyRatio : sellRatio;
+              const ratioLabel = scanType === 'BUY_SCAN' ? 'B/A' : 'A/B';
 
               return {
                 symbol,
                 scanType,
-                ltp: Number(latestTick?.last_price || 0),
-                bidQty,
-                askQty,
+                ltp,
+                bestBid,
+                bestAsk,
+                spreadPct,
                 bidQty5,
                 askQty5,
-                rsi1,
-                levels,
-                slippage,
+                imbalancePct,
+                calcQty,
+                depthCheckPass,
+                ratio,
+                ratioLabel,
                 timestamp: latestTick?.timestamp || null,
-                hasLiveTick: Boolean(latestTick),
-                macdPass,
-                impactPass
+                hasLiveTick: true
               };
             })
             .filter(Boolean);
 
-          const passedRows = tableRows.filter((row) => {
-            const isDirectional = row.scanType === 'BUY_SCAN' || row.scanType === 'SELL_SCAN';
-            return row.hasLiveTick && isDirectional && row.macdPass === true && row.impactPass === true;
-          });
+          const buyRows = tableRows.filter((row) => row.scanType === 'BUY_SCAN');
+          const sellRows = tableRows.filter((row) => row.scanType === 'SELL_SCAN');
 
-          console.log('🔍 SUBSCRIBED TABLE rows/passed:', { total: tableRows.length, passed: passedRows.length }, {
-            buySignalRows: buySignalBySymbol.size,
-            sellSignalRows: sellSignalBySymbol.size
-          });
-          
+          const renderOrderbookTable = (rows, label, labelColor, borderColor) => (
+            <div style={{
+              background: '#f9fafb',
+              border: `1px solid ${borderColor}`,
+              borderRadius: '6px',
+              padding: '10px',
+              marginBottom: '10px'
+            }}>
+              <div style={{
+                fontSize: '13px',
+                fontWeight: 700,
+                color: labelColor,
+                marginBottom: '8px',
+                fontFamily: 'system-ui, -apple-system, sans-serif'
+              }}>
+                {label} ({rows.length})
+              </div>
+
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '900px', fontSize: '11px' }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc' }}>
+                      <th style={{ padding: '7px 6px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937' }}>Symbol / Chart</th>
+                      <th style={{ padding: '7px 6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>LTP</th>
+                      <th style={{ padding: '7px 6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Best Bid</th>
+                      <th style={{ padding: '7px 6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Best Ask</th>
+                      <th style={{ padding: '7px 6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Spread %</th>
+                      <th style={{ padding: '7px 6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Bid Qty (5L)</th>
+                      <th style={{ padding: '7px 6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Ask Qty (5L)</th>
+                      <th style={{ padding: '7px 6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Imbalance %</th>
+                      <th style={{ padding: '7px 6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Calc Qty</th>
+                      <th style={{ padding: '7px 6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Depth Check</th>
+                      <th style={{ padding: '7px 6px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937' }}>Updated</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.length === 0 ? (
+                      <tr>
+                        <td colSpan={11} style={{ padding: '10px', color: '#64748b', borderBottom: '1px solid #f1f5f9' }}>
+                          No subscribed {label.toLowerCase()} stocks with live order book data yet.
+                        </td>
+                      </tr>
+                    ) : rows.map((row, idx) => {
+                      const symbolName = extractSymbolName(row.symbol);
+                      return (
+                        <tr key={`${row.symbol}-${idx}`} style={{ background: row.symbol === selectedSymbol ? '#eef2ff' : '#ffffff' }}>
+                          <td style={{ padding: '7px 6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a' }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const currentTime = Date.now();
+                                manualSelectionRef.current = { symbol: row.symbol, timestamp: currentTime };
+                                setSelectedSymbol(row.symbol);
+                                if (onOpenChart) {
+                                  onOpenChart(row.symbol);
+                                }
+                              }}
+                              style={{
+                                background: 'transparent',
+                                border: 'none',
+                                color: '#2563eb',
+                                padding: 0,
+                                cursor: 'pointer',
+                                fontWeight: 700,
+                                textDecoration: 'underline'
+                              }}
+                            >
+                              {symbolName}
+                            </button>
+                          </td>
+                          <td style={{ padding: '7px 6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>
+                            {row.ltp > 0 ? `₹${row.ltp.toFixed(2)}` : '-'}
+                          </td>
+                          <td style={{ padding: '7px 6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#065f46' }}>
+                            {row.bestBid > 0 ? row.bestBid.toFixed(2) : '-'}
+                          </td>
+                          <td style={{ padding: '7px 6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#991b1b' }}>
+                            {row.bestAsk > 0 ? row.bestAsk.toFixed(2) : '-'}
+                          </td>
+                          <td style={{ padding: '7px 6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>
+                            {row.spreadPct > 0 ? `${row.spreadPct.toFixed(3)}%` : '-'}
+                          </td>
+                          <td style={{ padding: '7px 6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#065f46' }}>
+                            {formatQuantity(row.bidQty5)}
+                          </td>
+                          <td style={{ padding: '7px 6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#991b1b' }}>
+                            {formatQuantity(row.askQty5)}
+                          </td>
+                          <td style={{ padding: '7px 6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>
+                            {Number.isFinite(row.imbalancePct) ? `${row.imbalancePct.toFixed(2)}%` : '-'}
+                          </td>
+                          <td style={{ padding: '7px 6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>
+                            {row.calcQty > 0 ? formatQuantity(row.calcQty) : '-'}
+                          </td>
+                          <td style={{
+                            padding: '7px 6px',
+                            borderBottom: '1px solid #f1f5f9',
+                            textAlign: 'right',
+                            color: row.depthCheckPass ? '#059669' : '#dc2626',
+                            fontWeight: 700
+                          }}>
+                            {row.depthCheckPass ? 'PASS' : 'FAIL'} ({row.ratioLabel}: {row.ratio > 0 ? row.ratio.toFixed(2) : '0.00'})
+                          </td>
+                          <td style={{ padding: '7px 6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#64748b' }}>
+                            {row.timestamp ? new Date(row.timestamp).toLocaleTimeString() : '-'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+
           if (tableRows.length === 0) {
             return (
               <div style={{
@@ -1610,376 +1565,16 @@ const SubscribedStockTracker = ({
                 fontFamily: '"Segoe UI", "Roboto", "Inter", system-ui, -apple-system, sans-serif',
                 lineHeight: '1.6'
               }}>
-                📡 No subscribed stocks yet.<br/>
-                Stocks will appear here as soon as backend subscriptions are updated.
+                No subscribed stocks with tick data yet.<br/>
+                Orderbook analyzer rows will appear once ticks arrive.
               </div>
             );
           }
-          
+
           return (
             <div>
-              {/* Market Scanner Table */}
-              <div style={{
-                background: '#f9fafb',
-                border: '1px solid #e5e7eb',
-                padding: '12px',
-                borderRadius: '6px'
-              }}>
-          <div style={{ 
-            color: '#00ff88', 
-            fontWeight: '600', 
-            marginBottom: '16px',
-            fontSize: '14px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px'
-          }}>
-            📊 LIVE Market Impact Data 
-            <span style={{ 
-              fontSize: '10px', 
-              color: '#10b981',
-              animation: 'pulse 1s ease-in-out infinite',
-              fontWeight: '400'
-            }}>
-              • REAL-TIME
-            </span>
-          </div> 
-                <div style={{
-                  fontSize: '18px', 
-                  fontFamily: 'system-ui, -apple-system, sans-serif',
-                  letterSpacing: '0.025em'
-                }}>
-                  Market Scanner [Subscribed: {tableRows.length} | Passed MACD(1m)/Signal(1m)+Impact: {passedRows.length}]
-                </div>
-                
-                {tableRows.map((row, index) => {
-                  const symbol = row.symbol;
-                  const scanType = row.scanType;
-                  const rowLtp = Number(row.ltp || 0);
-                  const rowCalcQty = rowLtp > 0 ? calculateQuantityFromFunds(rowLtp) : 0;
-                  const bidHasDouble = rowCalcQty > 0 && row.bidQty5 >= (2 * rowCalcQty);
-                  const askHasDouble = rowCalcQty > 0 && row.askQty5 >= (2 * rowCalcQty);
-                  const SELL_IMBALANCE_MIN = 1.2;
-                  const SELL_IMBALANCE_MAX = 4;
-                  const BUY_IMBALANCE_MIN = 1.2;
-                  const BUY_IMBALANCE_MAX = 4;
-
-                  const sellImbalanceRatio = row.bidQty5 > 0 ? (row.askQty5 / row.bidQty5) : 0;
-                  const buyImbalanceRatio = row.askQty5 > 0 ? (row.bidQty5 / row.askQty5) : 0;
-
-                  const sellRatioOk = sellImbalanceRatio >= SELL_IMBALANCE_MIN && sellImbalanceRatio <= SELL_IMBALANCE_MAX;
-                  const buyRatioOk = buyImbalanceRatio >= BUY_IMBALANCE_MIN && buyImbalanceRatio <= BUY_IMBALANCE_MAX;
-
-                  const sellSupportPass = bidHasDouble && askHasDouble && sellRatioOk;
-                  const buySupportPass = askHasDouble && bidHasDouble && buyRatioOk;
-                  
-                  return (
-                    <div
-                      key={`unique-row-${symbol}-${index}`}
-                      style={{
-                        display: 'grid',
-                        gridTemplateColumns: window.innerWidth <= 768 ? '85px 40px 55px 55px 55px 60px 65px 70px 80px 80px 75px 160px' : '130px 60px 85px 90px 90px 85px 100px 100px 130px 130px 120px 260px',
-                        gap: '8px',
-                        padding: '6px 12px',
-                        fontSize: '12px',
-                        fontFamily: 'system-ui, -apple-system, sans-serif',
-                        fontWeight: '400',
-                        letterSpacing: '0.025em',
-                        background: symbol === selectedSymbol ? 'rgba(0, 0, 0, 0.05)' : '#ffffff',
-                        color: symbol === selectedSymbol ? '#1f2937' : '#1f2937',
-                        borderRadius: '4px',
-                        marginBottom: '1px',
-                        border: '1px solid ' + (symbol === selectedSymbol ? '#9ca3af' : '#e5e7eb'),
-                        cursor: 'pointer',
-                        transition: 'all 0.15s ease',
-                        whiteSpace: 'nowrap',
-                        overflow: 'hidden'
-                      }}
-                      title={`Click to open ${symbol.replace('NSE:', '')} chart in Kite`}
-                      onMouseEnter={(e) => {
-                        e.target.style.background = symbol === selectedSymbol ? 'rgba(59, 130, 246, 0.1)' : 'rgba(59, 130, 246, 0.05)';
-                        e.target.style.borderColor = '#3b82f6';
-                        e.target.style.transform = 'translateY(-1px)';
-                        e.target.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.target.style.background = symbol === selectedSymbol ? 'rgba(0, 0, 0, 0.05)' : '#ffffff';
-                        e.target.style.borderColor = symbol === selectedSymbol ? '#9ca3af' : '#e5e7eb';
-                        e.target.style.transform = 'translateY(0)';
-                        e.target.style.boxShadow = 'none';
-                      }}
-                      onClick={() => {
-                        // � SHOW ORDER BOOK: Click anywhere on row to show order book
-                        // Track manual selection to prevent auto-override
-                        const currentTime = Date.now();
-                        manualSelectionRef.current = {
-                          symbol: symbol,
-                          timestamp: currentTime
-                        };
-                        
-                        console.log('🔍 👆 MANUAL ROW SELECTION:', symbol, '- Protected until:', new Date(currentTime + MANUAL_SELECTION_LOCK_TIME).toLocaleTimeString());
-                        console.log('🔒 ROW MANUAL PROTECTION ACTIVE: Will block auto-selection for next', MANUAL_SELECTION_LOCK_TIME/1000, 'seconds');
-                        setSelectedSymbol(symbol);
-                      }}
-                    >
-                      {/* Symbol */}
-                      <div style={{ 
-                        fontWeight: '500',
-                        fontSize: window.innerWidth <= 480 ? '10px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        cursor: 'pointer'
-                      }}
-                      title={`Click to show ${symbol.replace('NSE:', '')} order book and open chart`}
-                      onClick={(e) => {
-                        e.stopPropagation(); // Prevent triggering row click
-                        
-                        // Track manual selection to prevent auto-override
-                        const currentTime = Date.now();
-                        manualSelectionRef.current = {
-                          symbol: symbol,
-                          timestamp: currentTime
-                        };
-                        
-                        console.log('🔍 👆 MANUAL SELECTION:', symbol, '- Protected until:', new Date(currentTime + MANUAL_SELECTION_LOCK_TIME).toLocaleTimeString());
-                        console.log('🔒 MANUAL PROTECTION ACTIVE: Will block auto-selection for next', MANUAL_SELECTION_LOCK_TIME/1000, 'seconds');
-                        
-                        setSelectedSymbol(symbol);
-                        
-                        //  OPEN NAMED CHART: Call onOpenChart if provided
-                        if (onOpenChart) {
-                          onOpenChart(symbol);
-                        }
-                        
-                        console.log('🔍 👆 MANUAL SELECTION:', symbol, '- Protected for', MANUAL_SELECTION_LOCK_TIME/1000, 'seconds');
-                      }}
-                      >
-                        {symbol.replace('NSE:', '').substring(0, window.innerWidth <= 480 ? 6 : 10)}
-                        {symbol === selectedSymbol && <span style={{ marginLeft: '2px' }}>●</span>}
-                        <span style={{ 
-                          fontSize: '10px', 
-                          opacity: 0.6,
-                          marginLeft: 'auto'
-                        }}>📊</span>
-                      </div>
-                      
-                      {/* Type */}
-                      <div style={{ 
-                        color: scanType === 'BUY_SCAN' ? '#059669' : 
-                               scanType === 'SELL_SCAN' ? '#dc2626' : 
-                               scanType === 'PENDING' ? '#6b7280' : '#d97706',
-                        fontWeight: '500',
-                        fontSize: window.innerWidth <= 480 ? '9px' : '11px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {scanType === 'BUY_SCAN' ? 'BUY' : 
-                         scanType === 'SELL_SCAN' ? 'SELL' : 
-                         scanType === 'PENDING' ? 'PENDING' :
-                         'UNKNOWN'}
-                      </div>
-                      
-                      {/* LTP */}
-                      <div style={{ 
-                        color: '#1f2937',
-                        fontWeight: '500',
-                        fontSize: window.innerWidth <= 480 ? '10px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {row.ltp ? (window.innerWidth <= 480 ? row.ltp.toFixed(0) : `₹${row.ltp.toFixed(2)}`) : '-'}
-                      </div>
-
-                      {/* BID QTY */}
-                      <div style={{ 
-                        color: '#059669',
-                        fontWeight: '500',
-                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {row.bidQty > 0 ? formatQuantity(row.bidQty) : '-'}
-                      </div>
-
-                      {/* ASK QTY */}
-                      <div style={{ 
-                        color: '#dc2626',
-                        fontWeight: '500',
-                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {row.askQty > 0 ? formatQuantity(row.askQty) : '-'}
-                      </div>
-
-                      {/* RSI(1m) */}
-                      <div style={{
-                        color: '#7c3aed',
-                        fontWeight: '600',
-                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {Number.isFinite(row.rsi1) && row.rsi1 > 0 ? row.rsi1.toFixed(2) : '-'}
-                      </div>
-                      
-                      {/* IMPACT LEVELS */}
-                      <div style={{ 
-                        color: '#0ea5e9',
-                        fontWeight: '500',
-                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {Number.isFinite(row.levels) ? row.levels : '-'}
-                      </div>
-                      
-                      {/* SLIPPAGE */}
-                      <div style={{ 
-                        color: '#16a34a',
-                        fontWeight: '500',
-                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {Number.isFinite(row.slippage) ? `${Math.abs(row.slippage).toFixed(3)}%` : '-'}
-                      </div>
-                      
-                      {/* LAST UPDATE */}
-                      <div style={{ 
-                        color: '#6b7280',
-                        fontWeight: '500',
-                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {row.timestamp ? new Date(row.timestamp).toLocaleTimeString() : '-'}
-                      </div>
-
-                      {/* LEVERAGED FUNDS */}
-                      <div style={{
-                        color: '#8b5cf6',
-                        fontWeight: '600',
-                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {window.innerWidth <= 480
-                          ? `₹${(fundsData.leverageFunds / 1000).toFixed(0)}K`
-                          : `₹${Number(fundsData.leverageFunds || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`}
-                      </div>
-
-                      {/* CALCULATED QTY */}
-                      <div style={{
-                        color: '#0f766e',
-                        fontWeight: '600',
-                        fontSize: window.innerWidth <= 480 ? '9px' : '12px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis'
-                      }}>
-                        {rowCalcQty > 0
-                          ? (window.innerWidth <= 480 ? formatQuantity(rowCalcQty).substring(0, 4) : formatQuantity(rowCalcQty))
-                          : '-'}
-                      </div>
-
-                      {/* 5L DEPTH CHECK (single column with 3 values) */}
-                      <div style={{
-                        color: '#334155',
-                        fontWeight: '600',
-                        fontSize: window.innerWidth <= 480 ? '8px' : '11px',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        lineHeight: '1.25'
-                      }}>
-                        {scanType === 'BUY_SCAN' ? (
-                          <div style={{ color: buySupportPass ? '#059669' : '#dc2626' }}>
-                            <div style={{ fontWeight: '700' }}>BUY {buySupportPass ? 'PASS' : 'FAIL'}</div>
-                            <div>CQ: {rowCalcQty > 0 ? formatQuantity(rowCalcQty) : '-'}</div>
-                            <div>Bid 5L: {formatQuantity(row.bidQty5)} | 2x: {bidHasDouble ? 'YES' : 'NO'}</div>
-                            <div>Ask 5L: {formatQuantity(row.askQty5)} | 2x: {askHasDouble ? 'YES' : 'NO'}</div>
-                            <div>Ratio B/A: {buyImbalanceRatio.toFixed(2)} | Range [{BUY_IMBALANCE_MIN}-{BUY_IMBALANCE_MAX}] {buyRatioOk ? 'OK' : 'NO'}</div>
-                          </div>
-                        ) : scanType === 'SELL_SCAN' ? (
-                          <div style={{ color: sellSupportPass ? '#059669' : '#dc2626' }}>
-                            <div style={{ fontWeight: '700' }}>SELL {sellSupportPass ? 'PASS' : 'FAIL'}</div>
-                            <div>CQ: {rowCalcQty > 0 ? formatQuantity(rowCalcQty) : '-'}</div>
-                            <div>Bid 5L: {formatQuantity(row.bidQty5)} | 2x: {bidHasDouble ? 'YES' : 'NO'}</div>
-                            <div>Ask 5L: {formatQuantity(row.askQty5)} | 2x: {askHasDouble ? 'YES' : 'NO'}</div>
-                            <div>Ratio A/B: {sellImbalanceRatio.toFixed(2)} | Range [{SELL_IMBALANCE_MIN}-{SELL_IMBALANCE_MAX}] {sellRatioOk ? 'OK' : 'NO'}</div>
-                          </div>
-                        ) : (
-                          <div style={{ color: '#6b7280' }}>-</div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })()}
-        
-        {/* Summary Footer */}
-        {(() => {
-          const subscribedStocks = getSubscribedStocks();
-          const IMPACT_MAX_LEVELS = 3;
-          const IMPACT_MAX_SLIPPAGE = 0.08;
-
-          const passedRows = subscribedStocks
-            .map((symbol) => {
-              const symbolKey = extractSymbolName(symbol);
-              const symbolData = tickData?.[symbolKey];
-              const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
-              if (!latestTick) return null;
-              const scanType = latestTick?.scan_type;
-              const side = scanType === 'BUY_SCAN' ? 'buy' : (scanType === 'SELL_SCAN' ? 'sell' : null);
-              if (!side) return null;
-              const impact = latestTick?.marketImpact?.[side] || {};
-              const levels = Number(impact.levels);
-              const slippage = Number(impact.slippage);
-              const impactPass = Number.isFinite(levels) && Number.isFinite(slippage) && levels <= IMPACT_MAX_LEVELS && Math.abs(slippage) <= IMPACT_MAX_SLIPPAGE;
-              if (!impactPass) return null;
-              return { symbol, scanType };
-            })
-            .filter(Boolean);
-
-          return (
-            <div style={{
-              marginTop: '15px',
-              padding: '10px',
-              background: 'rgba(255, 215, 0, 0.1)',
-              borderRadius: '6px',
-              borderTop: '1px solid rgba(255, 215, 0, 0.3)'
-            }}>
-              <div style={{ 
-                fontSize: '12px', 
-                color: '#ffd700', 
-                fontWeight: '600',
-                textAlign: 'center',
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                fontFamily: '"Segoe UI", "Roboto", "Inter", system-ui, -apple-system, sans-serif',
-                letterSpacing: '0.2px'
-              }}>
-                <div>
-                  Passed: {passedRows.length} symbols
-                </div>
-                <div style={{ display: 'flex', gap: '15px' }}>
-                  <span style={{ color: '#00ff00' }}>
-                    🟢 Buy: {passedRows.filter(row => row.scanType === 'BUY_SCAN').length}
-                  </span>
-                  <span style={{ color: '#ff6b6b' }}>
-                    🔴 Sell: {passedRows.filter(row => row.scanType === 'SELL_SCAN').length}
-                  </span>
-                </div>
-                <div>
-                  {selectedSymbol ? ` Live: ${selectedSymbol.replace('NSE:', '')}` : ' No selection'} ⚡
-                </div>
-              </div>
+              {renderOrderbookTable(buyRows, 'BUY Order Book Analyzer', '#166534', '#bbf7d0')}
+              {renderOrderbookTable(sellRows, 'SELL Order Book Analyzer', '#991b1b', '#fecaca')}
             </div>
           );
         })()}

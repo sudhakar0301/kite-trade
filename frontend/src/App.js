@@ -5,10 +5,10 @@ import TradingControlPanel from './components/TradingControlPanel';
 // import TickAnalysisTable from './components/TickAnalysisTable';
 import OrderExecutionPanel from './components/OrderExecutionPanel';
 import SubscribedStockTracker from './components/SubscribedStockTracker';
-import ScanResultsTables from './components/ScanResultsTables'; // NEW: Scan results tables
+// import ScanResultsTables from './components/ScanResultsTables'; // Hidden for streak-only flow
 import PositionsOrdersTable from './components/PositionsOrdersTable'; // NEW: Positions and Orders display
 import TargetOrderDetails from './components/TargetOrderDetails'; // NEW: Target order details display
-import SignalFilterPlayground from './components/SignalFilterPlayground';
+// import SignalFilterPlayground from './components/SignalFilterPlayground';
 // import AlgorithmTutorial from './components/AlgorithmTutorial';
 import {
   AppContainer,
@@ -32,6 +32,8 @@ const FINAL_BUY_HISTORY_STORAGE_KEY = 'final_buy_history';
 const FINAL_SELL_HISTORY_STORAGE_KEY = 'final_sell_history';
 const QUALIFIED_LOW_PRICE_STORAGE_KEY = 'qualified_low_price_filtered_stocks';
 const STORAGE_RESET_FLAG_KEY = 'storage_reset_done_v1';
+const STREAK_TOKEN_STORAGE_KEY = 'streak_auth_token';
+const USE_STREAK_SCAN_ONLY = true;
 const BUY_FILTER_KEYS = [
   'plusDiAbove25_1mBuy',
   'plusDiAboveAdx_1mBuy',
@@ -160,6 +162,12 @@ function App() {
   const [scannerSubscriptionData, setScannerSubscriptionData] = useState({
     subscribedSymbols: [],
     signalStocks: { buySignals: [], sellSignals: [] }
+  });
+  const [streakScanData, setStreakScanData] = useState({
+    rows: [],
+    total: 0,
+    lastUpdated: null,
+    error: null
   });
   
   // NEW: Scan results table data
@@ -1191,6 +1199,151 @@ function App() {
   // Scanner data fetch function
   const fetchScannerData = useCallback(async () => {
     try {
+      if (USE_STREAK_SCAN_ONLY) {
+        console.log('🟦 Streak-only mode: fetching /api/streak-scan (BUY)');
+        const token = accessToken || localStorage.getItem('kite_access_token');
+        const storedStreakToken = localStorage.getItem(STREAK_TOKEN_STORAGE_KEY);
+        const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {};
+        const streakHeaders = storedStreakToken
+          ? { ...authHeaders, 'x-streak-token': storedStreakToken }
+          : authHeaders;
+
+        const isStreakAuthError = (status, errorText) => {
+          const msg = String(errorText || '').toLowerCase();
+          return (
+            msg.includes('missing streak_auth_token') ||
+            msg.includes('invalid token') ||
+            msg.includes('unauthorized') ||
+            status === 401 ||
+            status === 403
+          );
+        };
+
+        let activeStreakToken = storedStreakToken || '';
+        let streakPayload = null;
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const reqHeaders = activeStreakToken
+            ? { ...authHeaders, 'x-streak-token': activeStreakToken }
+            : streakHeaders;
+
+          const response = await fetch('http://localhost:5000/api/streak-scan?signalType=BUY', {
+            headers: reqHeaders
+          });
+
+          if (response.ok) {
+            streakPayload = await response.json();
+            break;
+          }
+
+          const errorPayload = await response.json().catch(() => ({}));
+          const apiError = errorPayload?.error || `Streak scan failed (${response.status})`;
+
+          if (!isStreakAuthError(response.status, apiError)) {
+            throw new Error(apiError);
+          }
+
+          const enteredToken = window.prompt('Enter STREAK JWT token (STREAK_AUTH_TOKEN):', activeStreakToken || '');
+          if (!enteredToken || !enteredToken.trim()) {
+            throw new Error('Streak JWT token is required to run streak scan.');
+          }
+
+          activeStreakToken = enteredToken.trim();
+          localStorage.setItem(STREAK_TOKEN_STORAGE_KEY, activeStreakToken);
+        }
+
+        if (!streakPayload) {
+          throw new Error('Unable to run streak scan after token retries.');
+        }
+
+        const rows = Array.isArray(streakPayload?.rows) ? streakPayload.rows : [];
+        const nowIso = new Date().toISOString();
+        const nowTime = new Date().toLocaleTimeString();
+
+        const formattedBuyStocks = rows.map((row) => ({
+          ...row,
+          symbol: row.symbol || (row.seg_sym && row.seg_sym.includes(':') ? row.seg_sym.split(':')[1] : row.seg_sym),
+          ltp: Number(row.at || row.ltp || 0),
+          volume: Number(row.volume || 0),
+          signalStrength: 80,
+          timestamp: nowIso,
+          timeFormatted: nowTime
+        }));
+
+        setBuySignals(formattedBuyStocks);
+        setSellSignals([]);
+        setLowPriceSourceStocks({ buy: formattedBuyStocks, sell: [] });
+        setIntersectedSourceStocks({ buy: formattedBuyStocks, sell: [] });
+        setSignalStocks({
+          buySignals: formattedBuyStocks,
+          sellSignals: [],
+          lastUpdate: nowIso
+        });
+
+        setStreakScanData({
+          rows,
+          total: Number(streakPayload?.total || rows.length),
+          lastUpdated: nowIso,
+          error: null
+        });
+
+        setScanResults((prev) => ({
+          ...prev,
+          buyTable: formattedBuyStocks,
+          sellTable: [],
+          crossoverTable: [],
+          crossdownTable: [],
+          lastScanTime: nowIso
+        }));
+
+        try {
+          const [subscriptionRes, positionsRes, ordersRes, marginsRes] = await Promise.all([
+            fetch('http://localhost:5000/api/subscription-status'),
+            fetch('http://localhost:5000/api/positions', { headers: authHeaders }),
+            fetch('http://localhost:5000/api/orders', { headers: authHeaders }),
+            fetch('http://localhost:5000/api/get-margins', { headers: authHeaders })
+          ]);
+
+          if (subscriptionRes.ok) {
+            const subscriptionData = await subscriptionRes.json();
+            setRealSubscriptionCount(subscriptionData.subscribed_count || 0);
+            setScannerSubscriptionData({
+              subscribedSymbols: subscriptionData.subscribed_symbols || [],
+              signalStocks: subscriptionData.signal_stocks || { buySignals: [], sellSignals: [] }
+            });
+          }
+
+          if (positionsRes.ok) {
+            const positionsPayload = await positionsRes.json();
+            setPositionsData(positionsPayload.positions || []);
+            setLastPositionsOrdersUpdate(new Date().toLocaleTimeString());
+          }
+
+          if (ordersRes.ok) {
+            const ordersPayload = await ordersRes.json();
+            setOrdersData(ordersPayload.orders || []);
+            setLastPositionsOrdersUpdate(new Date().toLocaleTimeString());
+          }
+
+          if (marginsRes.ok) {
+            const marginsPayload = await marginsRes.json();
+            setScannerMargins({
+              availableFunds: Number(marginsPayload?.availableFunds || 0),
+              leverageFunds: Number(marginsPayload?.leverageFunds || 0),
+              usableFunds: Number(marginsPayload?.usableFunds || 0)
+            });
+          }
+        } catch (sharedFetchError) {
+          console.warn('⚠️ Streak shared refresh failed:', sharedFetchError.message);
+        }
+
+        setLastUpdate(nowTime);
+        if (voiceEnabled && formattedBuyStocks.length > 0) {
+          speak(`Streak scanner found ${formattedBuyStocks.length} bullish signals`);
+        }
+        return;
+      }
+
       // STEP 1: Call main low-price scan (backend already applies intersection)
       console.log('🔍 Step 1: Fetching low price scanner data (backend intersection source of truth)...');
 
@@ -1487,13 +1640,18 @@ function App() {
         // Shared scanner-time refresh: subscription + positions/orders/margins (once per scan).
         try {
           const token = accessToken || localStorage.getItem('kite_access_token');
-          const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {};
+          const tokenHeaders = token ? { 'Authorization': `Bearer ${token}` } : {};
+          const savedStreakToken = localStorage.getItem(STREAK_TOKEN_STORAGE_KEY);
+          const authHeaders = savedStreakToken
+            ? { ...tokenHeaders, 'x-streak-token': savedStreakToken }
+            : tokenHeaders;
 
-          const [subscriptionRes, positionsRes, ordersRes, marginsRes] = await Promise.all([
+          const [subscriptionRes, positionsRes, ordersRes, marginsRes, streakRes] = await Promise.all([
             fetch('http://localhost:5000/api/subscription-status'),
             fetch('http://localhost:5000/api/positions', { headers: authHeaders }),
             fetch('http://localhost:5000/api/orders', { headers: authHeaders }),
-            fetch('http://localhost:5000/api/get-margins', { headers: authHeaders })
+            fetch('http://localhost:5000/api/get-margins', { headers: authHeaders }),
+            fetch('http://localhost:5000/api/streak-scan', { headers: authHeaders })
           ]);
 
           if (subscriptionRes.ok) {
@@ -1524,6 +1682,23 @@ function App() {
               leverageFunds: Number(marginsPayload?.leverageFunds || 0),
               usableFunds: Number(marginsPayload?.usableFunds || 0)
             });
+          }
+
+          if (streakRes.ok) {
+            const streakPayload = await streakRes.json();
+            setStreakScanData({
+              rows: Array.isArray(streakPayload?.rows) ? streakPayload.rows : [],
+              total: Number(streakPayload?.total || 0),
+              lastUpdated: new Date().toISOString(),
+              error: null
+            });
+          } else {
+            const streakErrorPayload = await streakRes.json().catch(() => ({}));
+            setStreakScanData((prev) => ({
+              ...prev,
+              lastUpdated: new Date().toISOString(),
+              error: streakErrorPayload?.error || `Streak scan failed (${streakRes.status})`
+            }));
           }
         } catch (sharedFetchError) {
           console.warn('⚠️ Scanner-shared refresh failed:', sharedFetchError.message);
@@ -1628,6 +1803,10 @@ function App() {
   ]);
 
   useEffect(() => {
+    if (USE_STREAK_SCAN_ONLY) {
+      return;
+    }
+
     const activeBuyStocks = uiFilterStockSource === 'intersected'
       ? (intersectedSourceStocks.buy || [])
       : (lowPriceSourceStocks.buy || []);
@@ -2159,15 +2338,11 @@ function App() {
   const crossoverSymbolKeys = new Set((scanResults.crossoverTable || []).map((row) => toSymbolKey(row)).filter(Boolean));
   const crossdownSymbolKeys = new Set((scanResults.crossdownTable || []).map((row) => toSymbolKey(row)).filter(Boolean));
 
-  const filteredBuyIntersectedRows = (filteredBuyStocks || []).filter((row) => crossoverSymbolKeys.has(toSymbolKey(row)));
-  const filteredSellIntersectedRows = filteredSellStocks || [];
-
-  const intersectedSubscribedSymbols = [
-    ...filteredBuyIntersectedRows.map((row) => toSymbolKey(row)),
-    ...filteredSellIntersectedRows.map((row) => toSymbolKey(row))
-  ].filter(Boolean);
-
-  const uniqueIntersectedSubscribedSymbols = [...new Set(intersectedSubscribedSymbols)];
+  const trackerBuyRows = signalStocks?.buySignals || [];
+  const trackerSellRows = signalStocks?.sellSignals || [];
+  const trackerSubscribedSymbols = Array.isArray(scannerSubscriptionData?.subscribedSymbols)
+    ? scannerSubscriptionData.subscribedSymbols
+    : [];
 
   return (
     <AppContainer>
@@ -2260,23 +2435,24 @@ function App() {
             <SubscribedStockTracker 
               tickData={tickData}
               onOpenChart={openNamedChart}
-              subscribedCount={uniqueIntersectedSubscribedSymbols.length}
-              buySignalsCount={filteredBuyIntersectedRows.length}
-              sellSignalsCount={filteredSellIntersectedRows.length}
+              subscribedCount={trackerSubscribedSymbols.length}
+              buySignalsCount={trackerBuyRows.length}
+              sellSignalsCount={trackerSellRows.length}
               pollCountdown={pollCountdown}
-              subscribedSymbols={uniqueIntersectedSubscribedSymbols}
+              subscribedSymbols={trackerSubscribedSymbols}
               signalStocks={signalStocks}
-              intersectionSignalStocks={{
-                buySignals: filteredBuyIntersectedRows,
-                sellSignals: filteredSellIntersectedRows
-              }}
               emaCheckSignalStocks={{
-                buySignals: filteredBuyIntersectedRows,
-                sellSignals: filteredSellIntersectedRows
+                buySignals: trackerBuyRows,
+                sellSignals: trackerSellRows
               }}
               marginsData={scannerMargins}
+              streakScanRows={streakScanData.rows}
+              streakScanCount={streakScanData.total}
+              streakScanError={streakScanData.error}
             />
 
+            {/* Streak-only mode: hide filter/crossover tables for now. */}
+            {/*
             <div style={{ marginTop: '12px', border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', overflow: 'hidden' }}>
               <div style={{ padding: '10px', fontWeight: 800, color: '#e2e8f0', background: 'rgba(30, 41, 59, 0.75)' }}>
                 MACD(1m) vs Signal(1m) Crosses
@@ -2402,6 +2578,7 @@ function App() {
               onFilteredBuyChange={setFilteredBuyStocks}
               onFilteredSellChange={setFilteredSellStocks}
             />
+            */}
           </SectionBody>
         </SectionCard>
 
@@ -2497,6 +2674,7 @@ function App() {
 
         </TopSectionsGrid>
 
+        {/*
         <SectionCard style={{ marginTop: '16px' }}>
           <SectionHeader>
             <SectionTitle>Persisted Filtered Results</SectionTitle>
@@ -2552,6 +2730,7 @@ function App() {
             </div>
           </SectionBody>
         </SectionCard>
+        */}
 
         {/* Commented out for later use: Pure Crossover and Crossdown tables */}
         {/*

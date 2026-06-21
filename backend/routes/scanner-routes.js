@@ -2,7 +2,9 @@ const express = require('express');
 const fetch = require('node-fetch');
 const symbolMappings = require('../data/symbolMappings');
 const { KiteTicker, KiteConnect } = require('kiteconnect');
+const DepthTrackEngine = require('../orderbook-analyzer');
 const router = express.Router();
+const depthTrackEngine = new DepthTrackEngine();
 
 // Global subscription management
 let globalTicker = null;
@@ -17,6 +19,7 @@ let currentBuyStocks = [];
 let currentSellStocks = [];
 let lastScanTimestamp = null;
 let lastLowPriceScanStartedAt = 0;
+let lastStreakScanStartedAt = 0;
 const MIN_SCAN_GAP_MS = 5000;
 
 // Position Management - Track active positions and target orders
@@ -43,6 +46,7 @@ const ENABLE_VERBOSE_TICK_LOGS = false;
 const ENABLE_VERBOSE_SCAN_LOGS = false;
 const ENABLE_VERBOSE_MARKET_IMPACT_LOGS = false;
 const ENABLE_TICK_BATCH_BROADCAST = false;
+const STREAK_ONLY_MODE = true;
 
 // Target-order dedupe guards (across all placement paths)
 const targetOrderPlacementInFlight = new Set();
@@ -1693,6 +1697,58 @@ global.autoTrade = false;
 
 // TradingView Scanner API URL
 const TRADINGVIEW_SCANNER_URL = 'https://scanner.tradingview.com/india/scan?label-product=screener-stock';
+const STREAK_SCANNER_URL = 'https://scanner.streak.tech/api/scanner';
+
+function buildStreakScannerBody(overrides = {}) {
+    return {
+        condition: process.env.STREAK_CONDITION ||
+            'RSI(14,0) higher than 65 and Plus DI(14,0) higher than 25 and ADX(14,0) higher than Minus DI(14,0) and EMA(close, 3, 0) higher than EMA(close, 5, 0) and multitime frame completed(5min,Plus DI(14,0) higher than Minus DI(14,0)) and multitime frame completed(5min,Low(0) lower than Close(-1)) and multitime frame completed(5min,High(0) higher than equal to Close(-1))',
+        scan_on: process.env.STREAK_SCAN_ON || 'nifty_500',
+        time_frame: process.env.STREAK_TIME_FRAME || 'min',
+        chart_type: process.env.STREAK_CHART_TYPE || 'candlestick',
+        slug: process.env.STREAK_SLUG || 'custom-streak-scan',
+        basket: [],
+        ...overrides
+    };
+}
+
+function buildKiteChartUrl(segSym, token) {
+    const symbol = String(segSym || '').includes(':')
+        ? String(segSym).split(':')[1]
+        : String(segSym || '');
+    const cleanSymbol = String(symbol).trim().toUpperCase();
+    const finalToken = Number(token) || 0;
+    return `https://kite.zerodha.com/markets/ext/chart/web/tvc/NSE/${cleanSymbol}/${finalToken}`;
+}
+
+async function callStreakScanner(streakToken, overrides = {}) {
+    const body = buildStreakScannerBody(overrides);
+    const response = await fetch(STREAK_SCANNER_URL, {
+        method: 'POST',
+        headers: {
+            accept: 'application/json, text/plain, */*',
+            authorization: streakToken,
+            'content-type': 'application/json'
+        },
+        body: JSON.stringify(body)
+    });
+
+    const rawText = await response.text();
+    let parsed;
+    try {
+        parsed = JSON.parse(rawText);
+    } catch (error) {
+        parsed = null;
+    }
+
+    return {
+        ok: response.ok,
+        status: response.status,
+        body,
+        parsed,
+        rawText
+    };
+}
 
 // Helper functions
 function getProductType() {
@@ -2377,9 +2433,9 @@ function setupTickerEventHandlers() {
         }
         
         // ====================================================================
-        // SINGLE TRADE EXECUTION PATH: SCAN → SUBSCRIBE → MARKET IMPACT → TRADE
+        // SINGLE TRADE EXECUTION PATH: SCAN → SUBSCRIBE → ORDERBOOK GATE → TRADE
         // ====================================================================
-        // Only Market Impact-Based Execution for Subscribed Stocks
+        // Orderbook-based execution for subscribed stocks
         if (global.autoTrade && currentlySubscribed.size > 0) {
             ticks.forEach(async tick => {
                 const token = tick.instrument_token;
@@ -2392,19 +2448,18 @@ function setupTickerEventHandlers() {
                     return;
                 }
                 
-                // Skip if no depth data available for market impact analysis
+                // Skip if no depth data available for orderbook pre-trade analysis
                 if (!tick.depth || (!tick.depth.buy || !tick.depth.sell)) {
                     return;
                 }
                 
                 try {
-                    if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
-                        console.log(`🎯 MARKET IMPACT ANALYSIS: ${symbol} @ ₹${ltp} - ScanType: ${scanType}`);
-                    }
-                    
-                    // Calculate market impact for both BUY and SELL scenarios using derived usable funds
-                    const buyImpact = calculateMarketImpact(tick.depth, ltp, 'BUY_SCAN', globalUsableFunds);
-                    const sellImpact = calculateMarketImpact(tick.depth, ltp, 'SELL_SCAN', globalUsableFunds);
+                    const orderbookGate = depthTrackEngine.evaluateOrderbookPreTradeGate({
+                        token,
+                        symbol,
+                        tick,
+                        scanType
+                    });
                     
                     // ====================================================================
                     // POSITION-FIRST EXECUTION STRATEGY:
@@ -2413,33 +2468,31 @@ function setupTickerEventHandlers() {
                     // 3. Target orders = centralized fixed profit target for existing positions
                     // ==================================================================== 
                     
-                    // Execution criteria (both BUY and SELL): slippage must be <= 0.08%
-                    const maxSlippage = 0.08; // 0.08%
-
-                    // Early gate: only run expensive position/open-order checks when a market order is
-                    // actually close to execution eligibility by impact + scan-type + duplicate guards.
+                    // Early gate: only run expensive position/open-order checks for symbols that
+                    // pass orderbook gate + scan-type + duplicate guards.
                     if (!autoTradingActive) {
                         return;
                     }
 
-                    const potentialBuyByImpact =
+                    const potentialBuyByOrderbook =
                         scanType === 'BUY_SCAN' &&
-                        Math.abs(buyImpact.totalSlippage || 0) <= maxSlippage &&
+                        orderbookGate.allowed &&
                         !processedOrders.has(`${symbol}_MARKET_BUY`);
 
-                    const potentialSellByImpact =
+                    const potentialSellByOrderbook =
                         scanType === 'SELL_SCAN' &&
-                        Math.abs(sellImpact.totalSlippage || 0) <= maxSlippage &&
+                        orderbookGate.allowed &&
                         !processedOrders.has(`${symbol}_MARKET_SELL`);
 
-                    if (!potentialBuyByImpact && !potentialSellByImpact) {
+                    if (!potentialBuyByOrderbook && !potentialSellByOrderbook) {
                         return;
                     }
                     
                     if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
-                        console.log(`📊 ${symbol} Impact Analysis:`);
-                        console.log(`   BUY: Levels=${buyImpact.impactedLevels}, Slippage=${buyImpact.totalSlippage?.toFixed(4)}%`);
-                        console.log(`   SELL: Levels=${sellImpact.impactedLevels}, Slippage=${Math.abs(sellImpact.totalSlippage || 0).toFixed(4)}%`);
+                        console.log(`📊 ${symbol} Orderbook Gate:`);
+                        console.log(`   Allowed: ${orderbookGate.allowed} (${orderbookGate.reason})`);
+                        console.log(`   SlippageRisk: ${Number(orderbookGate.metrics?.slippageRisk || 0).toFixed(2)}`);
+                        console.log(`   Imbalance: ${Number(orderbookGate.metrics?.imbalance || 0).toFixed(4)}`);
                     }
                     
                     let orderExecuted = false;
@@ -2671,10 +2724,10 @@ function setupTickerEventHandlers() {
                         console.log(`   ✅ Enhanced SELL conditions: ${liveSellConditionsValid}`);
                     }
                     
-                    // 📊 ENHANCED EXECUTION CRITERIA: slippage <= 0.08%
+                    // 📊 ENHANCED EXECUTION CRITERIA: orderbook gate + live EMA verification
                     
                     // 🔵 CHECK ENHANCED BUY EXECUTION CRITERIA
-                    if (Math.abs(buyImpact.totalSlippage || 0) <= maxSlippage &&
+                    if (potentialBuyByOrderbook &&
                         !processedOrders.has(`${symbol}_MARKET_BUY`) &&
                         (scanType === 'BUY_SCAN' ? liveBuyConditionsValid : false)) { // Enhanced BUY verification required
                         
@@ -2682,7 +2735,7 @@ function setupTickerEventHandlers() {
                         console.log(`   ✅ Auto Trading: ${autoTradingActive}`);
                         console.log(`   ✅ LTP < EMA3(15min): ${ltp} < ${buyCandidate.ema3_15}`);
                         console.log(`   ✅ LTP > EMA5(5min): ${ltp} > ${buyCandidate.ema5_5}`);
-                        console.log(`   ✅ Slippage: ${Math.abs(buyImpact.totalSlippage || 0).toFixed(4)}% <= ${maxSlippage}%`);
+                        console.log(`   ✅ Orderbook Gate: ${orderbookGate.reason}`);
                         console.log(`   💰 Live LTP: ₹${ltp}`);
                         
                         // Mark as processed to avoid duplicates
@@ -2714,8 +2767,11 @@ function setupTickerEventHandlers() {
                                                 autoTrading: autoTradingActive,
                                                 ltpBelowEma3_15min: ltp < buyCandidate.ema3_15,
                                                 ltpAboveEma5_5min: ltp > buyCandidate.ema5_5,
-                                                levelsImpacted: buyImpact.impactedLevels,
-                                                slippage: Math.abs(buyImpact.totalSlippage || 0).toFixed(4) + '%'
+                                                orderbookReason: orderbookGate.reason,
+                                                slippageRisk: Number(orderbookGate.metrics?.slippageRisk || 0).toFixed(2),
+                                                imbalance: Number(orderbookGate.metrics?.imbalance || 0).toFixed(4),
+                                                absorption: Number(orderbookGate.metrics?.absorption || 0).toFixed(2),
+                                                supportBreak: Boolean(orderbookGate.metrics?.supportBreak)
                                             },
                                             timestamp: new Date().toISOString()
                                         });
@@ -2733,13 +2789,13 @@ function setupTickerEventHandlers() {
                     
                     // 🔴 CHECK SELL EXECUTION CRITERIA (existing logic with enhanced levels)
                     if (!orderExecuted && 
-                        Math.abs(sellImpact.totalSlippage || 0) <= maxSlippage &&
+                        potentialSellByOrderbook &&
                         !processedOrders.has(`${symbol}_MARKET_SELL`) &&
                         (scanType === 'SELL_SCAN' ? liveSellConditionsValid : false)) {
                         
                         console.log(`🚀 ✅ ENHANCED SELL EXECUTION CRITERIA MET: ${symbol}`);
                         console.log(`   ✅ Auto Trading: ${autoTradingActive}`);
-                        console.log(`   ✅ Slippage: ${Math.abs(sellImpact.totalSlippage || 0).toFixed(4)}% <= ${maxSlippage}%`);
+                        console.log(`   ✅ Orderbook Gate: ${orderbookGate.reason}`);
                         console.log(`   💰 Live LTP: ₹${ltp}`);
                         
                         // Mark as processed to avoid duplicates
@@ -2769,8 +2825,11 @@ function setupTickerEventHandlers() {
                                             order_id: sellResult.order_id,
                                             criteria: {
                                                 autoTrading: autoTradingActive,
-                                                levelsImpacted: sellImpact.impactedLevels,
-                                                slippage: Math.abs(sellImpact.totalSlippage || 0).toFixed(4) + '%'
+                                                orderbookReason: orderbookGate.reason,
+                                                slippageRisk: Number(orderbookGate.metrics?.slippageRisk || 0).toFixed(2),
+                                                imbalance: Number(orderbookGate.metrics?.imbalance || 0).toFixed(4),
+                                                absorption: Number(orderbookGate.metrics?.absorption || 0).toFixed(2),
+                                                supportBreak: Boolean(orderbookGate.metrics?.supportBreak)
                                             },
                                             timestamp: new Date().toISOString()
                                         });
@@ -2786,17 +2845,13 @@ function setupTickerEventHandlers() {
                         }
                     }
                     
-                    // Log if neither criteria met
-                    if (!orderExecuted && 
-                        Math.abs(buyImpact.totalSlippage || 0) > maxSlippage &&
-                        Math.abs(sellImpact.totalSlippage || 0) > maxSlippage) {
-                        console.log(`⚠️ ${symbol} - EXECUTION CRITERIA NOT MET:`);
-                        if (Math.abs(buyImpact.totalSlippage || 0) > maxSlippage) console.log(`   ❌ BUY Slippage: ${Math.abs(buyImpact.totalSlippage || 0).toFixed(4)}% > ${maxSlippage}%`);
-                        if (Math.abs(sellImpact.totalSlippage || 0) > maxSlippage) console.log(`   ❌ SELL Slippage: ${Math.abs(sellImpact.totalSlippage || 0).toFixed(4)}% > ${maxSlippage}%`);
+                    // Log if no order executed after passing early checks.
+                    if (!orderExecuted && ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+                        console.log(`⚠️ ${symbol} - EXECUTION NOT TRIGGERED AFTER ORDERBOOK GATE (likely live EMA criteria/duplicate guard).`);
                     }
                     
                 } catch (error) {
-                    console.error(`❌ Error in market impact execution for ${symbol}:`, error.message);
+                    console.error(`❌ Error in orderbook-gated execution for ${symbol}:`, error.message);
                 }
             });
         }
@@ -2852,9 +2907,6 @@ function setupTickerEventHandlers() {
                 });
                 }
                 
-                const buyImpact = calculateMarketImpact(fullDepth, tick.last_price, 'BUY_SCAN', globalUsableFunds);
-                const sellImpact = calculateMarketImpact(fullDepth, tick.last_price, 'SELL_SCAN', globalUsableFunds);
-                
                 // Create structured tick data with 20-LEVEL DEPTH + RAW TICK DATA
                 const structuredTick = {
                     symbol: symbol,
@@ -2863,10 +2915,6 @@ function setupTickerEventHandlers() {
                     change: change,
                     change_percent: tick.change ? ((tick.change / (tick.last_price - tick.change)) * 100).toFixed(2) : '0.00',
                     timestamp: new Date().toISOString(),
-                    // Add calculated quantities at top level for easy access
-                    calculated_quantity_buy: buyImpact.quantity,
-                    calculated_quantity_sell: sellImpact.quantity,
-                    calculated_quantity: Math.max(buyImpact.quantity, sellImpact.quantity), // Use larger quantity
                     depth: fullDepth, // 20-LEVEL ENHANCED DEPTH (MUST use fullDepth, not tick.depth!)
                     // RAW TICK DATA - ALL original properties preserved dynamically
                     rawTick: {
@@ -2874,21 +2922,6 @@ function setupTickerEventHandlers() {
                         depth: originalUntouchedDepth, // Use UNTOUCHED original depth (no level/masked properties)
                         originalDepth: originalUntouchedDepth, // Also preserve as originalDepth for clarity
                         captureTimestamp: new Date().toISOString()
-                    },
-                    // Market Impact Data calculated from 20-level depth
-                    marketImpact: {
-                        buy: {
-                            levels: buyImpact.impactedLevels,
-                            slippage: buyImpact.totalSlippage,
-                            avgPrice: buyImpact.avgExecutionPrice,
-                            quantity: buyImpact.quantity
-                        },
-                        sell: {
-                            levels: sellImpact.impactedLevels,
-                            slippage: sellImpact.totalSlippage,
-                            avgPrice: sellImpact.avgExecutionPrice,
-                            quantity: sellImpact.quantity
-                        }
                     },
                     ohlc: tick.ohlc || {
                         open: tick.last_price,
@@ -2940,8 +2973,6 @@ function setupTickerEventHandlers() {
                     
                     // Enhance to 20 levels for ALL symbols (no masking, just depth extension)
                     const fullDepth = enhanceDepthTo20Levels(tick.depth, tick.last_price, scanType, false);
-                    const buyImpact = calculateMarketImpact(fullDepth, tick.last_price, 'BUY_SCAN', globalUsableFunds);
-                    const sellImpact = calculateMarketImpact(fullDepth, tick.last_price, 'SELL_SCAN', globalUsableFunds);
                     
                     return {
                         symbol: symbol,
@@ -2950,10 +2981,6 @@ function setupTickerEventHandlers() {
                         change: change,
                         change_percent: tick.change ? ((tick.change / (tick.last_price - tick.change)) * 100).toFixed(2) : '0.00',
                         timestamp: new Date().toISOString(),
-                        // Add calculated quantities at top level for easy access
-                        calculated_quantity_buy: buyImpact.quantity,
-                        calculated_quantity_sell: sellImpact.quantity,
-                        calculated_quantity: Math.max(buyImpact.quantity, sellImpact.quantity), // Use larger quantity
                         depth: fullDepth, // 20-LEVEL ENHANCED DEPTH
                         // RAW TICK DATA - ALL original properties preserved dynamically
                         rawTick: {
@@ -2961,21 +2988,6 @@ function setupTickerEventHandlers() {
                             depth: originalUntouchedDepth, // Use UNTOUCHED original depth (no level/masked properties)
                             originalDepth: originalUntouchedDepth, // Also preserve as originalDepth for clarity
                             captureTimestamp: new Date().toISOString()
-                        },
-                        // Market Impact Data calculated from 20-level depth
-                        marketImpact: {
-                            buy: {
-                                levels: buyImpact.impactedLevels,
-                                slippage: buyImpact.totalSlippage,
-                                avgPrice: buyImpact.avgExecutionPrice,
-                                quantity: buyImpact.quantity
-                            },
-                            sell: {
-                                levels: sellImpact.impactedLevels,
-                                slippage: sellImpact.totalSlippage,
-                                avgPrice: sellImpact.avgExecutionPrice,
-                                quantity: sellImpact.quantity
-                            }
                         },
                         ohlc: tick.ohlc || {
                             open: tick.last_price,
@@ -3020,6 +3032,17 @@ function setupTickerEventHandlers() {
 // LOW PRICE SCANNERS ROUTE (close <= 4000)
 router.post('/low-price-scanners', async (req, res) => {
     try {
+        if (STREAK_ONLY_MODE) {
+            return res.status(410).json({
+                success: false,
+                error: 'LOW_PRICE_SCANNER_DISABLED',
+                message: 'TradingView scanner route is disabled. Use /api/streak-scan for streak-driven signals.',
+                timestamp: new Date().toISOString(),
+                buyStocks: [],
+                sellStocks: []
+            });
+        }
+
         const nowMs = Date.now();
         const elapsedSinceLastScan = nowMs - lastLowPriceScanStartedAt;
         if (lastLowPriceScanStartedAt > 0 && elapsedSinceLastScan < MIN_SCAN_GAP_MS) {
@@ -3776,6 +3799,140 @@ router.post('/low-price-scanners', async (req, res) => {
 });
 
 
+
+// Get current subscription status endpoint
+router.get('/streak-scan', async (req, res) => {
+    try {
+        const nowMs = Date.now();
+        const elapsedSinceLastStreakScan = nowMs - lastStreakScanStartedAt;
+        if (lastStreakScanStartedAt > 0 && elapsedSinceLastStreakScan < MIN_SCAN_GAP_MS) {
+            const waitMs = MIN_SCAN_GAP_MS - elapsedSinceLastStreakScan;
+            const nextScanAllowedAt = new Date(nowMs + waitMs).toISOString();
+
+            return res.status(429).json({
+                success: false,
+                reason: 'scan_throttled',
+                message: `Streak scan throttled. Minimum ${Math.round(MIN_SCAN_GAP_MS / 1000)} second gap required between scans.`,
+                waitMs,
+                minGapSeconds: Math.round(MIN_SCAN_GAP_MS / 1000),
+                nextScanAllowedAt,
+                rows: []
+            });
+        }
+
+        // Reserve slot immediately so concurrent requests are throttled.
+        lastStreakScanStartedAt = nowMs;
+
+        const requestedSignalType = String(req.query.signalType || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+        const scanTypeForSignal = requestedSignalType === 'BUY' ? 'BUY_SCAN' : 'SELL_SCAN';
+        const streakToken = req.headers['x-streak-token'] || process.env.STREAK_AUTH_TOKEN;
+        if (!streakToken) {
+            return res.status(400).json({
+                success: false,
+                error: 'Missing STREAK_AUTH_TOKEN. Set env var or pass x-streak-token header.',
+                rows: []
+            });
+        }
+
+        const streakResult = await callStreakScanner(streakToken);
+        if (!streakResult.ok) {
+            return res.status(streakResult.status || 502).json({
+                success: false,
+                error: 'Streak scan request failed',
+                streakStatus: streakResult.status,
+                streakBody: streakResult.parsed || streakResult.rawText,
+                rows: []
+            });
+        }
+
+        const stocks = Array.isArray(streakResult.parsed?.stocks) ? streakResult.parsed.stocks : [];
+        const rows = stocks.map((stock) => ({
+            token: Number(stock?.token || 0),
+            seg_sym: stock?.seg_sym || '',
+            symbol: String(stock?.seg_sym || '').split(':')[1] || stock?.seg_sym || '',
+            at: stock?.at || null,
+            volume: Number(stock?.volume || 0),
+            signalType: requestedSignalType,
+            chartUrl: buildKiteChartUrl(stock?.seg_sym, stock?.token)
+        }));
+
+        // Auto-subscribe streak symbols so tick stream can run orderbook pre-trade gate.
+        const newSubscriptions = [];
+        const allResolvedTokens = [];
+        for (const row of rows) {
+            let tokenNum = Number(row.token || 0);
+
+            if (!Number.isFinite(tokenNum) || tokenNum <= 0) {
+                const mappedToken = symbolMappings.symbolMappings[row.symbol];
+                if (mappedToken) {
+                    tokenNum = Number(mappedToken);
+                }
+            }
+
+            if (!Number.isFinite(tokenNum) || tokenNum <= 0) {
+                continue;
+            }
+
+            allResolvedTokens.push(tokenNum);
+            scanTypeTracker.set(tokenNum, scanTypeForSignal);
+
+            if (!currentlySubscribed.has(tokenNum)) {
+                currentlySubscribed.add(tokenNum);
+                newSubscriptions.push(tokenNum);
+            }
+        }
+
+        if (!globalTicker && global.initializeKiteTicker) {
+            try {
+                await global.initializeKiteTicker();
+            } catch (tickerError) {
+                console.error('❌ Failed to initialize KiteTicker for streak subscription:', tickerError.message);
+            }
+        }
+
+        if (globalTicker && newSubscriptions.length > 0) {
+            try {
+                globalTicker.subscribe(newSubscriptions);
+            } catch (subscribeError) {
+                console.error('❌ Failed to subscribe streak tokens:', subscribeError.message);
+            }
+        }
+
+        if (requestedSignalType === 'BUY') {
+            currentBuyStocks = rows;
+            currentSellStocks = [];
+        } else {
+            currentSellStocks = rows;
+            currentBuyStocks = [];
+        }
+        lastScanTimestamp = new Date().toISOString();
+        broadcastSubscriptionUpdate();
+
+        return res.json({
+            success: true,
+            streakStatus: streakResult.status,
+            scanParams: streakResult.body,
+            signalType: requestedSignalType,
+            total: rows.length,
+            rows,
+            subscriptions: {
+                resolved_tokens: allResolvedTokens.length,
+                new_subscriptions: newSubscriptions.length,
+                total_subscriptions: currentlySubscribed.size,
+                scan_type: scanTypeForSignal
+            },
+            raw: streakResult.parsed || null,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('❌ Error in /streak-scan:', error.message);
+        return res.status(500).json({
+            success: false,
+            error: error.message,
+            rows: []
+        });
+    }
+});
 
 // Get current subscription status endpoint
 router.get('/subscription-status', (req, res) => {
