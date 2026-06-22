@@ -2,6 +2,19 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import styled, { keyframes } from 'styled-components';
 import { checkAutoTradeConditions, analyzeAllSubscribedStocks } from '../utils/autoTradeCheck';
 
+const STREAK_BUY_CONDITION_STORAGE_KEY = 'streak_buy_condition';
+const STREAK_SCAN_ON_STORAGE_KEY = 'streak_scan_on';
+const STREAK_TIME_FRAME_STORAGE_KEY = 'streak_time_frame';
+const STREAK_CHART_TYPE_STORAGE_KEY = 'streak_chart_type';
+const STREAK_SLUG_STORAGE_KEY = 'streak_slug';
+const DEFAULT_BULLISH_STREAK_CONDITION = 'RSI(14,0) higher than 65 and Plus DI(14,0) higher than 25 and ADX(14,0) higher than Minus DI(14,0) and EMA(close, 3, 0) higher than EMA(close, 5, 0) and multitime frame completed(5min,Plus DI(14,0) higher than Minus DI(14,0)) and multitime frame completed(5min,Low(0) lower than Close(-1)) and multitime frame completed(5min,High(0) higher than equal to Close(-1))';
+const ENABLE_SUBSCRIBED_TRACKER_DEBUG = false;
+const trackerDebugLog = (...args) => {
+  if (ENABLE_SUBSCRIBED_TRACKER_DEBUG) {
+    console.log(...args);
+  }
+};
+
 // Import symbol mappings from backend
 let symbolMappings = {};
 try {
@@ -301,10 +314,6 @@ const SubscribedStockTracker = ({
   // State to trigger re-renders for countdown timer
   const [currentTime, setCurrentTime] = useState(Date.now());
   
-  // State to track buy/sell stocks for smart Reliance unsubscription
-  const [buyStocks, setBuyStocks] = useState([]);
-  const [sellStocks, setSellStocks] = useState([]);
-  
   // State to force re-render for live market impact data based on tick updates
   const [lastTickUpdate, setLastTickUpdate] = useState(0);
   
@@ -312,10 +321,6 @@ const SubscribedStockTracker = ({
   const [expandedSections, setExpandedSections] = useState({
     orderBook: true // Order Book accordion starts expanded
   });
-  
-  // State to track if we're in RELIANCE fallback mode
-  const [isRelianceFallback, setIsRelianceFallback] = useState(false);
-  const [relianceScanType, setRelianceScanType] = useState('FALLBACK');
   
   // Add ref to track manual symbol selections to prevent auto-override
   const manualSelectionRef = useRef(null);
@@ -336,29 +341,6 @@ const SubscribedStockTracker = ({
       [section]: !prev[section]
     }));
   };
-  
-  // Function to check fallback status
-  const checkFallbackStatus = useCallback(async () => {
-    try {
-      const response = await fetch('http://localhost:5000/api/fallback-status');
-      if (response.ok) {
-        const result = await response.json();
-        setIsRelianceFallback(result.isRelianceFallback);
-        setRelianceScanType(result.relianceScanType || 'FALLBACK');
-        console.log('📊 Fallback status:', result);
-      } else {
-        // Fallback: If route doesn't exist, disable Reliance fallback
-        console.log('⚠️ Fallback-status route not available, disabling Reliance fallback');
-        setIsRelianceFallback(false);
-        setRelianceScanType('DISABLED');
-      }
-    } catch (error) {
-      console.error('❌ Error checking fallback status:', error);
-      // Fallback: If route was removed or server error, disable Reliance fallback
-      setIsRelianceFallback(false);
-      setRelianceScanType('DISABLED');
-    }
-  }, []);
   
   // Refs to avoid infinite loops
   const symbolTimestampsRef = useRef({});
@@ -404,13 +386,6 @@ const SubscribedStockTracker = ({
   }, [subscribedSymbols]);
 
   useEffect(() => {
-    const buy = signalStocks?.buySignals || [];
-    const sell = signalStocks?.sellSignals || [];
-    setBuyStocks([...new Set(buy)]);
-    setSellStocks([...new Set(sell)]);
-  }, [signalStocks]);
-
-  useEffect(() => {
     if (!marginsData) return;
     setFundsData({
       availableFunds: Number(marginsData.availableFunds || 0),
@@ -422,61 +397,36 @@ const SubscribedStockTracker = ({
   
   // Subscriptions are scan-driven only (backend reconciliation). No manual unsubscribe API calls here.
 
-  // Function to handle buy scan button (RELIANCE only in fallback mode)
+  // Configure bullish Streak inputs for BUY and persist in localStorage
   const handleBuyScan = async () => {
     try {
-      console.log('🏛️ Triggering RELIANCE Buy Scan...');
-      
-      const response = await fetch('http://localhost:5000/api/reliance-buy-scan', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({})
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        console.log('✅ RELIANCE buy scan completed:', result);
-        setRelianceScanType('BUY_SCAN');
-        alert(`RELIANCE set as Buy Scan symbol\nOrders will only execute if ALL 14 buy conditions are met`);
-      } else {
-        const error = await response.json();
-        console.error('❌ RELIANCE buy scan failed:', error);
-        alert('RELIANCE buy scan failed: ' + error.error);
-      }
-    } catch (error) {
-      console.error('❌ Error in RELIANCE buy scan:', error);
-      alert('Error in RELIANCE buy scan');
-    }
-  };
+      const currentCondition = localStorage.getItem(STREAK_BUY_CONDITION_STORAGE_KEY) || DEFAULT_BULLISH_STREAK_CONDITION;
+      const currentScanOn = localStorage.getItem(STREAK_SCAN_ON_STORAGE_KEY) || 'nifty_500';
+      const currentTimeFrame = localStorage.getItem(STREAK_TIME_FRAME_STORAGE_KEY) || 'min';
+      const currentChartType = localStorage.getItem(STREAK_CHART_TYPE_STORAGE_KEY) || 'candlestick';
+      const currentSlug = localStorage.getItem(STREAK_SLUG_STORAGE_KEY) || 'custom-streak-scan';
 
-  // Function to handle sell scan button (RELIANCE only in fallback mode)
-  const handleSellScan = async () => {
-    try {
-      console.log('🏛️ Triggering RELIANCE Sell Scan...');
-      
-      const response = await fetch('http://localhost:5000/api/reliance-sell-scan', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({})
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        console.log('✅ RELIANCE sell scan completed:', result);
-        setRelianceScanType('SELL_SCAN');
-        alert(`RELIANCE set as Sell Scan symbol\nOrders will only execute if ALL 14 sell conditions are met`);
-      } else {
-        const error = await response.json();
-        console.error('❌ RELIANCE sell scan failed:', error);
-        alert('RELIANCE sell scan failed: ' + error.error);
+      const nextCondition = window.prompt('Buy Streak condition:', currentCondition);
+      if (!nextCondition || !nextCondition.trim()) {
+        alert('Buy Streak condition is required.');
+        return;
       }
+
+      const nextScanOn = window.prompt('Scan on (example: nifty_500):', currentScanOn) || currentScanOn;
+      const nextTimeFrame = window.prompt('Time frame (example: min):', currentTimeFrame) || currentTimeFrame;
+      const nextChartType = window.prompt('Chart type (example: candlestick):', currentChartType) || currentChartType;
+      const nextSlug = window.prompt('Slug:', currentSlug) || currentSlug;
+
+      localStorage.setItem(STREAK_BUY_CONDITION_STORAGE_KEY, nextCondition.trim());
+      localStorage.setItem(STREAK_SCAN_ON_STORAGE_KEY, String(nextScanOn).trim() || 'nifty_500');
+      localStorage.setItem(STREAK_TIME_FRAME_STORAGE_KEY, String(nextTimeFrame).trim() || 'min');
+      localStorage.setItem(STREAK_CHART_TYPE_STORAGE_KEY, String(nextChartType).trim() || 'candlestick');
+      localStorage.setItem(STREAK_SLUG_STORAGE_KEY, String(nextSlug).trim() || 'custom-streak-scan');
+
+      alert('Bullish Buy Streak inputs saved. Next streak scan will use these values.');
     } catch (error) {
-      console.error('❌ Error in RELIANCE sell scan:', error);
-      alert('Error in RELIANCE sell scan');
+      console.error('❌ Error configuring buy streak inputs:', error);
+      alert('Error configuring buy streak inputs');
     }
   };
 
@@ -492,39 +442,39 @@ const SubscribedStockTracker = ({
 
   const getAllAvailableSymbols = useCallback(() => {
     if (!tickData) {
-      console.log('🔍 No tickData available for symbol detection');
+      trackerDebugLog('🔍 No tickData available for symbol detection');
       return [];
     }
     
     // tickData contains all subscribed symbols as keys, even those without recent messages
     const allSymbols = Object.keys(tickData);
-    console.log('🔍 getAllAvailableSymbols result:', allSymbols);
+    trackerDebugLog('🔍 getAllAvailableSymbols result:', allSymbols);
     
     return allSymbols;
   }, [tickData]);
 
   // Get stocks that are actually currently subscribed to KiteTicker
   const getSubscribedStocks = useCallback(() => {
-    console.log('🔍 DEBUG - realSubscribedSymbols:', realSubscribedSymbols);
-    console.log('🔍 DEBUG - tickData keys:', tickData ? Object.keys(tickData) : 'no tickData');
+    trackerDebugLog('🔍 DEBUG - realSubscribedSymbols:', realSubscribedSymbols);
+    trackerDebugLog('🔍 DEBUG - tickData keys:', tickData ? Object.keys(tickData) : 'no tickData');
     
     // Always prioritize real subscribed symbols from backend, regardless of tick data
     if (realSubscribedSymbols.length > 0) {
-      console.log('🔍 Using all real subscribed symbols from backend (including those without tick data):', realSubscribedSymbols);
+      trackerDebugLog('🔍 Using all real subscribed symbols from backend (including those without tick data):', realSubscribedSymbols);
       
       // ✅ DEDUPLICATE symbols to prevent table duplicates
       const uniqueSymbols = [...new Set(realSubscribedSymbols)];
-      console.log('🔍 Deduplication: original length', realSubscribedSymbols.length, '→ unique length', uniqueSymbols.length);
+      trackerDebugLog('🔍 Deduplication: original length', realSubscribedSymbols.length, '→ unique length', uniqueSymbols.length);
       
       // ✅ NO SORTING - Keep original subscription order, add new symbols to bottom
-      console.log('🔍 Stable order maintained - no sorting by activity');
+      trackerDebugLog('🔍 Stable order maintained - no sorting by activity');
       return uniqueSymbols; // Return in original order
     }
     
     // Fallback: Show all stocks from tickData in original order (no sorting)
     if (tickData) {
       const stocks = Object.keys(tickData);
-      console.log('🔍 Fallback: Stocks in original order (no activity sorting):', stocks);
+      trackerDebugLog('🔍 Fallback: Stocks in original order (no activity sorting):', stocks);
       return stocks;
     }
     
@@ -647,30 +597,30 @@ const SubscribedStockTracker = ({
     if (tickData) {
       const newUpdate = Date.now();
       setLastTickUpdate(newUpdate);
-      console.log('📊 LIVE TICK UPDATE: Market impact updated at', new Date(newUpdate).toLocaleTimeString());
+      trackerDebugLog('📊 LIVE TICK UPDATE: Market impact updated at', new Date(newUpdate).toLocaleTimeString());
     }
   }, [tickData]);
 
   useEffect(() => {
-    console.log('🔍 📊 SYMBOL DETECTION EFFECT TRIGGERED');
+    trackerDebugLog('🔍 📊 SYMBOL DETECTION EFFECT TRIGGERED');
     const subscribedStocks = getSubscribedStocks();
     const allAvailableSymbols = getAllAvailableSymbols();
     const newSymbolsSet = new Set(allAvailableSymbols);
-    console.log('🔍 Currently subscribed stocks:', subscribedStocks);
-    console.log('🔍 All available symbols:', allAvailableSymbols);
+    trackerDebugLog('🔍 Currently subscribed stocks:', subscribedStocks);
+    trackerDebugLog('🔍 All available symbols:', allAvailableSymbols);
     
     // Check for newly subscribed symbols (including those without data yet)
     const newSymbols = allAvailableSymbols.filter(symbol => !previousSymbolsRef.current.has(symbol));
     
-    console.log('🔍 Symbol detection debug:');
-    console.log('  - Previous symbols:', Array.from(previousSymbolsRef.current));
-    console.log('  - Current available:', allAvailableSymbols);
-    console.log('  - Detected new symbols:', newSymbols);
+    trackerDebugLog('🔍 Symbol detection debug:');
+    trackerDebugLog('  - Previous symbols:', Array.from(previousSymbolsRef.current));
+    trackerDebugLog('  - Current available:', allAvailableSymbols);
+    trackerDebugLog('  - Detected new symbols:', newSymbols);
     
     if (newSymbols.length > 0) {
-      console.log('🔍 ✨ NEW SYMBOLS DETECTED:', newSymbols);
-      console.log('🔍 Current selectedSymbol:', selectedSymbol);
-      console.log('🔍 Current symbolTimestampsRef:', symbolTimestampsRef.current);
+      trackerDebugLog('🔍 ✨ NEW SYMBOLS DETECTED:', newSymbols);
+      trackerDebugLog('🔍 Current selectedSymbol:', selectedSymbol);
+      trackerDebugLog('🔍 Current symbolTimestampsRef:', symbolTimestampsRef.current);
       
       // Check for manual selection protection
       const currentTime = Date.now();
@@ -678,13 +628,13 @@ const SubscribedStockTracker = ({
         (currentTime - manualSelectionRef.current.timestamp) < MANUAL_SELECTION_LOCK_TIME;
       
       if (isManualSelectionActive) {
-        console.log('🔍 🔒 MANUAL SELECTION PROTECTED - Skipping auto-selection for:', manualSelectionRef.current.symbol, 'Time remaining:', Math.ceil((MANUAL_SELECTION_LOCK_TIME - (currentTime - manualSelectionRef.current.timestamp)) / 1000), 'seconds');
+        trackerDebugLog('🔍 🔒 MANUAL SELECTION PROTECTED - Skipping auto-selection for:', manualSelectionRef.current.symbol, 'Time remaining:', Math.ceil((MANUAL_SELECTION_LOCK_TIME - (currentTime - manualSelectionRef.current.timestamp)) / 1000), 'seconds');
         // Update previous symbols to prevent this from running again
         previousSymbolsRef.current = newSymbolsSet;
         
         // Ensure manually selected symbol stays selected
         if (selectedSymbol !== manualSelectionRef.current.symbol) {
-          console.log('🔍 🔄 RESTORING MANUAL SELECTION:', manualSelectionRef.current.symbol);
+          trackerDebugLog('🔍 🔄 RESTORING MANUAL SELECTION:', manualSelectionRef.current.symbol);
           setSelectedSymbol(manualSelectionRef.current.symbol);
         }
         return;
@@ -697,21 +647,21 @@ const SubscribedStockTracker = ({
       
       if (canChangeSymbol) {
         // ❌ DISABLED: Auto-selection of trade-ready symbols - only manual selection allowed
-        console.log('🎯 Auto-selection DISABLED - Trade-ready symbols detected but not auto-selected. Click to select manually.');
+        trackerDebugLog('🎯 Auto-selection DISABLED - Trade-ready symbols detected but not auto-selected. Click to select manually.');
       } else {
         // Current symbol is still in its 30-second display period
         const timeRemaining = 30 * 1000 - (currentTime - symbolTimestampsRef.current[selectedSymbol]);
-        console.log('🔍 ⏰ Current symbol still has', Math.ceil(timeRemaining / 1000), 'seconds remaining. New symbols will queue.');
+        trackerDebugLog('🔍 ⏰ Current symbol still has', Math.ceil(timeRemaining / 1000), 'seconds remaining. New symbols will queue.');
       }
     }
     
     // ❌ DISABLED: Auto-fallback symbol selection - order book stays empty until manual click
     if (!selectedSymbol) {
-      console.log('🔍 ❌ No selected symbol - Order book will remain empty until manual selection');
+      trackerDebugLog('🔍 ❌ No selected symbol - Order book will remain empty until manual selection');
     }
     
     // Update previous symbols set
-    console.log('🔍 Updating previousSymbolsRef from:', Array.from(previousSymbolsRef.current), 'to:', Array.from(newSymbolsSet));
+    trackerDebugLog('🔍 Updating previousSymbolsRef from:', Array.from(previousSymbolsRef.current), 'to:', Array.from(newSymbolsSet));
     previousSymbolsRef.current = newSymbolsSet;
     
     // Cleanup old timestamps and selection records (symbols that are no longer available)
@@ -732,14 +682,14 @@ const SubscribedStockTracker = ({
       const allAvailableSymbols = getAllAvailableSymbols();
       const currentTime = Date.now();
       
-      console.log('🎯 CONTINUOUS CHECK: Monitoring trade-ready symbols...');
+      trackerDebugLog('🎯 CONTINUOUS CHECK: Monitoring trade-ready symbols...');
       
       // Check for manual selection protection
       const isManualSelectionActive = manualSelectionRef.current && 
         (currentTime - manualSelectionRef.current.timestamp) < MANUAL_SELECTION_LOCK_TIME;
       
       if (isManualSelectionActive) {
-        console.log('🎯 🔒 CONTINUOUS CHECK: Manual selection protected - Skipping auto-selection for:', manualSelectionRef.current.symbol, 'Time remaining:', Math.ceil((MANUAL_SELECTION_LOCK_TIME - (currentTime - manualSelectionRef.current.timestamp)) / 1000), 'seconds');
+        trackerDebugLog('🎯 🔒 CONTINUOUS CHECK: Manual selection protected - Skipping auto-selection for:', manualSelectionRef.current.symbol, 'Time remaining:', Math.ceil((MANUAL_SELECTION_LOCK_TIME - (currentTime - manualSelectionRef.current.timestamp)) / 1000), 'seconds');
         return;
       }
       
@@ -760,7 +710,7 @@ const SubscribedStockTracker = ({
             const tradeConditions = checkAutoTradeConditions(latestTick);
             if (tradeConditions?.canTrade) {
               tradeReadySymbol = symbol;
-              console.log('🎯 ✅ CONTINUOUS CHECK: TRADE-READY SYMBOL FOUND:', symbol);
+              trackerDebugLog('🎯 ✅ CONTINUOUS CHECK: TRADE-READY SYMBOL FOUND:', symbol);
               break;
             }
           }
@@ -768,11 +718,11 @@ const SubscribedStockTracker = ({
         
         // ❌ DISABLED: Auto-selection of trade-ready symbols - manual selection only
         if (tradeReadySymbol && tradeReadySymbol !== selectedSymbol) {
-          console.log('🎯 🔄 TRADE-READY SYMBOL DETECTED but auto-selection DISABLED:', tradeReadySymbol, '- Click to select manually');
+          trackerDebugLog('🎯 🔄 TRADE-READY SYMBOL DETECTED but auto-selection DISABLED:', tradeReadySymbol, '- Click to select manually');
         }
       } else if (selectedSymbol) {
         const timeRemaining = 30 * 1000 - (currentTime - symbolTimestampsRef.current[selectedSymbol]);
-        console.log('🎯 CONTINUOUS CHECK: Current symbol has', Math.ceil(timeRemaining / 1000), 'seconds remaining');
+        trackerDebugLog('🎯 CONTINUOUS CHECK: Current symbol has', Math.ceil(timeRemaining / 1000), 'seconds remaining');
       }
     };
     
@@ -1193,86 +1143,27 @@ const SubscribedStockTracker = ({
             🤖 Scanner
           </span>
           
-          {/* Buy/Sell Scan Buttons - Show whenever RELIANCE is subscribed */}
-          {(() => {
-            const subscribedSymbols = getSubscribedStocks();
-            const hasReliance = subscribedSymbols.some(symbol => 
-              symbol.toLowerCase().includes('reliance') || 
-              symbol === 'NSE:RELIANCE' || 
-              symbol === 'RELIANCE'
-            );
-            return hasReliance;
-          })() && (
-            <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
-              <button
-                onClick={handleBuyScan}
-                disabled={relianceScanType === 'BUY_SCAN'}
-                style={{
-                  background: relianceScanType === 'BUY_SCAN' 
-                    ? 'linear-gradient(135deg, #16a34a, #15803d)' 
-                    : 'linear-gradient(135deg, #22c55e, #16a34a)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '6px',
-                  padding: '8px 16px',
-                  fontSize: '12px',
-                  fontWeight: '600',
-                  cursor: relianceScanType === 'BUY_SCAN' ? 'default' : 'pointer',
-                  transition: 'all 0.2s ease',
-                  boxShadow: relianceScanType === 'BUY_SCAN' 
-                    ? '0 2px 4px rgba(22, 163, 74, 0.4)' 
-                    : '0 2px 4px rgba(34, 197, 94, 0.2)',
-                  fontFamily: 'system-ui, -apple-system, sans-serif',
-                  opacity: relianceScanType === 'BUY_SCAN' ? '0.8' : '1'
-                }}
-                title={relianceScanType === 'BUY_SCAN' ? 'RELIANCE is set as Buy Scan symbol' : 'Set RELIANCE as Buy Scan symbol - Orders only execute if ALL 14 buy conditions are met'}
-              >
-                {relianceScanType === 'BUY_SCAN' ? '✓ Buy Active' : '📈 Buy Scan'}
-              </button>
-              
-              <button
-                onClick={handleSellScan}
-                disabled={relianceScanType === 'SELL_SCAN'}
-                style={{
-                  background: relianceScanType === 'SELL_SCAN' 
-                    ? 'linear-gradient(135deg, #dc2626, #b91c1c)' 
-                    : 'linear-gradient(135deg, #ef4444, #dc2626)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '6px',
-                  padding: '8px 16px',
-                  fontSize: '12px',
-                  fontWeight: '600',
-                  cursor: relianceScanType === 'SELL_SCAN' ? 'default' : 'pointer',
-                  transition: 'all 0.2s ease',
-                  boxShadow: relianceScanType === 'SELL_SCAN' 
-                    ? '0 2px 4px rgba(220, 38, 38, 0.4)' 
-                    : '0 2px 4px rgba(239, 68, 68, 0.2)',
-                  fontFamily: 'system-ui, -apple-system, sans-serif',
-                  opacity: relianceScanType === 'SELL_SCAN' ? '0.8' : '1'
-                }}
-                title={relianceScanType === 'SELL_SCAN' ? 'RELIANCE is set as Sell Scan symbol' : 'Set RELIANCE as Sell Scan symbol - Orders only execute if ALL 14 sell conditions are met'}
-              >
-                {relianceScanType === 'SELL_SCAN' ? '✓ Sell Active' : '📉 Sell Scan'}
-              </button>
-              
-              {/* RELIANCE Mode Indicator - Show whenever RELIANCE is subscribed */}
-              <span style={{ 
-                color: '#fbbf24', 
+          <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
+            <button
+              onClick={handleBuyScan}
+              style={{
+                background: 'linear-gradient(135deg, #22c55e, #16a34a)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                padding: '8px 16px',
                 fontSize: '12px',
-                background: 'rgba(251, 191, 36, 0.1)',
-                padding: '4px 8px',
-                borderRadius: '12px',
                 fontWeight: '600',
-                border: '1px solid rgba(251, 191, 36, 0.3)',
-                fontFamily: 'system-ui, -apple-system, sans-serif',
-                display: 'flex',
-                alignItems: 'center'
-              }}>
-                🏛️ RELIANCE ({relianceScanType})
-              </span>
-            </div>
-          )}
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                boxShadow: '0 2px 4px rgba(34, 197, 94, 0.2)',
+                fontFamily: 'system-ui, -apple-system, sans-serif'
+              }}
+              title='Configure bullish streak inputs for Buy scan'
+            >
+              Configure Buy Streak
+            </button>
+          </div>
         </div>
 
         {/* Scanner Status */}

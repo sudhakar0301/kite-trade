@@ -33,6 +33,11 @@ const FINAL_SELL_HISTORY_STORAGE_KEY = 'final_sell_history';
 const QUALIFIED_LOW_PRICE_STORAGE_KEY = 'qualified_low_price_filtered_stocks';
 const STORAGE_RESET_FLAG_KEY = 'storage_reset_done_v1';
 const STREAK_TOKEN_STORAGE_KEY = 'streak_auth_token';
+const STREAK_BUY_CONDITION_STORAGE_KEY = 'streak_buy_condition';
+const STREAK_SCAN_ON_STORAGE_KEY = 'streak_scan_on';
+const STREAK_TIME_FRAME_STORAGE_KEY = 'streak_time_frame';
+const STREAK_CHART_TYPE_STORAGE_KEY = 'streak_chart_type';
+const STREAK_SLUG_STORAGE_KEY = 'streak_slug';
 const USE_STREAK_SCAN_ONLY = true;
 const BUY_FILTER_KEYS = [
   'plusDiAbove25_1mBuy',
@@ -92,6 +97,22 @@ const persistHistory = (storageKey, value) => {
 
 
 function App() {
+  const sanitizeHeaderValue = useCallback((value) => {
+    if (value === undefined || value === null) return '';
+    return String(value).replace(/[\r\n]+/g, ' ').trim();
+  }, []);
+
+  const buildSafeHeaders = useCallback((headers = {}) => {
+    const safeHeaders = {};
+    Object.entries(headers).forEach(([key, value]) => {
+      if (!key) return;
+      const sanitizedValue = sanitizeHeaderValue(value);
+      if (!sanitizedValue) return;
+      safeHeaders[key] = sanitizedValue;
+    });
+    return safeHeaders;
+  }, [sanitizeHeaderValue]);
+
   const renderChartCell = (row, keyPrefix = 'chart-row') => (
     <button
       key={`${keyPrefix}-${row.symbol || row.token || 'na'}`}
@@ -528,6 +549,7 @@ function App() {
   const pollIntervalRef = useRef(null);
   const countdownIntervalRef = useRef(null);
   const hasInitialLoaded = useRef(false);
+  const fetchScannerDataRef = useRef(null);
   const tickTradeInFlightRef = useRef(false);
   const lastTickTradeAttemptRef = useRef({});
   const TICK_TRADE_COOLDOWN_MS = 10000;
@@ -1203,10 +1225,22 @@ function App() {
         console.log('🟦 Streak-only mode: fetching /api/streak-scan (BUY)');
         const token = accessToken || localStorage.getItem('kite_access_token');
         const storedStreakToken = localStorage.getItem(STREAK_TOKEN_STORAGE_KEY);
-        const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {};
-        const streakHeaders = storedStreakToken
-          ? { ...authHeaders, 'x-streak-token': storedStreakToken }
-          : authHeaders;
+        const streakCondition = localStorage.getItem(STREAK_BUY_CONDITION_STORAGE_KEY) || '';
+        const streakScanOn = localStorage.getItem(STREAK_SCAN_ON_STORAGE_KEY) || '';
+        const streakTimeFrame = localStorage.getItem(STREAK_TIME_FRAME_STORAGE_KEY) || '';
+        const streakChartType = localStorage.getItem(STREAK_CHART_TYPE_STORAGE_KEY) || '';
+        const streakSlug = localStorage.getItem(STREAK_SLUG_STORAGE_KEY) || '';
+        const authHeaders = buildSafeHeaders(token ? { 'Authorization': `Bearer ${token}` } : {});
+        const streakOverrideHeaders = buildSafeHeaders({
+          ...(streakCondition ? { 'x-streak-condition': streakCondition } : {}),
+          ...(streakScanOn ? { 'x-streak-scan-on': streakScanOn } : {}),
+          ...(streakTimeFrame ? { 'x-streak-time-frame': streakTimeFrame } : {}),
+          ...(streakChartType ? { 'x-streak-chart-type': streakChartType } : {}),
+          ...(streakSlug ? { 'x-streak-slug': streakSlug } : {})
+        });
+        const streakHeaders = buildSafeHeaders(storedStreakToken
+          ? { ...authHeaders, ...streakOverrideHeaders, 'x-streak-token': storedStreakToken }
+          : { ...authHeaders, ...streakOverrideHeaders });
 
         const isStreakAuthError = (status, errorText) => {
           const msg = String(errorText || '').toLowerCase();
@@ -1223,9 +1257,9 @@ function App() {
         let streakPayload = null;
 
         for (let attempt = 0; attempt < 3; attempt++) {
-          const reqHeaders = activeStreakToken
-            ? { ...authHeaders, 'x-streak-token': activeStreakToken }
-            : streakHeaders;
+          const reqHeaders = buildSafeHeaders(activeStreakToken
+            ? { ...authHeaders, ...streakOverrideHeaders, 'x-streak-token': activeStreakToken }
+            : streakHeaders);
 
           const response = await fetch('http://localhost:5000/api/streak-scan?signalType=BUY', {
             headers: reqHeaders
@@ -1270,6 +1304,17 @@ function App() {
           timeFormatted: nowTime
         }));
 
+        const streakTrackedSymbols = [...new Set(
+          formattedBuyStocks
+            .map((row) => {
+              const raw = String(row?.symbol || row?.s || '').trim();
+              if (!raw) return null;
+              if (raw.includes(':')) return raw.toUpperCase();
+              return `NSE:${raw.toUpperCase()}`;
+            })
+            .filter(Boolean)
+        )];
+
         setBuySignals(formattedBuyStocks);
         setSellSignals([]);
         setLowPriceSourceStocks({ buy: formattedBuyStocks, sell: [] });
@@ -1305,11 +1350,14 @@ function App() {
           ]);
 
           if (subscriptionRes.ok) {
-            const subscriptionData = await subscriptionRes.json();
-            setRealSubscriptionCount(subscriptionData.subscribed_count || 0);
+            await subscriptionRes.json();
+            setRealSubscriptionCount(streakTrackedSymbols.length);
             setScannerSubscriptionData({
-              subscribedSymbols: subscriptionData.subscribed_symbols || [],
-              signalStocks: subscriptionData.signal_stocks || { buySignals: [], sellSignals: [] }
+              subscribedSymbols: streakTrackedSymbols,
+              signalStocks: {
+                buySignals: formattedBuyStocks,
+                sellSignals: []
+              }
             });
           }
 
@@ -1787,9 +1835,19 @@ function App() {
       }
     } catch (error) {
       console.error('Failed to fetch scanner data:', error);
-      // Set empty arrays on error
+      // Clear UI state on scanner failure so stale subscriptions are not shown.
       setBuySignals([]);
       setSellSignals([]);
+      setSignalStocks({
+        buySignals: [],
+        sellSignals: [],
+        lastUpdate: new Date().toISOString()
+      });
+      setRealSubscriptionCount(0);
+      setScannerSubscriptionData({
+        subscribedSymbols: [],
+        signalStocks: { buySignals: [], sellSignals: [] }
+      });
     }
   }, [
     voiceEnabled,
@@ -1799,8 +1857,13 @@ function App() {
     kiteLoginStatus,
     buyFilterChecks,
     sellFilterChecks,
-    uiFilterStockSource
+    uiFilterStockSource,
+    buildSafeHeaders
   ]);
+
+  useEffect(() => {
+    fetchScannerDataRef.current = fetchScannerData;
+  }, [fetchScannerData]);
 
   useEffect(() => {
     if (USE_STREAK_SCAN_ONLY) {
@@ -2122,94 +2185,53 @@ function App() {
   // Auto-polling with countdown management
   useEffect(() => {
     console.log('🔄 Setting up scanner polling...');
-    
-    // Clear any existing intervals
+
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
     }
     if (countdownIntervalRef.current) {
       clearInterval(countdownIntervalRef.current);
     }
-    
-    // Single initial fetch if not already loaded
-    if (!hasInitialLoaded.current) {
-      const initialTimeout = setTimeout(() => {
-        console.log('🚀 Initial scanner fetch on page load');
-        hasInitialLoaded.current = true;
-        setIsPolling(true);
-        fetchScannerData();
-        
-        // Start countdown for next poll
-        setPollCountdown(pollInterval);
-        countdownIntervalRef.current = setInterval(() => {
-          setPollCountdown((prev) => {
-            if (prev <= 1) {
-              return pollInterval; // Reset to selected interval
-            }
-            return prev - 1;
-          });
-        }, 1000);
-      }, 2000);
-      
-      // Store timeout to clear if needed
-      const timeoutRef = initialTimeout;
-      
-      // Then poll at selected interval
-      pollIntervalRef.current = setInterval(() => {
-        console.log(`⏰ Scheduled scanner poll (${pollInterval}s interval)`);
-        fetchScannerData();
-        setPollCountdown(pollInterval); // Reset countdown
-      }, pollInterval * 1000);
 
-      return () => {
-        console.log('🧹 Cleaning up scanner polling');
-        setIsPolling(false);
-        setPollCountdown(0);
-        clearTimeout(timeoutRef);
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current);
-          pollIntervalRef.current = null;
-        }
-        if (countdownIntervalRef.current) {
-          clearInterval(countdownIntervalRef.current);
-          countdownIntervalRef.current = null;
-        }
-      };
-    } else {
-      // If already loaded, just set up polling
-      setIsPolling(true);
+    const runPoll = () => {
+      console.log(`⏰ Scheduled scanner poll (${pollInterval}s interval)`);
+      if (typeof fetchScannerDataRef.current === 'function') {
+        fetchScannerDataRef.current();
+      }
       setPollCountdown(pollInterval);
-      
-      pollIntervalRef.current = setInterval(() => {
-        console.log(`⏰ Scheduled scanner poll (${pollInterval}s interval)`);
-        fetchScannerData();
-        setPollCountdown(pollInterval); // Reset countdown
-      }, pollInterval * 1000);
-      
-      // Start countdown
-      countdownIntervalRef.current = setInterval(() => {
-        setPollCountdown((prev) => {
-          if (prev <= 1) {
-            return pollInterval; // Reset to selected interval
-          }
-          return prev - 1;
-        });
-      }, 1000);
-      
-      return () => {
-        setIsPolling(false);
-        setPollCountdown(0);
-        if (pollIntervalRef.current) {
-          clearInterval(pollIntervalRef.current);
-          pollIntervalRef.current = null;
-        }
-        if (countdownIntervalRef.current) {
-          clearInterval(countdownIntervalRef.current);
-          countdownIntervalRef.current = null;
-        }
-      };
+    };
+
+    setIsPolling(true);
+    setPollCountdown(pollInterval);
+
+    if (!hasInitialLoaded.current) {
+      console.log('🚀 Initial scanner fetch on page load');
+      hasInitialLoaded.current = true;
+      runPoll();
     }
-  }, [pollInterval, fetchScannerData]); // Add fetchScannerData dependency to get latest version
+
+    pollIntervalRef.current = setInterval(runPoll, pollInterval * 1000);
+
+    countdownIntervalRef.current = setInterval(() => {
+      setPollCountdown((prev) => {
+        if (prev <= 1) {
+          return pollInterval;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
+      }
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
+      }
+    };
+  }, [pollInterval]);
 
   // Do not run automatic position/order/funds checks on login.
 
@@ -2226,7 +2248,9 @@ function App() {
     }
     
     setIsPolling(true);
-    fetchScannerData();
+    if (typeof fetchScannerDataRef.current === 'function') {
+      fetchScannerDataRef.current();
+    }
     
     // Start countdown
     setPollCountdown(pollInterval);
@@ -2242,10 +2266,12 @@ function App() {
     // Set up polling interval
     pollIntervalRef.current = setInterval(() => {
       console.log(`⏰ Scheduled scanner poll (${pollInterval}s interval)`);
-      fetchScannerData();
+      if (typeof fetchScannerDataRef.current === 'function') {
+        fetchScannerDataRef.current();
+      }
       setPollCountdown(pollInterval); // Reset countdown
     }, pollInterval * 1000);
-  }, [pollInterval, fetchScannerData]);
+  }, [pollInterval]);
 
   const togglePolling = useCallback(() => {
     if (isPolling) {

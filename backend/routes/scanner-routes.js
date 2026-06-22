@@ -1698,18 +1698,38 @@ global.autoTrade = false;
 // TradingView Scanner API URL
 const TRADINGVIEW_SCANNER_URL = 'https://scanner.tradingview.com/india/scan?label-product=screener-stock';
 const STREAK_SCANNER_URL = 'https://scanner.streak.tech/api/scanner';
+const FIXED_STREAK_PAYLOAD = {
+    condition: 'RSI(14,0) higher than 65 and Plus DI(14,0) higher than 25 and ADX(14,0) higher than Minus DI(14,0) and ADX(14,0) higher than 25 and EMA(close, 25, 0) higher than MBB(Close,20,2,simple,0) and MACD(12,26,9,macd,0) higher than MACD(12,26,9,signal,0) and ( EMA(close, 3, 0) higher than equal to UBB(Close,20,2,simple,0) )',
+    scan_on: 'nifty_500',
+    time_frame: 'min',
+    chart_type: 'candlestick',
+    slug: 'bullish-scan-496457'
+};
 
 function buildStreakScannerBody(overrides = {}) {
     return {
-        condition: process.env.STREAK_CONDITION ||
-            'RSI(14,0) higher than 65 and Plus DI(14,0) higher than 25 and ADX(14,0) higher than Minus DI(14,0) and EMA(close, 3, 0) higher than EMA(close, 5, 0) and multitime frame completed(5min,Plus DI(14,0) higher than Minus DI(14,0)) and multitime frame completed(5min,Low(0) lower than Close(-1)) and multitime frame completed(5min,High(0) higher than equal to Close(-1))',
-        scan_on: process.env.STREAK_SCAN_ON || 'nifty_500',
-        time_frame: process.env.STREAK_TIME_FRAME || 'min',
-        chart_type: process.env.STREAK_CHART_TYPE || 'candlestick',
-        slug: process.env.STREAK_SLUG || 'custom-streak-scan',
-        basket: [],
+        ...FIXED_STREAK_PAYLOAD,
         ...overrides
     };
+}
+
+function extractStreakStocks(parsed = {}) {
+    const candidates = [
+        parsed?.stocks,
+        parsed?.scanner_result,
+        parsed?.data?.stocks,
+        parsed?.data?.scanner_result,
+        parsed?.result?.stocks,
+        parsed?.result?.scanner_result
+    ];
+
+    for (const candidate of candidates) {
+        if (Array.isArray(candidate)) {
+            return candidate;
+        }
+    }
+
+    return [];
 }
 
 function buildKiteChartUrl(segSym, token) {
@@ -1727,8 +1747,14 @@ async function callStreakScanner(streakToken, overrides = {}) {
         method: 'POST',
         headers: {
             accept: 'application/json, text/plain, */*',
+            'accept-language': 'en-US,en;q=0.9',
             authorization: streakToken,
-            'content-type': 'application/json'
+            'cache-control': 'no-cache',
+            'content-type': 'application/json',
+            pragma: 'no-cache',
+            priority: 'u=1, i',
+            origin: 'https://www.streak.tech',
+            referer: 'https://www.streak.tech/'
         },
         body: JSON.stringify(body)
     });
@@ -3054,6 +3080,7 @@ router.post('/low-price-scanners', async (req, res) => {
                 success: false,
                 reason: 'scan_throttled',
                 message: `Scan throttled. Minimum ${Math.round(MIN_SCAN_GAP_MS / 1000)} second gap required between scans.`,
+                payload: streakResult.body,
                 waitMs,
                 minGapSeconds: Math.round(MIN_SCAN_GAP_MS / 1000),
                 nextScanAllowedAt,
@@ -3826,6 +3853,10 @@ router.get('/streak-scan', async (req, res) => {
         const requestedSignalType = String(req.query.signalType || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
         const scanTypeForSignal = requestedSignalType === 'BUY' ? 'BUY_SCAN' : 'SELL_SCAN';
         const streakToken = req.headers['x-streak-token'] || process.env.STREAK_AUTH_TOKEN;
+        const streakOverrides = {};
+
+        const conditionOverride = String(req.headers['x-streak-condition'] || req.query.condition || '').trim();
+        if (conditionOverride) streakOverrides.condition = conditionOverride;
         if (!streakToken) {
             return res.status(400).json({
                 success: false,
@@ -3834,7 +3865,7 @@ router.get('/streak-scan', async (req, res) => {
             });
         }
 
-        const streakResult = await callStreakScanner(streakToken);
+        const streakResult = await callStreakScanner(streakToken, streakOverrides);
         if (!streakResult.ok) {
             return res.status(streakResult.status || 502).json({
                 success: false,
@@ -3845,7 +3876,7 @@ router.get('/streak-scan', async (req, res) => {
             });
         }
 
-        const stocks = Array.isArray(streakResult.parsed?.stocks) ? streakResult.parsed.stocks : [];
+        const stocks = extractStreakStocks(streakResult.parsed);
         const rows = stocks.map((stock) => ({
             token: Number(stock?.token || 0),
             seg_sym: stock?.seg_sym || '',
@@ -3856,8 +3887,45 @@ router.get('/streak-scan', async (req, res) => {
             chartUrl: buildKiteChartUrl(stock?.seg_sym, stock?.token)
         }));
 
-        // Auto-subscribe streak symbols so tick stream can run orderbook pre-trade gate.
-        const newSubscriptions = [];
+        // Hard clear subscriptions when scanner returns no signals.
+        if (rows.length === 0) {
+            const existingTokens = Array.from(currentlySubscribed);
+
+            if (globalTicker && existingTokens.length > 0) {
+                try {
+                    globalTicker.unsubscribe(existingTokens);
+                } catch (unsubscribeError) {
+                    console.error('❌ Failed to unsubscribe all tokens on empty streak scan:', unsubscribeError.message);
+                }
+            }
+
+            existingTokens.forEach((token) => scanTypeTracker.delete(token));
+            currentlySubscribed = new Set();
+            currentBuyStocks = [];
+            currentSellStocks = [];
+            lastScanTimestamp = new Date().toISOString();
+            broadcastSubscriptionUpdate();
+
+            return res.json({
+                success: true,
+                streakStatus: streakResult.status,
+                scanParams: streakResult.body,
+                signalType: requestedSignalType,
+                total: 0,
+                rows: [],
+                subscriptions: {
+                    resolved_tokens: 0,
+                    unsubscribed_all: existingTokens.length,
+                    total_subscriptions: 0,
+                    scan_type: scanTypeForSignal,
+                    cleared_due_to_no_signals: true
+                },
+                raw: streakResult.parsed || null,
+                timestamp: new Date().toISOString()
+            });
+        }
+
+        // Keep ticker subscriptions strictly aligned with latest streak scan symbols.
         const allResolvedTokens = [];
         for (const row of rows) {
             let tokenNum = Number(row.token || 0);
@@ -3875,12 +3943,12 @@ router.get('/streak-scan', async (req, res) => {
 
             allResolvedTokens.push(tokenNum);
             scanTypeTracker.set(tokenNum, scanTypeForSignal);
-
-            if (!currentlySubscribed.has(tokenNum)) {
-                currentlySubscribed.add(tokenNum);
-                newSubscriptions.push(tokenNum);
-            }
         }
+
+        const desiredSubscriptionSet = new Set(allResolvedTokens);
+        const existingTokens = Array.from(currentlySubscribed);
+        const tokensToUnsubscribe = existingTokens.filter((token) => !desiredSubscriptionSet.has(token));
+        const newSubscriptions = allResolvedTokens.filter((token) => !currentlySubscribed.has(token));
 
         if (!globalTicker && global.initializeKiteTicker) {
             try {
@@ -3897,6 +3965,17 @@ router.get('/streak-scan', async (req, res) => {
                 console.error('❌ Failed to subscribe streak tokens:', subscribeError.message);
             }
         }
+
+        if (globalTicker && tokensToUnsubscribe.length > 0) {
+            try {
+                globalTicker.unsubscribe(tokensToUnsubscribe);
+            } catch (unsubscribeError) {
+                console.error('❌ Failed to unsubscribe stale streak tokens:', unsubscribeError.message);
+            }
+        }
+
+        tokensToUnsubscribe.forEach((token) => scanTypeTracker.delete(token));
+        currentlySubscribed = desiredSubscriptionSet;
 
         if (requestedSignalType === 'BUY') {
             currentBuyStocks = rows;
