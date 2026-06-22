@@ -33,11 +33,10 @@ const FINAL_SELL_HISTORY_STORAGE_KEY = 'final_sell_history';
 const QUALIFIED_LOW_PRICE_STORAGE_KEY = 'qualified_low_price_filtered_stocks';
 const STORAGE_RESET_FLAG_KEY = 'storage_reset_done_v1';
 const STREAK_TOKEN_STORAGE_KEY = 'streak_auth_token';
-const STREAK_BUY_CONDITION_STORAGE_KEY = 'streak_buy_condition';
-const STREAK_SCAN_ON_STORAGE_KEY = 'streak_scan_on';
-const STREAK_TIME_FRAME_STORAGE_KEY = 'streak_time_frame';
-const STREAK_CHART_TYPE_STORAGE_KEY = 'streak_chart_type';
-const STREAK_SLUG_STORAGE_KEY = 'streak_slug';
+const STREAK_BUY_1MIN_CONDITION_STORAGE_KEY = 'streak_buy_1min_condition';
+const STREAK_BUY_5MIN_CONDITION_STORAGE_KEY = 'streak_buy_5min_condition';
+const STREAK_SELL_1MIN_CONDITION_STORAGE_KEY = 'streak_sell_1min_condition';
+const STREAK_SELL_5MIN_CONDITION_STORAGE_KEY = 'streak_sell_5min_condition';
 const USE_STREAK_SCAN_ONLY = true;
 const BUY_FILTER_KEYS = [
   'plusDiAbove25_1mBuy',
@@ -187,6 +186,8 @@ function App() {
   const [streakScanData, setStreakScanData] = useState({
     rows: [],
     total: 0,
+    buy1MinRows: [],
+    buy5MinRows: [],
     lastUpdated: null,
     error: null
   });
@@ -552,7 +553,11 @@ function App() {
   const fetchScannerDataRef = useRef(null);
   const tickTradeInFlightRef = useRef(false);
   const lastTickTradeAttemptRef = useRef({});
+  const streakScanInFlightRef = useRef(false);
+  const lastStreakScanStartedAtRef = useRef(0);
+  const streakNextAllowedAtRef = useRef(null);
   const TICK_TRADE_COOLDOWN_MS = 10000;
+  const STREAK_CLIENT_MIN_GAP_MS = 5200;
   const mainOrdersAllowedRef = useRef(false);
 
   // Refs for WebSocket handler to access current values (avoiding stale closure)
@@ -1221,22 +1226,33 @@ function App() {
   // Scanner data fetch function
   const fetchScannerData = useCallback(async () => {
     try {
+      const nowMs = Date.now();
+      const nextAllowedMs = streakNextAllowedAtRef.current
+        ? new Date(streakNextAllowedAtRef.current).getTime()
+        : 0;
+      const withinClientGap = (nowMs - lastStreakScanStartedAtRef.current) < STREAK_CLIENT_MIN_GAP_MS;
+      const withinServerGap = nextAllowedMs > nowMs;
+      const canCallStreakNow = !streakScanInFlightRef.current && !withinClientGap && !withinServerGap;
+
       if (USE_STREAK_SCAN_ONLY) {
+        if (!canCallStreakNow) {
+          return;
+        }
+
         console.log('🟦 Streak-only mode: fetching /api/streak-scan (BUY)');
         const token = accessToken || localStorage.getItem('kite_access_token');
         const storedStreakToken = localStorage.getItem(STREAK_TOKEN_STORAGE_KEY);
-        const streakCondition = localStorage.getItem(STREAK_BUY_CONDITION_STORAGE_KEY) || '';
-        const streakScanOn = localStorage.getItem(STREAK_SCAN_ON_STORAGE_KEY) || '';
-        const streakTimeFrame = localStorage.getItem(STREAK_TIME_FRAME_STORAGE_KEY) || '';
-        const streakChartType = localStorage.getItem(STREAK_CHART_TYPE_STORAGE_KEY) || '';
-        const streakSlug = localStorage.getItem(STREAK_SLUG_STORAGE_KEY) || '';
+        const buy1MinCondition = localStorage.getItem(STREAK_BUY_1MIN_CONDITION_STORAGE_KEY) || '';
+        const buy5MinCondition = localStorage.getItem(STREAK_BUY_5MIN_CONDITION_STORAGE_KEY) || '';
+        const sell1MinCondition = localStorage.getItem(STREAK_SELL_1MIN_CONDITION_STORAGE_KEY) || '';
+        const sell5MinCondition = localStorage.getItem(STREAK_SELL_5MIN_CONDITION_STORAGE_KEY) || '';
         const authHeaders = buildSafeHeaders(token ? { 'Authorization': `Bearer ${token}` } : {});
         const streakOverrideHeaders = buildSafeHeaders({
-          ...(streakCondition ? { 'x-streak-condition': streakCondition } : {}),
-          ...(streakScanOn ? { 'x-streak-scan-on': streakScanOn } : {}),
-          ...(streakTimeFrame ? { 'x-streak-time-frame': streakTimeFrame } : {}),
-          ...(streakChartType ? { 'x-streak-chart-type': streakChartType } : {}),
-          ...(streakSlug ? { 'x-streak-slug': streakSlug } : {})
+          ...(buy1MinCondition ? { 'x-streak-buy-1min-condition': buy1MinCondition } : {}),
+          ...(buy5MinCondition ? { 'x-streak-buy-5min-condition': buy5MinCondition } : {}),
+          ...(sell1MinCondition ? { 'x-streak-sell-1min-condition': sell1MinCondition } : {}),
+          ...(sell5MinCondition ? { 'x-streak-sell-5min-condition': sell5MinCondition } : {}),
+          'x-poll-interval-ms': String(Math.max(0, Number(pollInterval || 0) * 1000))
         });
         const streakHeaders = buildSafeHeaders(storedStreakToken
           ? { ...authHeaders, ...streakOverrideHeaders, 'x-streak-token': storedStreakToken }
@@ -1255,35 +1271,55 @@ function App() {
 
         let activeStreakToken = storedStreakToken || '';
         let streakPayload = null;
+        streakScanInFlightRef.current = true;
+        lastStreakScanStartedAtRef.current = Date.now();
 
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const reqHeaders = buildSafeHeaders(activeStreakToken
-            ? { ...authHeaders, ...streakOverrideHeaders, 'x-streak-token': activeStreakToken }
-            : streakHeaders);
+        try {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const reqHeaders = buildSafeHeaders(activeStreakToken
+              ? { ...authHeaders, ...streakOverrideHeaders, 'x-streak-token': activeStreakToken }
+              : streakHeaders);
 
-          const response = await fetch('http://localhost:5000/api/streak-scan?signalType=BUY', {
-            headers: reqHeaders
-          });
+            const response = await fetch('http://localhost:5000/api/streak-scan?signalType=ALL', {
+              headers: reqHeaders
+            });
 
-          if (response.ok) {
-            streakPayload = await response.json();
-            break;
+            if (response.ok) {
+              streakPayload = await response.json();
+              streakNextAllowedAtRef.current = null;
+              break;
+            }
+
+            const errorPayload = await response.json().catch(() => ({}));
+
+            if (response.status === 429 && errorPayload?.reason === 'scan_throttled') {
+              const waitMs = Number(errorPayload?.waitMs || STREAK_CLIENT_MIN_GAP_MS);
+              const nextAllowedAt = errorPayload?.nextScanAllowedAt || new Date(Date.now() + waitMs).toISOString();
+              streakNextAllowedAtRef.current = nextAllowedAt;
+              setStreakScanData((prev) => ({
+                ...prev,
+                lastUpdated: new Date().toISOString(),
+                error: errorPayload?.message || 'Streak scan throttled'
+              }));
+              return;
+            }
+
+            const apiError = errorPayload?.error || `Streak scan failed (${response.status})`;
+
+            if (!isStreakAuthError(response.status, apiError)) {
+              throw new Error(apiError);
+            }
+
+            const enteredToken = window.prompt('Enter STREAK JWT token (STREAK_AUTH_TOKEN):', activeStreakToken || '');
+            if (!enteredToken || !enteredToken.trim()) {
+              throw new Error('Streak JWT token is required to run streak scan.');
+            }
+
+            activeStreakToken = enteredToken.trim();
+            localStorage.setItem(STREAK_TOKEN_STORAGE_KEY, activeStreakToken);
           }
-
-          const errorPayload = await response.json().catch(() => ({}));
-          const apiError = errorPayload?.error || `Streak scan failed (${response.status})`;
-
-          if (!isStreakAuthError(response.status, apiError)) {
-            throw new Error(apiError);
-          }
-
-          const enteredToken = window.prompt('Enter STREAK JWT token (STREAK_AUTH_TOKEN):', activeStreakToken || '');
-          if (!enteredToken || !enteredToken.trim()) {
-            throw new Error('Streak JWT token is required to run streak scan.');
-          }
-
-          activeStreakToken = enteredToken.trim();
-          localStorage.setItem(STREAK_TOKEN_STORAGE_KEY, activeStreakToken);
+        } finally {
+          streakScanInFlightRef.current = false;
         }
 
         if (!streakPayload) {
@@ -1291,10 +1327,67 @@ function App() {
         }
 
         const rows = Array.isArray(streakPayload?.rows) ? streakPayload.rows : [];
+        const extractRawStreakRows = (rawScan, signalTypeLabel) => {
+          const candidates = [
+            rawScan?.stocks,
+            rawScan?.scanner_result,
+            rawScan?.data?.stocks,
+            rawScan?.data?.scanner_result,
+            rawScan?.result?.stocks,
+            rawScan?.result?.scanner_result
+          ];
+
+          const sourceRows = candidates.find((candidate) => Array.isArray(candidate)) || [];
+
+          return sourceRows.map((row) => ({
+            token: Number(row?.token || 0),
+            seg_sym: row?.seg_sym || '',
+            symbol: row?.symbol || (row?.seg_sym && row.seg_sym.includes(':') ? row.seg_sym.split(':')[1] : row?.seg_sym || ''),
+            at: row?.at || null,
+            volume: Number(row?.volume || 0),
+            signalType: signalTypeLabel
+          }));
+        };
+
+        const extractLowPriceRowsFromStreak = (rawLowPrice, timestampIso, timestampLabel) => {
+          const candidates = [
+            rawLowPrice?.data,
+            rawLowPrice?.data?.data,
+            rawLowPrice?.scanner_result,
+            rawLowPrice?.result?.data,
+            rawLowPrice?.result?.scanner_result
+          ];
+
+          const sourceRows = candidates.find((candidate) => Array.isArray(candidate)) || [];
+
+          return sourceRows.map((stock) => ({
+            ...stock,
+            symbol: stock.symbol || (stock.s && stock.s.includes(':') ? stock.s.split(':')[1] : stock.s),
+            ltp: Number(stock.ltp || stock.d?.[0] || 0),
+            ema3_1: Number(stock.ema3_1 || stock.d?.[36] || 0),
+            ubb_1: Number(stock.ubb_1 || stock.d?.[41] || 0),
+            lbb_1: Number(stock.lbb_1 || stock.d?.[40] || 0),
+            ubb_5: Number(stock.ubb_5 || stock.d?.[27] || 0),
+            lbb_5: Number(stock.lbb_5 || stock.d?.[28] || 0),
+            timestamp: timestampIso,
+            timeFormatted: timestampLabel,
+            side: stock.side || stock.signalType || 'LOW_PRICE'
+          }));
+        };
+
+        const buy1MinRowsRaw = extractRawStreakRows(streakPayload?.raw?.buy1Min, 'BUY_1MIN');
+        const buy5MinRowsRaw = extractRawStreakRows(streakPayload?.raw?.buy5Min, 'BUY_5MIN');
+        const buyRows = Array.isArray(streakPayload?.buyRows)
+          ? streakPayload.buyRows
+          : rows.filter((row) => String(row?.signalType || '').toUpperCase() === 'BUY');
+        const sellRows = Array.isArray(streakPayload?.sellRows)
+          ? streakPayload.sellRows
+          : rows.filter((row) => String(row?.signalType || '').toUpperCase() === 'SELL');
         const nowIso = new Date().toISOString();
         const nowTime = new Date().toLocaleTimeString();
+        const lowPriceTechnicalRows = extractLowPriceRowsFromStreak(streakPayload?.raw?.lowPriceCommon, nowIso, nowTime);
 
-        const formattedBuyStocks = rows.map((row) => ({
+        const formattedBuyStocks = buyRows.map((row) => ({
           ...row,
           symbol: row.symbol || (row.seg_sym && row.seg_sym.includes(':') ? row.seg_sym.split(':')[1] : row.seg_sym),
           ltp: Number(row.at || row.ltp || 0),
@@ -1304,8 +1397,48 @@ function App() {
           timeFormatted: nowTime
         }));
 
+        const formattedSellStocks = sellRows.map((row) => ({
+          ...row,
+          symbol: row.symbol || (row.seg_sym && row.seg_sym.includes(':') ? row.seg_sym.split(':')[1] : row.seg_sym),
+          ltp: Number(row.at || row.ltp || 0),
+          volume: Number(row.volume || 0),
+          signalStrength: 80,
+          timestamp: nowIso,
+          timeFormatted: nowTime
+        }));
+
+        const technicalRowsBySymbol = new Map(
+          lowPriceTechnicalRows
+            .filter((row) => row?.symbol)
+            .map((row) => [String(row.symbol).toUpperCase(), row])
+        );
+
+        const signalBackfillRows = [...formattedBuyStocks, ...formattedSellStocks]
+          .map((row) => {
+            const symbol = String(row?.symbol || '').toUpperCase();
+            if (!symbol || technicalRowsBySymbol.has(symbol)) {
+              return null;
+            }
+
+            return {
+              symbol: row.symbol,
+              ltp: Number(row.ltp || 0),
+              ema3_1: 0,
+              ubb_1: 0,
+              lbb_1: 0,
+              ubb_5: 0,
+              lbb_5: 0,
+              timestamp: nowIso,
+              timeFormatted: nowTime,
+              side: row.signalType || 'SIGNAL_ONLY'
+            };
+          })
+          .filter(Boolean);
+
+        const mergedTechnicalRows = [...lowPriceTechnicalRows, ...signalBackfillRows];
+
         const streakTrackedSymbols = [...new Set(
-          formattedBuyStocks
+          [...formattedBuyStocks, ...formattedSellStocks]
             .map((row) => {
               const raw = String(row?.symbol || row?.s || '').trim();
               if (!raw) return null;
@@ -1316,26 +1449,30 @@ function App() {
         )];
 
         setBuySignals(formattedBuyStocks);
-        setSellSignals([]);
-        setLowPriceSourceStocks({ buy: formattedBuyStocks, sell: [] });
-        setIntersectedSourceStocks({ buy: formattedBuyStocks, sell: [] });
+        setSellSignals(formattedSellStocks);
+        setLowPriceSourceStocks({ buy: formattedBuyStocks, sell: formattedSellStocks });
+        setIntersectedSourceStocks({ buy: formattedBuyStocks, sell: formattedSellStocks });
         setSignalStocks({
           buySignals: formattedBuyStocks,
-          sellSignals: [],
+          sellSignals: formattedSellStocks,
           lastUpdate: nowIso
         });
 
         setStreakScanData({
           rows,
           total: Number(streakPayload?.total || rows.length),
+          buy1MinRows: buy1MinRowsRaw,
+          buy5MinRows: buy5MinRowsRaw,
           lastUpdated: nowIso,
           error: null
         });
 
+        setLowPriceScanStocks(mergedTechnicalRows);
+
         setScanResults((prev) => ({
           ...prev,
           buyTable: formattedBuyStocks,
-          sellTable: [],
+          sellTable: formattedSellStocks,
           crossoverTable: [],
           crossdownTable: [],
           lastScanTime: nowIso
@@ -1356,7 +1493,7 @@ function App() {
               subscribedSymbols: streakTrackedSymbols,
               signalStocks: {
                 buySignals: formattedBuyStocks,
-                sellSignals: []
+                sellSignals: formattedSellStocks
               }
             });
           }
@@ -1386,8 +1523,8 @@ function App() {
         }
 
         setLastUpdate(nowTime);
-        if (voiceEnabled && formattedBuyStocks.length > 0) {
-          speak(`Streak scanner found ${formattedBuyStocks.length} bullish signals`);
+        if (voiceEnabled && (formattedBuyStocks.length > 0 || formattedSellStocks.length > 0)) {
+          speak(`Streak scanner found ${formattedBuyStocks.length} buy and ${formattedSellStocks.length} sell signals`);
         }
         return;
       }
@@ -1694,12 +1831,11 @@ function App() {
             ? { ...tokenHeaders, 'x-streak-token': savedStreakToken }
             : tokenHeaders;
 
-          const [subscriptionRes, positionsRes, ordersRes, marginsRes, streakRes] = await Promise.all([
+          const [subscriptionRes, positionsRes, ordersRes, marginsRes] = await Promise.all([
             fetch('http://localhost:5000/api/subscription-status'),
             fetch('http://localhost:5000/api/positions', { headers: authHeaders }),
             fetch('http://localhost:5000/api/orders', { headers: authHeaders }),
-            fetch('http://localhost:5000/api/get-margins', { headers: authHeaders }),
-            fetch('http://localhost:5000/api/streak-scan', { headers: authHeaders })
+            fetch('http://localhost:5000/api/get-margins', { headers: authHeaders })
           ]);
 
           if (subscriptionRes.ok) {
@@ -1732,22 +1868,6 @@ function App() {
             });
           }
 
-          if (streakRes.ok) {
-            const streakPayload = await streakRes.json();
-            setStreakScanData({
-              rows: Array.isArray(streakPayload?.rows) ? streakPayload.rows : [],
-              total: Number(streakPayload?.total || 0),
-              lastUpdated: new Date().toISOString(),
-              error: null
-            });
-          } else {
-            const streakErrorPayload = await streakRes.json().catch(() => ({}));
-            setStreakScanData((prev) => ({
-              ...prev,
-              lastUpdated: new Date().toISOString(),
-              error: streakErrorPayload?.error || `Streak scan failed (${streakRes.status})`
-            }));
-          }
         } catch (sharedFetchError) {
           console.warn('⚠️ Scanner-shared refresh failed:', sharedFetchError.message);
         }
@@ -1855,6 +1975,7 @@ function App() {
     speak,
     accessToken,
     kiteLoginStatus,
+    pollInterval,
     buyFilterChecks,
     sellFilterChecks,
     uiFilterStockSource,
@@ -2474,6 +2595,7 @@ function App() {
               marginsData={scannerMargins}
               streakScanRows={streakScanData.rows}
               streakScanCount={streakScanData.total}
+              technicalDetailRows={lowPriceScanStocks}
               streakScanError={streakScanData.error}
             />
 

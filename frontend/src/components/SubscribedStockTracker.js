@@ -2,12 +2,14 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import styled, { keyframes } from 'styled-components';
 import { checkAutoTradeConditions, analyzeAllSubscribedStocks } from '../utils/autoTradeCheck';
 
-const STREAK_BUY_CONDITION_STORAGE_KEY = 'streak_buy_condition';
-const STREAK_SCAN_ON_STORAGE_KEY = 'streak_scan_on';
-const STREAK_TIME_FRAME_STORAGE_KEY = 'streak_time_frame';
-const STREAK_CHART_TYPE_STORAGE_KEY = 'streak_chart_type';
-const STREAK_SLUG_STORAGE_KEY = 'streak_slug';
-const DEFAULT_BULLISH_STREAK_CONDITION = 'RSI(14,0) higher than 65 and Plus DI(14,0) higher than 25 and ADX(14,0) higher than Minus DI(14,0) and EMA(close, 3, 0) higher than EMA(close, 5, 0) and multitime frame completed(5min,Plus DI(14,0) higher than Minus DI(14,0)) and multitime frame completed(5min,Low(0) lower than Close(-1)) and multitime frame completed(5min,High(0) higher than equal to Close(-1))';
+const STREAK_BUY_1MIN_CONDITION_STORAGE_KEY = 'streak_buy_1min_condition';
+const STREAK_BUY_5MIN_CONDITION_STORAGE_KEY = 'streak_buy_5min_condition';
+const STREAK_SELL_1MIN_CONDITION_STORAGE_KEY = 'streak_sell_1min_condition';
+const STREAK_SELL_5MIN_CONDITION_STORAGE_KEY = 'streak_sell_5min_condition';
+const DEFAULT_BUY_1MIN_CONDITION = 'RSI(14,0) higher than 65 and Plus DI(14,0) higher than 25 and ADX(14,0) higher than Minus DI(14,0) and EMA(close, 25, 0) higher than MBB(Close,20,2,simple,0) and MACD(12,26,9,macd,0) higher than MACD(12,26,9,signal,0) and ADX(14,0) higher than Minus DI(14,0)';
+const DEFAULT_BUY_5MIN_CONDITION = 'MACD(12,26,9,macd,0) higher than MACD(12,26,9,signal,0) and Plus DI(14,0) higher than 25 and Plus DI(14,0) higher than ADX(14,0) and ADX(14,0) higher than Minus DI(14,0) and Minus DI(14,0) lower than 15 and RSI(14,0) higher than 60 and MACD(12,26,9,signal,0) higher than MACD(12,26,9,histogram,0)';
+const DEFAULT_SELL_1MIN_CONDITION = 'RSI(14,0) lower than 35 and Minus DI(14,0) higher than 25 and ADX(14,0) higher than Plus DI(14,0) and ADX(14,0) higher than 25 and EMA(close, 25, 0) lower than MBB(Close,20,2,simple,0) and MACD(12,26,9,macd,0) lower than MACD(12,26,9,signal,0) and ( EMA(close, 3, 0) lower than equal to LBB(Close,20,2,simple,0) )';
+const DEFAULT_SELL_5MIN_CONDITION = DEFAULT_SELL_1MIN_CONDITION;
 const ENABLE_SUBSCRIBED_TRACKER_DEBUG = false;
 const trackerDebugLog = (...args) => {
   if (ENABLE_SUBSCRIBED_TRACKER_DEBUG) {
@@ -303,7 +305,8 @@ const SubscribedStockTracker = ({
   subscribedSymbols = [],
   signalStocks = { buySignals: [], sellSignals: [] },
   emaCheckSignalStocks = null,
-  marginsData = null
+  marginsData = null,
+  technicalDetailRows = []
 }) => {
   // State to track currently selected stock symbol
   const [selectedSymbol, setSelectedSymbol] = useState(null);
@@ -397,38 +400,38 @@ const SubscribedStockTracker = ({
   
   // Subscriptions are scan-driven only (backend reconciliation). No manual unsubscribe API calls here.
 
-  // Configure bullish Streak inputs for BUY and persist in localStorage
-  const handleBuyScan = async () => {
+  const configureCondition = useCallback((storageKey, title, defaultCondition) => {
     try {
-      const currentCondition = localStorage.getItem(STREAK_BUY_CONDITION_STORAGE_KEY) || DEFAULT_BULLISH_STREAK_CONDITION;
-      const currentScanOn = localStorage.getItem(STREAK_SCAN_ON_STORAGE_KEY) || 'nifty_500';
-      const currentTimeFrame = localStorage.getItem(STREAK_TIME_FRAME_STORAGE_KEY) || 'min';
-      const currentChartType = localStorage.getItem(STREAK_CHART_TYPE_STORAGE_KEY) || 'candlestick';
-      const currentSlug = localStorage.getItem(STREAK_SLUG_STORAGE_KEY) || 'custom-streak-scan';
-
-      const nextCondition = window.prompt('Buy Streak condition:', currentCondition);
+      const currentCondition = localStorage.getItem(storageKey) || defaultCondition;
+      const nextCondition = window.prompt(`${title} condition:`, currentCondition);
       if (!nextCondition || !nextCondition.trim()) {
-        alert('Buy Streak condition is required.');
+        alert(`${title} condition is required.`);
         return;
       }
 
-      const nextScanOn = window.prompt('Scan on (example: nifty_500):', currentScanOn) || currentScanOn;
-      const nextTimeFrame = window.prompt('Time frame (example: min):', currentTimeFrame) || currentTimeFrame;
-      const nextChartType = window.prompt('Chart type (example: candlestick):', currentChartType) || currentChartType;
-      const nextSlug = window.prompt('Slug:', currentSlug) || currentSlug;
-
-      localStorage.setItem(STREAK_BUY_CONDITION_STORAGE_KEY, nextCondition.trim());
-      localStorage.setItem(STREAK_SCAN_ON_STORAGE_KEY, String(nextScanOn).trim() || 'nifty_500');
-      localStorage.setItem(STREAK_TIME_FRAME_STORAGE_KEY, String(nextTimeFrame).trim() || 'min');
-      localStorage.setItem(STREAK_CHART_TYPE_STORAGE_KEY, String(nextChartType).trim() || 'candlestick');
-      localStorage.setItem(STREAK_SLUG_STORAGE_KEY, String(nextSlug).trim() || 'custom-streak-scan');
-
-      alert('Bullish Buy Streak inputs saved. Next streak scan will use these values.');
+      localStorage.setItem(storageKey, nextCondition.trim());
+      alert(`${title} condition saved. Next scan will use it.`);
     } catch (error) {
-      console.error('❌ Error configuring buy streak inputs:', error);
-      alert('Error configuring buy streak inputs');
+      console.error(`❌ Error configuring ${title} condition:`, error);
+      alert(`Error configuring ${title} condition`);
     }
-  };
+  }, []);
+
+  const handleConfigureBuy1Min = useCallback(() => {
+    configureCondition(STREAK_BUY_1MIN_CONDITION_STORAGE_KEY, 'BUY 1min', DEFAULT_BUY_1MIN_CONDITION);
+  }, [configureCondition]);
+
+  const handleConfigureBuy5Min = useCallback(() => {
+    configureCondition(STREAK_BUY_5MIN_CONDITION_STORAGE_KEY, 'BUY 5min', DEFAULT_BUY_5MIN_CONDITION);
+  }, [configureCondition]);
+
+  const handleConfigureSell1Min = useCallback(() => {
+    configureCondition(STREAK_SELL_1MIN_CONDITION_STORAGE_KEY, 'SELL 1min', DEFAULT_SELL_1MIN_CONDITION);
+  }, [configureCondition]);
+
+  const handleConfigureSell5Min = useCallback(() => {
+    configureCondition(STREAK_SELL_5MIN_CONDITION_STORAGE_KEY, 'SELL 5min', DEFAULT_SELL_5MIN_CONDITION);
+  }, [configureCondition]);
 
   // Get dynamic symbol mappings with fallback
   const getSymbolToTokenMap = useCallback(() => {
@@ -1145,7 +1148,7 @@ const SubscribedStockTracker = ({
           
           <div style={{ display: 'flex', gap: '8px', marginLeft: 'auto' }}>
             <button
-              onClick={handleBuyScan}
+              onClick={handleConfigureBuy1Min}
               style={{
                 background: 'linear-gradient(135deg, #22c55e, #16a34a)',
                 color: 'white',
@@ -1159,9 +1162,69 @@ const SubscribedStockTracker = ({
                 boxShadow: '0 2px 4px rgba(34, 197, 94, 0.2)',
                 fontFamily: 'system-ui, -apple-system, sans-serif'
               }}
-              title='Configure bullish streak inputs for Buy scan'
+              title='Configure BUY 1min condition'
             >
-              Configure Buy Streak
+              Configure BUY 1m
+            </button>
+
+            <button
+              onClick={handleConfigureBuy5Min}
+              style={{
+                background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                padding: '8px 16px',
+                fontSize: '12px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                boxShadow: '0 2px 4px rgba(37, 99, 235, 0.2)',
+                fontFamily: 'system-ui, -apple-system, sans-serif'
+              }}
+              title='Configure BUY 5min condition'
+            >
+              Configure BUY 5m
+            </button>
+
+            <button
+              onClick={handleConfigureSell1Min}
+              style={{
+                background: 'linear-gradient(135deg, #ef4444, #dc2626)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                padding: '8px 16px',
+                fontSize: '12px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                boxShadow: '0 2px 4px rgba(239, 68, 68, 0.2)',
+                fontFamily: 'system-ui, -apple-system, sans-serif'
+              }}
+              title='Configure SELL 1min condition'
+            >
+              Configure SELL 1m
+            </button>
+
+            <button
+              onClick={handleConfigureSell5Min}
+              style={{
+                background: 'linear-gradient(135deg, #b91c1c, #991b1b)',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                padding: '8px 16px',
+                fontSize: '12px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+                boxShadow: '0 2px 4px rgba(153, 27, 27, 0.2)',
+                fontFamily: 'system-ui, -apple-system, sans-serif'
+              }}
+              title='Configure SELL 5min condition'
+            >
+              Configure SELL 5m
             </button>
           </div>
         </div>
@@ -1466,6 +1529,106 @@ const SubscribedStockTracker = ({
             <div>
               {renderOrderbookTable(buyRows, 'BUY Order Book Analyzer', '#166534', '#bbf7d0')}
               {renderOrderbookTable(sellRows, 'SELL Order Book Analyzer', '#991b1b', '#fecaca')}
+            </div>
+          );
+        })()}
+
+        {/* Technical details table under subscribed analyzer */}
+        {(() => {
+          const normalizeTechnicalRows = (rows) => (Array.isArray(rows) ? rows : []).map((row) => {
+            const symbol = extractSymbolName(row?.symbol || row?.seg_sym || row?.s || '');
+            const ltp = Number(row?.at || row?.ltp || row?.d?.[0] || 0);
+            const ema3_1 = Number(row?.ema3_1 || row?.d?.[36] || 0);
+            const ubb_1 = Number(row?.ubb_1 || row?.d?.[41] || 0);
+            const lbb_1 = Number(row?.lbb_1 || row?.d?.[40] || 0);
+            const ubb_5 = Number(row?.ubb_5 || row?.d?.[27] || 0);
+            const lbb_5 = Number(row?.lbb_5 || row?.d?.[28] || 0);
+
+            const buyGapPct = ubb_1 > 0 ? (Math.abs(ema3_1 - ubb_1) / ubb_1) * 100 : null;
+            const sellGapPct = lbb_1 > 0 ? (Math.abs(ema3_1 - lbb_1) / lbb_1) * 100 : null;
+
+            return {
+              symbol,
+              ltp,
+              ema3_1,
+              ubb_1,
+              lbb_1,
+              ubb_5,
+              lbb_5,
+              buyGapPct,
+              sellGapPct,
+              buyBandPass: ubb_5 > 0 ? ltp < ubb_5 : null,
+              sellBandPass: lbb_5 > 0 ? ltp > lbb_5 : null
+            };
+          });
+
+          const technicalRows = normalizeTechnicalRows(technicalDetailRows);
+          const subscribedSet = new Set(getSubscribedStocks().map((sym) => String(extractSymbolName(sym || '')).toUpperCase()));
+          const visibleRows = technicalRows.filter((row) => subscribedSet.size === 0 || subscribedSet.has(String(row.symbol || '').toUpperCase()));
+
+          return (
+            <div style={{
+              marginTop: '10px',
+              marginBottom: '12px'
+            }}>
+              <div style={{
+                background: '#f8fafc',
+                border: '1px solid #bfdbfe',
+                borderRadius: '8px',
+                padding: '10px'
+              }}>
+                <div style={{
+                  fontSize: '13px',
+                  fontWeight: 700,
+                  color: '#1e3a8a',
+                  marginBottom: '8px',
+                  fontFamily: 'system-ui, -apple-system, sans-serif'
+                }}>
+                  Technical Details (EMA3/UBB/LBB + Gap%) ({visibleRows.length})
+                </div>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '980px', fontSize: '11px' }}>
+                    <thead>
+                      <tr style={{ background: '#f1f5f9' }}>
+                        <th style={{ padding: '6px', textAlign: 'left', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Symbol</th>
+                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>LTP</th>
+                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>EMA3(1m)</th>
+                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>UBB(1m)</th>
+                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY Gap %</th>
+                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>LBB(1m)</th>
+                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL Gap %</th>
+                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>UBB(5m)</th>
+                        <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY: LTP &lt; UBB5</th>
+                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>LBB(5m)</th>
+                        <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL: LTP &gt; LBB5</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {visibleRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={11} style={{ padding: '8px', color: '#64748b', borderBottom: '1px solid #f1f5f9' }}>
+                            No technical rows available yet.
+                          </td>
+                        </tr>
+                      ) : visibleRows.map((row, idx) => (
+                        <tr key={`tech-${row.symbol}-${idx}`}>
+                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a', fontWeight: 600 }}>{row.symbol || '-'}</td>
+                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ltp > 0 ? `₹${row.ltp.toFixed(2)}` : '-'}</td>
+                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ema3_1 > 0 ? row.ema3_1.toFixed(2) : '-'}</td>
+                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ubb_1 > 0 ? row.ubb_1.toFixed(2) : '-'}</td>
+                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#166534', fontWeight: 700 }}>{row.buyGapPct !== null ? `${row.buyGapPct.toFixed(4)}%` : '-'}</td>
+                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.lbb_1 > 0 ? row.lbb_1.toFixed(2) : '-'}</td>
+                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#991b1b', fontWeight: 700 }}>{row.sellGapPct !== null ? `${row.sellGapPct.toFixed(4)}%` : '-'}</td>
+                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ubb_5 > 0 ? row.ubb_5.toFixed(2) : '-'}</td>
+                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: row.buyBandPass === null ? '#64748b' : row.buyBandPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{row.buyBandPass === null ? '-' : row.buyBandPass ? 'YES' : 'NO'}</td>
+                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.lbb_5 > 0 ? row.lbb_5.toFixed(2) : '-'}</td>
+                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: row.sellBandPass === null ? '#64748b' : row.sellBandPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{row.sellBandPass === null ? '-' : row.sellBandPass ? 'YES' : 'NO'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </div>
           );
         })()}

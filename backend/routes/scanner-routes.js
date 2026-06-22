@@ -3,6 +3,15 @@ const fetch = require('node-fetch');
 const symbolMappings = require('../data/symbolMappings');
 const { KiteTicker, KiteConnect } = require('kiteconnect');
 const DepthTrackEngine = require('../orderbook-analyzer');
+const {
+    BUY_1MIN_SCAN_PAYLOAD,
+    BUY_5MIN_SCAN_PAYLOAD
+} = require('../streak-buy-scan');
+const {
+    SELL_1MIN_SCAN_PAYLOAD,
+    SELL_5MIN_SCAN_PAYLOAD,
+    DEFAULT_SELL_SCAN_PAYLOAD
+} = require('../streak-sell-scan');
 const router = express.Router();
 const depthTrackEngine = new DepthTrackEngine();
 
@@ -1698,17 +1707,10 @@ global.autoTrade = false;
 // TradingView Scanner API URL
 const TRADINGVIEW_SCANNER_URL = 'https://scanner.tradingview.com/india/scan?label-product=screener-stock';
 const STREAK_SCANNER_URL = 'https://scanner.streak.tech/api/scanner';
-const FIXED_STREAK_PAYLOAD = {
-    condition: 'RSI(14,0) higher than 65 and Plus DI(14,0) higher than 25 and ADX(14,0) higher than Minus DI(14,0) and ADX(14,0) higher than 25 and EMA(close, 25, 0) higher than MBB(Close,20,2,simple,0) and MACD(12,26,9,macd,0) higher than MACD(12,26,9,signal,0) and ( EMA(close, 3, 0) higher than equal to UBB(Close,20,2,simple,0) )',
-    scan_on: 'nifty_500',
-    time_frame: 'min',
-    chart_type: 'candlestick',
-    slug: 'bullish-scan-496457'
-};
 
-function buildStreakScannerBody(overrides = {}) {
+function buildStreakScannerBody(basePayload = {}, overrides = {}) {
     return {
-        ...FIXED_STREAK_PAYLOAD,
+        ...basePayload,
         ...overrides
     };
 }
@@ -1732,6 +1734,193 @@ function extractStreakStocks(parsed = {}) {
     return [];
 }
 
+function getStreakStockSymbol(stock = {}) {
+    const segSym = String(stock?.seg_sym || stock?.symbol || '').trim();
+    if (!segSym) return '';
+    const symbol = segSym.includes(':') ? segSym.split(':')[1] : segSym;
+    return String(symbol || '').trim().toUpperCase();
+}
+
+function intersectStreakStocksBySymbol(primaryStocks = [], secondaryStocks = []) {
+    const secondaryBySymbol = new Map();
+    for (const stock of secondaryStocks) {
+        const symbol = getStreakStockSymbol(stock);
+        if (symbol && !secondaryBySymbol.has(symbol)) {
+            secondaryBySymbol.set(symbol, stock);
+        }
+    }
+
+    return primaryStocks
+        .filter((stock) => secondaryBySymbol.has(getStreakStockSymbol(stock)))
+        .map((stock) => {
+            const symbol = getStreakStockSymbol(stock);
+            const secondary = secondaryBySymbol.get(symbol);
+            return {
+                ...stock,
+                symbol,
+                seg_sym: stock?.seg_sym || secondary?.seg_sym || `NSE:${symbol}`,
+                matchedInSecondary: true,
+                matchedAt: secondary?.at || null
+            };
+        });
+}
+
+async function runStreakAllScansWithGap(streakToken, pollIntervalMs = 0, conditionOverrides = {}) {
+    const lowPriceCommonPayload = buildLowPriceScannerPayload();
+
+    const buy1MinPayload = conditionOverrides.buy1MinCondition
+        ? { ...BUY_1MIN_SCAN_PAYLOAD, condition: conditionOverrides.buy1MinCondition }
+        : BUY_1MIN_SCAN_PAYLOAD;
+    const buy5MinPayload = conditionOverrides.buy5MinCondition
+        ? { ...BUY_5MIN_SCAN_PAYLOAD, condition: conditionOverrides.buy5MinCondition }
+        : BUY_5MIN_SCAN_PAYLOAD;
+    const sell1MinPayload = conditionOverrides.sell1MinCondition
+        ? { ...SELL_1MIN_SCAN_PAYLOAD, condition: conditionOverrides.sell1MinCondition }
+        : SELL_1MIN_SCAN_PAYLOAD;
+    const sell5MinPayload = conditionOverrides.sell5MinCondition
+        ? { ...SELL_5MIN_SCAN_PAYLOAD, condition: conditionOverrides.sell5MinCondition }
+        : SELL_5MIN_SCAN_PAYLOAD;
+
+    const [buy1MinResult, buy5MinResult, sell1MinResult, sell5MinResult, lowPriceCommonResult] = await Promise.all([
+        callStreakScanner(streakToken, buy1MinPayload),
+        callStreakScanner(streakToken, buy5MinPayload),
+        callStreakScanner(streakToken, sell1MinPayload),
+        callStreakScanner(streakToken, sell5MinPayload),
+        makeScannorCall(lowPriceCommonPayload, 'LOW_PRICE_COMMON_FILTER')
+    ]);
+
+    if (!buy1MinResult.ok) {
+        return {
+            ok: false,
+            error: 'Streak BUY 1min scan request failed',
+            status: buy1MinResult.status || 502,
+            stage: 'buy1Min',
+            failedResult: buy1MinResult
+        };
+    }
+
+    if (!buy5MinResult.ok) {
+        return {
+            ok: false,
+            error: 'Streak BUY 5min scan request failed',
+            status: buy5MinResult.status || 502,
+            stage: 'buy5Min',
+            failedResult: buy5MinResult
+        };
+    }
+
+    if (!sell1MinResult.ok) {
+        return {
+            ok: false,
+            error: 'Streak SELL 1min scan request failed',
+            status: sell1MinResult.status || 502,
+            stage: 'sell1Min',
+            failedResult: sell1MinResult
+        };
+    }
+
+    if (!sell5MinResult.ok) {
+        return {
+            ok: false,
+            error: 'Streak SELL 5min scan request failed',
+            status: sell5MinResult.status || 502,
+            stage: 'sell5Min',
+            failedResult: sell5MinResult
+        };
+    }
+
+    const buy1MinStocks = extractStreakStocks(buy1MinResult.parsed);
+    const buy5MinStocks = extractStreakStocks(buy5MinResult.parsed);
+    const sell1MinStocks = extractStreakStocks(sell1MinResult.parsed);
+    const sell5MinStocks = extractStreakStocks(sell5MinResult.parsed);
+
+    if (!lowPriceCommonResult?.success) {
+        return {
+            ok: false,
+            error: 'Low-price common filter scan request failed',
+            status: 502,
+            stage: 'lowPriceCommon',
+            failedResult: lowPriceCommonResult
+        };
+    }
+
+    const lowPriceCommonRows = Array.isArray(lowPriceCommonResult?.data?.data)
+        ? lowPriceCommonResult.data.data
+        : [];
+    const lowPriceCommonSymbolSet = new Set(
+        lowPriceCommonRows
+            .map((row) => String(row?.s || '').trim())
+            .map((symbol) => (symbol.includes(':') ? symbol.split(':')[1] : symbol))
+            .map((symbol) => String(symbol || '').trim().toUpperCase())
+            .filter(Boolean)
+    );
+
+    const baseBuyStocks = intersectStreakStocksBySymbol(buy1MinStocks, buy5MinStocks);
+    const baseSellStocks = intersectStreakStocksBySymbol(sell1MinStocks, sell5MinStocks);
+
+    // Low-price common scan remains available for technical context,
+    // but signal enforcement is disabled for now.
+    const finalBuyStocks = baseBuyStocks;
+    const finalSellStocks = baseSellStocks;
+
+    const buyRows = finalBuyStocks.map((stock) => ({
+        token: Number(stock?.token || 0),
+        seg_sym: stock?.seg_sym || '',
+        symbol: String(stock?.seg_sym || '').split(':')[1] || stock?.seg_sym || '',
+        at: stock?.at || null,
+        volume: Number(stock?.volume || 0),
+        signalType: 'BUY',
+        chartUrl: buildKiteChartUrl(stock?.seg_sym, stock?.token)
+    }));
+
+    const sellRows = finalSellStocks.map((stock) => ({
+        token: Number(stock?.token || 0),
+        seg_sym: stock?.seg_sym || '',
+        symbol: String(stock?.seg_sym || '').split(':')[1] || stock?.seg_sym || '',
+        at: stock?.at || null,
+        volume: Number(stock?.volume || 0),
+        signalType: 'SELL',
+        chartUrl: buildKiteChartUrl(stock?.seg_sym, stock?.token)
+    }));
+
+    return {
+        ok: true,
+        buyRows,
+        sellRows,
+        rows: [...buyRows, ...sellRows],
+        streakStatus: {
+            buy1Min: buy1MinResult.status,
+            buy5Min: buy5MinResult.status,
+            sell1Min: sell1MinResult.status,
+            sell5Min: sell5MinResult.status
+        },
+        scanParams: {
+            mode: 'all_four_scans_no_internal_delay',
+            requestedPollIntervalMs: pollIntervalMs,
+            buy1Min: buy1MinResult.body,
+            buy5Min: buy5MinResult.body,
+            sell1Min: sell1MinResult.body,
+            sell5Min: sell5MinResult.body,
+            lowPriceCommonPayload,
+            intersection: {
+                lowPriceFilterApplied: false,
+                preLowPriceBuyCount: baseBuyStocks.length,
+                preLowPriceSellCount: baseSellStocks.length,
+                postLowPriceBuyCount: finalBuyStocks.length,
+                postLowPriceSellCount: finalSellStocks.length,
+                lowPriceUniverseCount: lowPriceCommonSymbolSet.size
+            }
+        },
+        raw: {
+            buy1Min: buy1MinResult.parsed || null,
+            buy5Min: buy5MinResult.parsed || null,
+            sell1Min: sell1MinResult.parsed || null,
+            sell5Min: sell5MinResult.parsed || null,
+            lowPriceCommon: lowPriceCommonResult?.data || null
+        }
+    };
+}
+
 function buildKiteChartUrl(segSym, token) {
     const symbol = String(segSym || '').includes(':')
         ? String(segSym).split(':')[1]
@@ -1741,8 +1930,8 @@ function buildKiteChartUrl(segSym, token) {
     return `https://kite.zerodha.com/markets/ext/chart/web/tvc/NSE/${cleanSymbol}/${finalToken}`;
 }
 
-async function callStreakScanner(streakToken, overrides = {}) {
-    const body = buildStreakScannerBody(overrides);
+async function callStreakScanner(streakToken, overrides = {}, basePayload = {}) {
+    const body = buildStreakScannerBody(basePayload, overrides);
     const response = await fetch(STREAK_SCANNER_URL, {
         method: 'POST',
         headers: {
@@ -3377,7 +3566,6 @@ router.post('/low-price-scanners', async (req, res) => {
             
             const ubb1 = Number(stock.ubb_1 || 0);
             const ubb5 = Number(stock.ubb_5 || 0);
-            const ubb15 = Number(stock.ubb_15 || 0);
             const ema3GapPctFromUbb = ubb1 > 0
                 ? (Math.abs(Number(stock.ema3_1 || 0) - ubb1) / ubb1) * 100
                 : Number.POSITIVE_INFINITY;
@@ -3392,9 +3580,9 @@ router.post('/low-price-scanners', async (req, res) => {
                 stock.ema3_1 > stock.ema5_1,  // EMA3(1m) > EMA5(1m)
                 stock.rsi1 > 65,              // RSI(1m) > 65
                 stock.ema9_1 > stock.mbb_1,   // EMA9(1m) > MBB(1m)
-                ema3GapPctFromUbb <= 0.05,    // |UBB(1m)-EMA3(1m)| / UBB(1m) <= 0.05%
+                ema3GapPctFromUbb <= 0.04,    // |UBB(1m)-EMA3(1m)| / UBB(1m) <= 0.04%
                 ubb5 > 0 && Number(stock.ltp || 0) < ubb5,   // LTP < UBB(5m)
-                ubb15 > 0 && Number(stock.ltp || 0) < ubb15, // LTP < UBB(15m)
+                true,                         // Deprecated 15m band gate (5m-only signal gate)
                 stock.macd5 > 0,              // MACD(5m) > 0
                 stock.plusDI5 > stock.minusDI5 // +DI(5m) > -DI(5m)
             ];
@@ -3422,7 +3610,6 @@ router.post('/low-price-scanners', async (req, res) => {
             // SELL CONDITIONS (default timeframe 1m unless specified)
             const lbb1 = Number(stock.lbb_1 || 0);
             const lbb5 = Number(stock.lbb_5 || 0);
-            const lbb15 = Number(stock.lbb_15 || 0);
             const ema3GapPctFromLbb = lbb1 > 0
                 ? (Math.abs(Number(stock.ema3_1 || 0) - lbb1) / lbb1) * 100
                 : Number.POSITIVE_INFINITY;
@@ -3436,9 +3623,9 @@ router.post('/low-price-scanners', async (req, res) => {
                 stock.ema3_1 < stock.ema5_1,  // EMA3(1m) < EMA5(1m)
                 stock.rsi1 < 35,              // RSI(1m) < 35
                 stock.ema9_1 < stock.mbb_1,   // EMA9(1m) < MBB(1m)
-                ema3GapPctFromLbb <= 0.05,    // |LBB(1m)-EMA3(1m)| / LBB(1m) <= 0.05%
+                ema3GapPctFromLbb <= 0.04,    // |LBB(1m)-EMA3(1m)| / LBB(1m) <= 0.04%
                 lbb5 > 0 && Number(stock.ltp || 0) > lbb5,   // LTP > LBB(5m)
-                lbb15 > 0 && Number(stock.ltp || 0) > lbb15, // LTP > LBB(15m)
+                true,                         // Deprecated 15m band gate (5m-only signal gate)
                 stock.macd5 < 0,              // MACD(5m) < 0
                 stock.minusDI5 > stock.plusDI5 // -DI(5m) > +DI(5m)
             ];
@@ -3850,10 +4037,31 @@ router.get('/streak-scan', async (req, res) => {
         // Reserve slot immediately so concurrent requests are throttled.
         lastStreakScanStartedAt = nowMs;
 
-        const requestedSignalType = String(req.query.signalType || 'BUY').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
-        const scanTypeForSignal = requestedSignalType === 'BUY' ? 'BUY_SCAN' : 'SELL_SCAN';
+        const requestedSignalTypeRaw = String(req.query.signalType || 'ALL').toUpperCase();
+        const requestedSignalType = requestedSignalTypeRaw === 'BUY' || requestedSignalTypeRaw === 'SELL'
+            ? requestedSignalTypeRaw
+            : 'ALL';
+        const scanTypeForSignal = requestedSignalType === 'SELL' ? 'SELL_SCAN' : 'BUY_SCAN';
         const streakToken = req.headers['x-streak-token'] || process.env.STREAK_AUTH_TOKEN;
         const streakOverrides = {};
+        const pollIntervalMsRaw = req.headers['x-poll-interval-ms'] || req.query.pollIntervalMs || req.query.poll_interval_ms;
+        const pollIntervalMs = Math.max(0, Math.min(60000, Number(pollIntervalMsRaw) || 0));
+        const conditionOverrides = {
+            buy1MinCondition: String(req.headers['x-streak-buy-1min-condition'] || '').trim(),
+            buy5MinCondition: String(req.headers['x-streak-buy-5min-condition'] || '').trim(),
+            sell1MinCondition: String(req.headers['x-streak-sell-1min-condition'] || '').trim(),
+            sell5MinCondition: String(req.headers['x-streak-sell-5min-condition'] || '').trim()
+        };
+
+        const scanOnOverride = String(req.headers['x-streak-scan-on'] || req.query.scan_on || '').trim();
+        const timeFrameOverride = String(req.headers['x-streak-time-frame'] || req.query.time_frame || '').trim();
+        const chartTypeOverride = String(req.headers['x-streak-chart-type'] || req.query.chart_type || '').trim();
+        const slugOverride = String(req.headers['x-streak-slug'] || req.query.slug || '').trim();
+
+        if (scanOnOverride) streakOverrides.scan_on = scanOnOverride;
+        if (timeFrameOverride) streakOverrides.time_frame = timeFrameOverride;
+        if (chartTypeOverride) streakOverrides.chart_type = chartTypeOverride;
+        if (slugOverride) streakOverrides.slug = slugOverride;
 
         const conditionOverride = String(req.headers['x-streak-condition'] || req.query.condition || '').trim();
         if (conditionOverride) streakOverrides.condition = conditionOverride;
@@ -3865,18 +4073,224 @@ router.get('/streak-scan', async (req, res) => {
             });
         }
 
-        const streakResult = await callStreakScanner(streakToken, streakOverrides);
-        if (!streakResult.ok) {
-            return res.status(streakResult.status || 502).json({
-                success: false,
-                error: 'Streak scan request failed',
-                streakStatus: streakResult.status,
-                streakBody: streakResult.parsed || streakResult.rawText,
-                rows: []
+        const runDualBuyScan = requestedSignalType === 'BUY';
+        const runAllFourScans = requestedSignalType === 'ALL';
+
+        let streakResult;
+        let stocks = [];
+        let scanParamsResponse = null;
+        let rawResponse = null;
+        let streakStatusResponse = null;
+
+        if (runAllFourScans) {
+            const allScanResult = await runStreakAllScansWithGap(streakToken, pollIntervalMs, conditionOverrides);
+            if (!allScanResult.ok) {
+                return res.status(allScanResult.status || 502).json({
+                    success: false,
+                    error: allScanResult.error || 'Streak all-scan request failed',
+                    stage: allScanResult.stage,
+                    streakStatus: allScanResult.failedResult?.status,
+                    streakBody: allScanResult.failedResult?.parsed || allScanResult.failedResult?.rawText,
+                    rows: []
+                });
+            }
+
+            const buyRows = allScanResult.buyRows;
+            const sellRows = allScanResult.sellRows;
+            const rows = allScanResult.rows;
+            const streakStatusAll = allScanResult.streakStatus;
+            const scanParamsAll = allScanResult.scanParams;
+            const rawAll = allScanResult.raw;
+
+            const allResolvedTokens = [];
+            for (const row of rows) {
+                let tokenNum = Number(row.token || 0);
+
+                if (!Number.isFinite(tokenNum) || tokenNum <= 0) {
+                    const mappedToken = symbolMappings.symbolMappings[row.symbol];
+                    if (mappedToken) {
+                        tokenNum = Number(mappedToken);
+                    }
+                }
+
+                if (!Number.isFinite(tokenNum) || tokenNum <= 0) {
+                    continue;
+                }
+
+                allResolvedTokens.push(tokenNum);
+                scanTypeTracker.set(tokenNum, row.signalType === 'SELL' ? 'SELL_SCAN' : 'BUY_SCAN');
+            }
+
+            const desiredSubscriptionSet = new Set(allResolvedTokens);
+            const existingTokens = Array.from(currentlySubscribed);
+            const tokensToUnsubscribe = existingTokens.filter((token) => !desiredSubscriptionSet.has(token));
+            const newSubscriptions = allResolvedTokens.filter((token) => !currentlySubscribed.has(token));
+
+            if (rows.length === 0) {
+                if (globalTicker && existingTokens.length > 0) {
+                    try {
+                        globalTicker.unsubscribe(existingTokens);
+                    } catch (unsubscribeError) {
+                        console.error('❌ Failed to unsubscribe all tokens on empty streak scan:', unsubscribeError.message);
+                    }
+                }
+
+                existingTokens.forEach((token) => scanTypeTracker.delete(token));
+                currentlySubscribed = new Set();
+                currentBuyStocks = [];
+                currentSellStocks = [];
+                lastScanTimestamp = new Date().toISOString();
+                broadcastSubscriptionUpdate();
+
+                return res.json({
+                    success: true,
+                    streakStatus: streakStatusAll,
+                    scanParams: scanParamsAll,
+                    signalType: 'ALL',
+                    buyTotal: 0,
+                    sellTotal: 0,
+                    total: 0,
+                    buyRows: [],
+                    sellRows: [],
+                    rows: [],
+                    subscriptions: {
+                        resolved_tokens: 0,
+                        unsubscribed_all: existingTokens.length,
+                        total_subscriptions: 0,
+                        scan_type: 'ALL',
+                        cleared_due_to_no_signals: true
+                    },
+                    raw: rawAll,
+                    timestamp: new Date().toISOString()
+                });
+            }
+
+            if (!globalTicker && global.initializeKiteTicker) {
+                try {
+                    await global.initializeKiteTicker();
+                } catch (tickerError) {
+                    console.error('❌ Failed to initialize KiteTicker for streak subscription:', tickerError.message);
+                }
+            }
+
+            if (globalTicker && newSubscriptions.length > 0) {
+                try {
+                    globalTicker.subscribe(newSubscriptions);
+                } catch (subscribeError) {
+                    console.error('❌ Failed to subscribe streak tokens:', subscribeError.message);
+                }
+            }
+
+            if (globalTicker && tokensToUnsubscribe.length > 0) {
+                try {
+                    globalTicker.unsubscribe(tokensToUnsubscribe);
+                } catch (unsubscribeError) {
+                    console.error('❌ Failed to unsubscribe stale streak tokens:', unsubscribeError.message);
+                }
+            }
+
+            tokensToUnsubscribe.forEach((token) => scanTypeTracker.delete(token));
+            currentlySubscribed = desiredSubscriptionSet;
+            currentBuyStocks = buyRows;
+            currentSellStocks = sellRows;
+            lastScanTimestamp = new Date().toISOString();
+            broadcastSubscriptionUpdate();
+
+            return res.json({
+                success: true,
+                streakStatus: streakStatusAll,
+                scanParams: scanParamsAll,
+                signalType: 'ALL',
+                buyTotal: buyRows.length,
+                sellTotal: sellRows.length,
+                total: rows.length,
+                buyRows,
+                sellRows,
+                rows,
+                subscriptions: {
+                    resolved_tokens: allResolvedTokens.length,
+                    new_subscriptions: newSubscriptions.length,
+                    total_subscriptions: currentlySubscribed.size,
+                    scan_type: 'ALL'
+                },
+                raw: rawAll,
+                timestamp: new Date().toISOString()
             });
         }
 
-        const stocks = extractStreakStocks(streakResult.parsed);
+        if (runDualBuyScan) {
+            const oneMinResult = await callStreakScanner(streakToken, BUY_1MIN_SCAN_PAYLOAD);
+            if (!oneMinResult.ok) {
+                return res.status(oneMinResult.status || 502).json({
+                    success: false,
+                    error: 'Streak 1min scan request failed',
+                    streakStatus: oneMinResult.status,
+                    streakBody: oneMinResult.parsed || oneMinResult.rawText,
+                    rows: []
+                });
+            }
+
+            const fiveMinResult = await callStreakScanner(streakToken, BUY_5MIN_SCAN_PAYLOAD);
+            if (!fiveMinResult.ok) {
+                return res.status(fiveMinResult.status || 502).json({
+                    success: false,
+                    error: 'Streak 5min scan request failed',
+                    streakStatus: fiveMinResult.status,
+                    streakBody: fiveMinResult.parsed || fiveMinResult.rawText,
+                    rows: []
+                });
+            }
+
+            const oneMinStocks = extractStreakStocks(oneMinResult.parsed);
+            const fiveMinStocks = extractStreakStocks(fiveMinResult.parsed);
+            stocks = intersectStreakStocksBySymbol(oneMinStocks, fiveMinStocks);
+            scanParamsResponse = {
+                mode: 'dual_buy_scan',
+                oneMin: oneMinResult.body,
+                fiveMin: fiveMinResult.body
+            };
+            rawResponse = {
+                oneMin: oneMinResult.parsed || null,
+                fiveMin: fiveMinResult.parsed || null
+            };
+            streakStatusResponse = {
+                oneMin: oneMinResult.status,
+                fiveMin: fiveMinResult.status
+            };
+        } else {
+            if (requestedSignalType === 'BUY' && !conditionOverride) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Missing buy scan condition. Provide x-streak-condition header or condition query param.',
+                    rows: []
+                });
+            }
+
+            const basePayload = requestedSignalType === 'SELL'
+                ? DEFAULT_SELL_SCAN_PAYLOAD
+                : {
+                    scan_on: 'nifty_500',
+                    time_frame: 'min',
+                    chart_type: 'candlestick',
+                    slug: 'buy-custom-scan'
+                };
+            streakResult = await callStreakScanner(streakToken, streakOverrides, basePayload);
+            if (!streakResult.ok) {
+                return res.status(streakResult.status || 502).json({
+                    success: false,
+                    error: 'Streak scan request failed',
+                    streakStatus: streakResult.status,
+                    streakBody: streakResult.parsed || streakResult.rawText,
+                    rows: []
+                });
+            }
+
+            stocks = extractStreakStocks(streakResult.parsed);
+            scanParamsResponse = streakResult.body;
+            rawResponse = streakResult.parsed || null;
+            streakStatusResponse = streakResult.status;
+        }
+
         const rows = stocks.map((stock) => ({
             token: Number(stock?.token || 0),
             seg_sym: stock?.seg_sym || '',
@@ -3908,8 +4322,8 @@ router.get('/streak-scan', async (req, res) => {
 
             return res.json({
                 success: true,
-                streakStatus: streakResult.status,
-                scanParams: streakResult.body,
+                streakStatus: streakStatusResponse,
+                scanParams: scanParamsResponse,
                 signalType: requestedSignalType,
                 total: 0,
                 rows: [],
@@ -3920,7 +4334,7 @@ router.get('/streak-scan', async (req, res) => {
                     scan_type: scanTypeForSignal,
                     cleared_due_to_no_signals: true
                 },
-                raw: streakResult.parsed || null,
+                raw: rawResponse,
                 timestamp: new Date().toISOString()
             });
         }
@@ -3989,8 +4403,8 @@ router.get('/streak-scan', async (req, res) => {
 
         return res.json({
             success: true,
-            streakStatus: streakResult.status,
-            scanParams: streakResult.body,
+            streakStatus: streakStatusResponse,
+            scanParams: scanParamsResponse,
             signalType: requestedSignalType,
             total: rows.length,
             rows,
@@ -4000,7 +4414,7 @@ router.get('/streak-scan', async (req, res) => {
                 total_subscriptions: currentlySubscribed.size,
                 scan_type: scanTypeForSignal
             },
-            raw: streakResult.parsed || null,
+            raw: rawResponse,
             timestamp: new Date().toISOString()
         });
     } catch (error) {

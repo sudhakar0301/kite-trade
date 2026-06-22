@@ -74,12 +74,12 @@ const buyFilterDefs = [
   },
   {
     id: 'ema3UbbGapWithinPoint1Pct_1mBuy',
-    label: '|UBB(1m)-EMA3(1m)| <= 0.05%',
+    label: '|UBB(1m)-EMA3(1m)| <= 0.04%',
     test: row => {
       const ubb = Number(row.ubb_1 || row.ubb_1m || row.bbUpper1 || 0);
       if (!(ubb > 0)) return false;
       const ema3 = Number(row.ema3_1 || row.ema3_1m || 0);
-      return (Math.abs(ubb - ema3) / ubb) * 100 <= 0.05;
+      return (Math.abs(ubb - ema3) / ubb) * 100 <= 0.04;
     }
   },
   {
@@ -157,12 +157,12 @@ const sellFilterDefs = [
   },
   {
     id: 'ema3LbbGapWithinPoint1Pct_1mSell',
-    label: '|LBB(1m)-EMA3(1m)| <= 0.05%',
+    label: '|LBB(1m)-EMA3(1m)| <= 0.04%',
     test: row => {
       const lbb = Number(row.lbb_1 || row.lbb_1m || row.bbLower1 || 0);
       if (!(lbb > 0)) return false;
       const ema3 = Number(row.ema3_1 || row.ema3_1m || 0);
-      return (Math.abs(lbb - ema3) / lbb) * 100 <= 0.05;
+      return (Math.abs(lbb - ema3) / lbb) * 100 <= 0.04;
     }
   },
   {
