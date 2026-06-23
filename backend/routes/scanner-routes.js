@@ -1847,6 +1847,7 @@ async function runStreakAllScansWithGap(streakToken, pollIntervalMs = 0, conditi
     const lowPriceCommonRows = Array.isArray(lowPriceCommonResult?.data?.data)
         ? lowPriceCommonResult.data.data
         : [];
+    const lowPriceCommonEnrichedRows = lowPriceCommonRows.map(enrichLowPriceStockData);
     const lowPriceCommonSymbolSet = new Set(
         lowPriceCommonRows
             .map((row) => String(row?.s || '').trim())
@@ -1854,14 +1855,59 @@ async function runStreakAllScansWithGap(streakToken, pollIntervalMs = 0, conditi
             .map((symbol) => String(symbol || '').trim().toUpperCase())
             .filter(Boolean)
     );
+    const lowPriceBySymbol = new Map(
+        lowPriceCommonEnrichedRows
+            .filter((row) => row?.symbol)
+            .map((row) => [String(row.symbol).trim().toUpperCase(), row])
+    );
+
+    const FIXED_GAP_THRESHOLD_PCT = 0.04;
+
+    const qualifiesLowPriceForSide = (lowPriceRow, side) => {
+        if (!lowPriceRow) return false;
+
+        const ltp = Number(lowPriceRow.ltp || 0);
+        const ema3_1 = Number(lowPriceRow.ema3_1 || 0);
+        const ema3_5 = Number(lowPriceRow.ema3_5 || 0);
+        const ubb_1 = Number(lowPriceRow.ubb_1 || 0);
+        const lbb_1 = Number(lowPriceRow.lbb_1 || 0);
+        const ubb_5 = Number(lowPriceRow.ubb_5 || 0);
+        const lbb_5 = Number(lowPriceRow.lbb_5 || 0);
+        const thresholdPct = FIXED_GAP_THRESHOLD_PCT;
+
+        const gap1mUbbPct = ubb_1 > 0 ? (Math.abs(ema3_1 - ubb_1) / ubb_1) * 100 : Number.POSITIVE_INFINITY;
+        const gap5mUbbPct = ubb_5 > 0 ? (Math.abs(ema3_5 - ubb_5) / ubb_5) * 100 : Number.POSITIVE_INFINITY;
+        const gap1mLbbPct = lbb_1 > 0 ? (Math.abs(ema3_1 - lbb_1) / lbb_1) * 100 : Number.POSITIVE_INFINITY;
+        const gap5mLbbPct = lbb_5 > 0 ? (Math.abs(ema3_5 - lbb_5) / lbb_5) * 100 : Number.POSITIVE_INFINITY;
+
+        if (side === 'BUY') {
+            return (
+                gap1mUbbPct <= thresholdPct &&
+                gap5mUbbPct <= thresholdPct &&
+                ((ubb_1 > 0 && ltp < ubb_1) || (ema3_1 > 0 && ltp < ema3_1))
+            );
+        }
+
+        return (
+            gap1mLbbPct <= thresholdPct &&
+            gap5mLbbPct <= thresholdPct &&
+            ((lbb_1 > 0 && ltp > lbb_1) || (ema3_1 > 0 && ltp > ema3_1))
+        );
+    };
 
     const baseBuyStocks = intersectStreakStocksBySymbol(buy1MinStocks, buy5MinStocks);
     const baseSellStocks = intersectStreakStocksBySymbol(sell1MinStocks, sell5MinStocks);
 
-    // Low-price common scan remains available for technical context,
-    // but signal enforcement is disabled for now.
-    const finalBuyStocks = baseBuyStocks;
-    const finalSellStocks = baseSellStocks;
+    const finalBuyStocks = baseBuyStocks.filter((stock) => {
+        const symbol = getStreakStockSymbol(stock);
+        if (!lowPriceCommonSymbolSet.has(symbol)) return false;
+        return qualifiesLowPriceForSide(lowPriceBySymbol.get(symbol), 'BUY');
+    });
+    const finalSellStocks = baseSellStocks.filter((stock) => {
+        const symbol = getStreakStockSymbol(stock);
+        if (!lowPriceCommonSymbolSet.has(symbol)) return false;
+        return qualifiesLowPriceForSide(lowPriceBySymbol.get(symbol), 'SELL');
+    });
 
     const buyRows = finalBuyStocks.map((stock) => ({
         token: Number(stock?.token || 0),
@@ -1903,11 +1949,12 @@ async function runStreakAllScansWithGap(streakToken, pollIntervalMs = 0, conditi
             sell5Min: sell5MinResult.body,
             lowPriceCommonPayload,
             intersection: {
-                lowPriceFilterApplied: false,
+                lowPriceFilterApplied: true,
                 preLowPriceBuyCount: baseBuyStocks.length,
                 preLowPriceSellCount: baseSellStocks.length,
                 postLowPriceBuyCount: finalBuyStocks.length,
                 postLowPriceSellCount: finalSellStocks.length,
+                lowPriceEnrichedRowsCount: lowPriceCommonEnrichedRows.length,
                 lowPriceUniverseCount: lowPriceCommonSymbolSet.size
             }
         },
@@ -3447,8 +3494,8 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Track condition pass counts
         let conditionStats = {
             total_stocks: 0,
-            buy_condition_passes: Array(13).fill(0),
-            sell_condition_passes: Array(13).fill(0),
+            buy_condition_passes: Array(15).fill(0),
+            sell_condition_passes: Array(15).fill(0),
             ema_1min_issues: [],
             orders_attempted: 0,
             orders_successful: 0,
@@ -3459,6 +3506,8 @@ router.post('/low-price-scanners', async (req, res) => {
         const requestedBuyFilters = req.body?.appliedFilters?.buy || {};
         const requestedSellFilters = req.body?.appliedFilters?.sell || {};
 
+        const FIXED_GAP_THRESHOLD_PCT = 0.04;
+
         const buyFilterIdToConditionIndexes = {
             plusDiAbove25_1mBuy: [0],
             plusDiAboveAdx_1mBuy: [1],
@@ -3468,11 +3517,12 @@ router.post('/low-price-scanners', async (req, res) => {
             ema3AboveEma5_1mBuy: [5],
             rsiAbove65_1mBuy: [6],
             ema9AboveMbb_1mBuy: [7],
-            ema3UbbGapWithinPoint1Pct_1mBuy: [8],
+            ema3UbbGapWithinPoint1Pct_1mBuy: [8, 14],
             ltpBelowUbb_5mBuy: [9],
             ltpBelowUbb_15mBuy: [10],
             macdAboveZero_5mBuy: [11],
-            plusDiAboveMinusDi_5mBuy: [12]
+            plusDiAboveMinusDi_5mBuy: [12],
+            ltpBelowOrEqualEma3_1mBuy: [13]
         };
 
         const sellFilterIdToConditionIndexes = {
@@ -3484,11 +3534,12 @@ router.post('/low-price-scanners', async (req, res) => {
             ema3BelowEma5_1mSell: [5],
             rsiBelow35_1mSell: [6],
             ema9BelowMbb_1mSell: [7],
-            ema3LbbGapWithinPoint1Pct_1mSell: [8],
+            ema3LbbGapWithinPoint1Pct_1mSell: [8, 14],
             ltpAboveLbb_5mSell: [9],
             ltpAboveLbb_15mSell: [10],
             macdBelowZero_5mSell: [11],
-            minusDiAbovePlusDi_5mSell: [12]
+            minusDiAbovePlusDi_5mSell: [12],
+            ltpAboveOrEqualEma3_1mSell: [13]
         };
 
         const buyFilterOrder = [
@@ -3504,7 +3555,8 @@ router.post('/low-price-scanners', async (req, res) => {
             'ltpBelowUbb_5mBuy',
             'ltpBelowUbb_15mBuy',
             'macdAboveZero_5mBuy',
-            'plusDiAboveMinusDi_5mBuy'
+            'plusDiAboveMinusDi_5mBuy',
+            'ltpBelowOrEqualEma3_1mBuy'
         ];
 
         const sellFilterOrder = [
@@ -3520,7 +3572,8 @@ router.post('/low-price-scanners', async (req, res) => {
             'ltpAboveLbb_5mSell',
             'ltpAboveLbb_15mSell',
             'macdBelowZero_5mSell',
-            'minusDiAbovePlusDi_5mSell'
+            'minusDiAbovePlusDi_5mSell',
+            'ltpAboveOrEqualEma3_1mSell'
         ];
 
         const hasCompactBuyIndexes = Array.isArray(req.body?.enabledBuyFilterIndexes);
@@ -3566,8 +3619,13 @@ router.post('/low-price-scanners', async (req, res) => {
             
             const ubb1 = Number(stock.ubb_1 || 0);
             const ubb5 = Number(stock.ubb_5 || 0);
+            const ema3_5 = Number(stock.ema3_5 || 0);
+            const fixedGapThresholdPct = FIXED_GAP_THRESHOLD_PCT;
             const ema3GapPctFromUbb = ubb1 > 0
                 ? (Math.abs(Number(stock.ema3_1 || 0) - ubb1) / ubb1) * 100
+                : Number.POSITIVE_INFINITY;
+            const ema3GapPctFromUbb5 = ubb5 > 0
+                ? (Math.abs(ema3_5 - ubb5) / ubb5) * 100
                 : Number.POSITIVE_INFINITY;
 
             // BUY CONDITIONS (default timeframe 1m unless specified)
@@ -3580,11 +3638,13 @@ router.post('/low-price-scanners', async (req, res) => {
                 stock.ema3_1 > stock.ema5_1,  // EMA3(1m) > EMA5(1m)
                 stock.rsi1 > 65,              // RSI(1m) > 65
                 stock.ema9_1 > stock.mbb_1,   // EMA9(1m) > MBB(1m)
-                ema3GapPctFromUbb <= 0.04,    // |UBB(1m)-EMA3(1m)| / UBB(1m) <= 0.04%
-                ubb5 > 0 && Number(stock.ltp || 0) < ubb5,   // LTP < UBB(5m)
+                ema3GapPctFromUbb <= fixedGapThresholdPct, // |UBB(1m)-EMA3(1m)| <= fixed 0.04% threshold
+                (ubb1 > 0 && Number(stock.ltp || 0) < ubb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) < Number(stock.ema3_1 || 0)), // BUY 1m OR gate: LTP < UBB(1m) OR LTP < EMA3(1m)
                 true,                         // Deprecated 15m band gate (5m-only signal gate)
                 stock.macd5 > 0,              // MACD(5m) > 0
-                stock.plusDI5 > stock.minusDI5 // +DI(5m) > -DI(5m)
+                stock.plusDI5 > stock.minusDI5, // +DI(5m) > -DI(5m)
+                (ubb1 > 0 && Number(stock.ltp || 0) < ubb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) < Number(stock.ema3_1 || 0)), // Mirror OR gate for legacy filter slot
+                ema3GapPctFromUbb5 <= fixedGapThresholdPct // |UBB(5m)-EMA3(5m)| <= fixed 0.04% threshold
             ];
 
             // Track condition pass counts
@@ -3613,6 +3673,9 @@ router.post('/low-price-scanners', async (req, res) => {
             const ema3GapPctFromLbb = lbb1 > 0
                 ? (Math.abs(Number(stock.ema3_1 || 0) - lbb1) / lbb1) * 100
                 : Number.POSITIVE_INFINITY;
+            const ema3GapPctFromLbb5 = lbb5 > 0
+                ? (Math.abs(ema3_5 - lbb5) / lbb5) * 100
+                : Number.POSITIVE_INFINITY;
 
             const sellConditions = [
                 stock.minusDI1 > 25,          // -DI(1m) > 25
@@ -3623,11 +3686,13 @@ router.post('/low-price-scanners', async (req, res) => {
                 stock.ema3_1 < stock.ema5_1,  // EMA3(1m) < EMA5(1m)
                 stock.rsi1 < 35,              // RSI(1m) < 35
                 stock.ema9_1 < stock.mbb_1,   // EMA9(1m) < MBB(1m)
-                ema3GapPctFromLbb <= 0.04,    // |LBB(1m)-EMA3(1m)| / LBB(1m) <= 0.04%
-                lbb5 > 0 && Number(stock.ltp || 0) > lbb5,   // LTP > LBB(5m)
+                ema3GapPctFromLbb <= fixedGapThresholdPct, // |LBB(1m)-EMA3(1m)| <= fixed 0.04% threshold
+                (lbb1 > 0 && Number(stock.ltp || 0) > lbb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) > Number(stock.ema3_1 || 0)), // SELL 1m OR gate: LTP > LBB(1m) OR LTP > EMA3(1m)
                 true,                         // Deprecated 15m band gate (5m-only signal gate)
                 stock.macd5 < 0,              // MACD(5m) < 0
-                stock.minusDI5 > stock.plusDI5 // -DI(5m) > +DI(5m)
+                stock.minusDI5 > stock.plusDI5, // -DI(5m) > +DI(5m)
+                (lbb1 > 0 && Number(stock.ltp || 0) > lbb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) > Number(stock.ema3_1 || 0)), // Mirror OR gate for legacy filter slot
+                ema3GapPctFromLbb5 <= fixedGapThresholdPct // |LBB(5m)-EMA3(5m)| <= fixed 0.04% threshold
             ];
             
             

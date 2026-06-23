@@ -1535,99 +1535,185 @@ const SubscribedStockTracker = ({
 
         {/* Technical details table under subscribed analyzer */}
         {(() => {
+          const FIXED_GAP_THRESHOLD_PCT = 0.04;
+
           const normalizeTechnicalRows = (rows) => (Array.isArray(rows) ? rows : []).map((row) => {
             const symbol = extractSymbolName(row?.symbol || row?.seg_sym || row?.s || '');
             const ltp = Number(row?.at || row?.ltp || row?.d?.[0] || 0);
             const ema3_1 = Number(row?.ema3_1 || row?.d?.[36] || 0);
+            const ema3_5 = Number(row?.ema3_5 || row?.d?.[32] || 0);
             const ubb_1 = Number(row?.ubb_1 || row?.d?.[41] || 0);
             const lbb_1 = Number(row?.lbb_1 || row?.d?.[40] || 0);
             const ubb_5 = Number(row?.ubb_5 || row?.d?.[27] || 0);
             const lbb_5 = Number(row?.lbb_5 || row?.d?.[28] || 0);
+            const fourTickPct = FIXED_GAP_THRESHOLD_PCT;
 
-            const buyGapPct = ubb_1 > 0 ? (Math.abs(ema3_1 - ubb_1) / ubb_1) * 100 : null;
-            const sellGapPct = lbb_1 > 0 ? (Math.abs(ema3_1 - lbb_1) / lbb_1) * 100 : null;
+            const gap1mUbbPct = ubb_1 > 0 ? (Math.abs(ema3_1 - ubb_1) / ubb_1) * 100 : null;
+            const gap1mLbbPct = lbb_1 > 0 ? (Math.abs(ema3_1 - lbb_1) / lbb_1) * 100 : null;
+            const gap5mUbbPct = ubb_5 > 0 ? (Math.abs(ema3_5 - ubb_5) / ubb_5) * 100 : null;
+            const gap5mLbbPct = lbb_5 > 0 ? (Math.abs(ema3_5 - lbb_5) / lbb_5) * 100 : null;
+
+            const gap1mUbbPass = fourTickPct !== null && gap1mUbbPct !== null ? gap1mUbbPct <= fourTickPct : null;
+            const gap1mLbbPass = fourTickPct !== null && gap1mLbbPct !== null ? gap1mLbbPct <= fourTickPct : null;
+            const gap5mUbbPass = fourTickPct !== null && gap5mUbbPct !== null ? gap5mUbbPct <= fourTickPct : null;
+            const gap5mLbbPass = fourTickPct !== null && gap5mLbbPct !== null ? gap5mLbbPct <= fourTickPct : null;
+            const buyBandPass = ((ubb_1 > 0 && ltp < ubb_1) || (ema3_1 > 0 && ltp < ema3_1));
+            const sellBandPass = ((lbb_1 > 0 && ltp > lbb_1) || (ema3_1 > 0 && ltp > ema3_1));
+
+            const buyLowPricePass = gap1mUbbPass === true && gap5mUbbPass === true && buyBandPass === true;
+            const sellLowPricePass = gap1mLbbPass === true && gap5mLbbPass === true && sellBandPass === true;
 
             return {
               symbol,
+              token: row?.token || null,
               ltp,
               ema3_1,
+              ema3_5,
               ubb_1,
               lbb_1,
               ubb_5,
               lbb_5,
-              buyGapPct,
-              sellGapPct,
-              buyBandPass: ubb_5 > 0 ? ltp < ubb_5 : null,
-              sellBandPass: lbb_5 > 0 ? ltp > lbb_5 : null
+              fourTickPct,
+              gap1mUbbPct,
+              gap1mLbbPct,
+              gap5mUbbPct,
+              gap5mLbbPct,
+              gap1mUbbPass,
+              gap1mLbbPass,
+              gap5mUbbPass,
+              gap5mLbbPass,
+              buyBandPass,
+              sellBandPass,
+              buyLowPricePass,
+              sellLowPricePass,
+              lowPriceSignalType: buyLowPricePass && sellLowPricePass ? 'BOTH' : buyLowPricePass ? 'BUY' : sellLowPricePass ? 'SELL' : null
             };
           });
 
           const technicalRows = normalizeTechnicalRows(technicalDetailRows);
           const subscribedSet = new Set(getSubscribedStocks().map((sym) => String(extractSymbolName(sym || '')).toUpperCase()));
-          const visibleRows = technicalRows.filter((row) => subscribedSet.size === 0 || subscribedSet.has(String(row.symbol || '').toUpperCase()));
+          const visibleRows = technicalRows.filter((row) => {
+            const symbolMatched = subscribedSet.size === 0 || subscribedSet.has(String(row.symbol || '').toUpperCase());
+            return symbolMatched && (row.buyLowPricePass || row.sellLowPricePass);
+          });
+
+          const renderSymbolCell = (row) => (
+            row.symbol ? (
+              <button
+                type="button"
+                onClick={() => onOpenChart && onOpenChart({ symbol: row.symbol, token: row.token }, 'technical-details')}
+                style={{ background: 'transparent', border: 'none', padding: 0, margin: 0, color: '#1d4ed8', textDecoration: 'underline', cursor: 'pointer', fontWeight: 700, fontSize: '11px' }}
+                title={`Open ${row.symbol} chart`}
+              >
+                {row.symbol}
+              </button>
+            ) : '-'
+          );
 
           return (
-            <div style={{
-              marginTop: '10px',
-              marginBottom: '12px'
-            }}>
-              <div style={{
-                background: '#f8fafc',
-                border: '1px solid #bfdbfe',
-                borderRadius: '8px',
-                padding: '10px'
-              }}>
-                <div style={{
-                  fontSize: '13px',
-                  fontWeight: 700,
-                  color: '#1e3a8a',
-                  marginBottom: '8px',
-                  fontFamily: 'system-ui, -apple-system, sans-serif'
-                }}>
-                  Technical Details (EMA3/UBB/LBB + Gap%) ({visibleRows.length})
+            <div style={{ marginTop: '10px', marginBottom: '12px' }}>
+              <div style={{ background: '#f8fafc', border: '1px solid #bfdbfe', borderRadius: '8px', padding: '10px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: '#1e3a8a', marginBottom: '8px', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+                  Technical Details (Qualified BUY/SELL Low-Price Pass Only) ({visibleRows.length})
                 </div>
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '980px', fontSize: '11px' }}>
-                    <thead>
-                      <tr style={{ background: '#f1f5f9' }}>
-                        <th style={{ padding: '6px', textAlign: 'left', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Symbol</th>
-                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>LTP</th>
-                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>EMA3(1m)</th>
-                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>UBB(1m)</th>
-                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY Gap %</th>
-                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>LBB(1m)</th>
-                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL Gap %</th>
-                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>UBB(5m)</th>
-                        <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY: LTP &lt; UBB5</th>
-                        <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>LBB(5m)</th>
-                        <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL: LTP &gt; LBB5</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {visibleRows.length === 0 ? (
-                        <tr>
-                          <td colSpan={11} style={{ padding: '8px', color: '#64748b', borderBottom: '1px solid #f1f5f9' }}>
-                            No technical rows available yet.
-                          </td>
-                        </tr>
-                      ) : visibleRows.map((row, idx) => (
-                        <tr key={`tech-${row.symbol}-${idx}`}>
-                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a', fontWeight: 600 }}>{row.symbol || '-'}</td>
-                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ltp > 0 ? `₹${row.ltp.toFixed(2)}` : '-'}</td>
-                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ema3_1 > 0 ? row.ema3_1.toFixed(2) : '-'}</td>
-                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ubb_1 > 0 ? row.ubb_1.toFixed(2) : '-'}</td>
-                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#166534', fontWeight: 700 }}>{row.buyGapPct !== null ? `${row.buyGapPct.toFixed(4)}%` : '-'}</td>
-                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.lbb_1 > 0 ? row.lbb_1.toFixed(2) : '-'}</td>
-                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#991b1b', fontWeight: 700 }}>{row.sellGapPct !== null ? `${row.sellGapPct.toFixed(4)}%` : '-'}</td>
-                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ubb_5 > 0 ? row.ubb_5.toFixed(2) : '-'}</td>
-                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: row.buyBandPass === null ? '#64748b' : row.buyBandPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{row.buyBandPass === null ? '-' : row.buyBandPass ? 'YES' : 'NO'}</td>
-                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.lbb_5 > 0 ? row.lbb_5.toFixed(2) : '-'}</td>
-                          <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: row.sellBandPass === null ? '#64748b' : row.sellBandPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{row.sellBandPass === null ? '-' : row.sellBandPass ? 'YES' : 'NO'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+
+                {visibleRows.length === 0 ? (
+                  <div style={{ padding: '8px', color: '#64748b' }}>No technical rows available yet.</div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                    <div>
+                      <div style={{ marginBottom: '6px', fontSize: '12px', fontWeight: 700, color: '#0f766e' }}>1min (BUY and SELL)</div>
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1060px', fontSize: '11px' }}>
+                          <thead>
+                            <tr style={{ background: '#f1f5f9' }}>
+                              <th style={{ padding: '6px', textAlign: 'left', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Symbol</th>
+                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Type</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>LTP</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>4 Tick %</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>EMA3(1m)</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY UBB(1m)</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY Gap%</th>
+                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY Pass</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL LBB(1m)</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL Gap%</th>
+                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL Pass</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {visibleRows.map((row, idx) => {
+                              const showBuy = row.lowPriceSignalType === 'BUY' || row.lowPriceSignalType === 'BOTH';
+                              const showSell = row.lowPriceSignalType === 'SELL' || row.lowPriceSignalType === 'BOTH';
+                              return (
+                                <tr key={`tech1m-${row.symbol}-${idx}`}>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a', fontWeight: 600 }}>{renderSymbolCell(row)}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: row.lowPriceSignalType === 'BUY' ? '#166534' : row.lowPriceSignalType === 'SELL' ? '#991b1b' : '#1d4ed8', fontWeight: 700 }}>{row.lowPriceSignalType || '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ltp > 0 ? `₹${row.ltp.toFixed(2)}` : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a', fontWeight: 700 }}>{row.fourTickPct !== null ? `${row.fourTickPct.toFixed(4)}%` : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ema3_1 > 0 ? row.ema3_1.toFixed(2) : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{showBuy && row.ubb_1 > 0 ? row.ubb_1.toFixed(2) : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: showBuy ? '#166534' : '#64748b', fontWeight: 700 }}>{showBuy && row.gap1mUbbPct !== null ? `${row.gap1mUbbPct.toFixed(4)}%` : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showBuy || row.gap1mUbbPass === null ? '#64748b' : row.gap1mUbbPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showBuy || row.gap1mUbbPass === null ? '-' : row.gap1mUbbPass ? 'YES' : 'NO'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{showSell && row.lbb_1 > 0 ? row.lbb_1.toFixed(2) : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: showSell ? '#991b1b' : '#64748b', fontWeight: 700 }}>{showSell && row.gap1mLbbPct !== null ? `${row.gap1mLbbPct.toFixed(4)}%` : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showSell || row.gap1mLbbPass === null ? '#64748b' : row.gap1mLbbPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showSell || row.gap1mLbbPass === null ? '-' : row.gap1mLbbPass ? 'YES' : 'NO'}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={{ marginBottom: '6px', fontSize: '12px', fontWeight: 700, color: '#1e3a8a' }}>5min (BUY and SELL)</div>
+                      <div style={{ overflowX: 'auto' }}>
+                        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1120px', fontSize: '11px' }}>
+                          <thead>
+                            <tr style={{ background: '#f1f5f9' }}>
+                              <th style={{ padding: '6px', textAlign: 'left', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Symbol</th>
+                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Type</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>LTP</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>4 Tick %</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>EMA3(5m)</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY UBB(5m)</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY Gap%</th>
+                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY Pass</th>
+                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY (LTP&lt;UBB1 OR LTP&lt;EMA3)</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL LBB(5m)</th>
+                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL Gap%</th>
+                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL Pass</th>
+                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL (LTP&gt;LBB1 OR LTP&gt;EMA3)</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {visibleRows.map((row, idx) => {
+                              const showBuy = row.lowPriceSignalType === 'BUY' || row.lowPriceSignalType === 'BOTH';
+                              const showSell = row.lowPriceSignalType === 'SELL' || row.lowPriceSignalType === 'BOTH';
+                              return (
+                                <tr key={`tech5m-${row.symbol}-${idx}`}>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a', fontWeight: 600 }}>{renderSymbolCell(row)}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: row.lowPriceSignalType === 'BUY' ? '#166534' : row.lowPriceSignalType === 'SELL' ? '#991b1b' : '#1d4ed8', fontWeight: 700 }}>{row.lowPriceSignalType || '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ltp > 0 ? `₹${row.ltp.toFixed(2)}` : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a', fontWeight: 700 }}>{row.fourTickPct !== null ? `${row.fourTickPct.toFixed(4)}%` : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ema3_5 > 0 ? row.ema3_5.toFixed(2) : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{showBuy && row.ubb_5 > 0 ? row.ubb_5.toFixed(2) : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: showBuy ? '#166534' : '#64748b', fontWeight: 700 }}>{showBuy && row.gap5mUbbPct !== null ? `${row.gap5mUbbPct.toFixed(4)}%` : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showBuy || row.gap5mUbbPass === null ? '#64748b' : row.gap5mUbbPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showBuy || row.gap5mUbbPass === null ? '-' : row.gap5mUbbPass ? 'YES' : 'NO'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showBuy || row.buyBandPass === null ? '#64748b' : row.buyBandPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showBuy || row.buyBandPass === null ? '-' : row.buyBandPass ? 'YES' : 'NO'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{showSell && row.lbb_5 > 0 ? row.lbb_5.toFixed(2) : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: showSell ? '#991b1b' : '#64748b', fontWeight: 700 }}>{showSell && row.gap5mLbbPct !== null ? `${row.gap5mLbbPct.toFixed(4)}%` : '-'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showSell || row.gap5mLbbPass === null ? '#64748b' : row.gap5mLbbPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showSell || row.gap5mLbbPass === null ? '-' : row.gap5mLbbPass ? 'YES' : 'NO'}</td>
+                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showSell || row.sellBandPass === null ? '#64748b' : row.sellBandPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showSell || row.sellBandPass === null ? '-' : row.sellBandPass ? 'YES' : 'NO'}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           );
