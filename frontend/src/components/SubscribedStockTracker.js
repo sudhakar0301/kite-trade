@@ -1718,6 +1718,121 @@ const SubscribedStockTracker = ({
             </div>
           );
         })()}
+
+        {/* Streak-only BUY/SELL stocks below Technical Details */}
+        {(() => {
+          const effectiveSignalStocks = emaCheckSignalStocks || signalStocks;
+          const normalizeSymbol = (value) => String(extractSymbolName(value || '') || '').trim();
+
+          const normalizeRows = (rows) => {
+            const source = Array.isArray(rows) ? rows : [];
+            const bySymbol = new Map();
+
+            source.forEach((row) => {
+              const symbol = normalizeSymbol(typeof row === 'string' ? row : (row?.symbol || row?.s || row?.seg_sym));
+              if (!symbol) return;
+
+              if (!bySymbol.has(symbol)) {
+                bySymbol.set(symbol, {
+                  symbol,
+                  token: row?.token || null
+                });
+              }
+            });
+
+            return Array.from(bySymbol.values());
+          };
+
+          const streakBuyRows = normalizeRows(effectiveSignalStocks?.buySignals);
+          const streakSellRows = normalizeRows(effectiveSignalStocks?.sellSignals);
+
+          const renderSymbolButton = (row) => (
+            row.symbol ? (
+              <button
+                type="button"
+                onClick={() => onOpenChart && onOpenChart({ symbol: row.symbol, token: row.token }, 'streak-only-signals')}
+                style={{
+                  background: 'transparent',
+                  border: 'none',
+                  padding: 0,
+                  margin: 0,
+                  color: '#1d4ed8',
+                  textDecoration: 'underline',
+                  cursor: 'pointer',
+                  fontWeight: 700,
+                  fontSize: '11px'
+                }}
+                title={`Open ${row.symbol} chart`}
+              >
+                {row.symbol}
+              </button>
+            ) : '-'
+          );
+
+          return (
+            <div style={{ marginTop: '10px', marginBottom: '12px' }}>
+              <div style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '10px' }}>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '8px', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
+                  Streak-Only Stocks (Below Technical Details)
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div>
+                    <div style={{ marginBottom: '6px', fontSize: '12px', fontWeight: 700, color: '#166534' }}>
+                      BUY ({streakBuyRows.length})
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '220px', fontSize: '11px' }}>
+                        <thead>
+                          <tr style={{ background: '#f1f5f9' }}>
+                            <th style={{ padding: '6px', textAlign: 'left', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Symbol</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {streakBuyRows.length === 0 ? (
+                            <tr>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#64748b' }}>No streak BUY stocks</td>
+                            </tr>
+                          ) : streakBuyRows.map((row, idx) => (
+                            <tr key={`streak-buy-${row.symbol}-${idx}`}>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a' }}>{renderSymbolButton(row)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div style={{ marginBottom: '6px', fontSize: '12px', fontWeight: 700, color: '#991b1b' }}>
+                      SELL ({streakSellRows.length})
+                    </div>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '220px', fontSize: '11px' }}>
+                        <thead>
+                          <tr style={{ background: '#f1f5f9' }}>
+                            <th style={{ padding: '6px', textAlign: 'left', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Symbol</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {streakSellRows.length === 0 ? (
+                            <tr>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#64748b' }}>No streak SELL stocks</td>
+                            </tr>
+                          ) : streakSellRows.map((row, idx) => (
+                            <tr key={`streak-sell-${row.symbol}-${idx}`}>
+                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a' }}>{renderSymbolButton(row)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         
         {/* Real-Time Order Book Display */}
         {selectedSymbol && (() => {
