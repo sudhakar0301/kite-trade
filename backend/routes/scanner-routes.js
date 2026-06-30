@@ -2,7 +2,6 @@ const express = require('express');
 const fetch = require('node-fetch');
 const symbolMappings = require('../data/symbolMappings');
 const { KiteTicker, KiteConnect } = require('kiteconnect');
-const DepthTrackEngine = require('../orderbook-analyzer');
 const {
     BUY_1MIN_SCAN_PAYLOAD,
     BUY_5MIN_SCAN_PAYLOAD
@@ -13,7 +12,6 @@ const {
     DEFAULT_SELL_SCAN_PAYLOAD
 } = require('../streak-sell-scan');
 const router = express.Router();
-const depthTrackEngine = new DepthTrackEngine();
 
 // Global subscription management
 let globalTicker = null;
@@ -55,7 +53,8 @@ const ENABLE_VERBOSE_TICK_LOGS = false;
 const ENABLE_VERBOSE_SCAN_LOGS = false;
 const ENABLE_VERBOSE_MARKET_IMPACT_LOGS = false;
 const ENABLE_TICK_BATCH_BROADCAST = false;
-const STREAK_ONLY_MODE = true;
+const STREAK_ONLY_MODE = false;
+const ENABLE_BUY_TRADES = false; // SELL-only mode: block BUY main trades
 
 // Target-order dedupe guards (across all placement paths)
 const targetOrderPlacementInFlight = new Set();
@@ -63,12 +62,22 @@ const recentTargetOrderPlacements = new Map(); // key -> { ts, orderId }
 const TARGET_ORDER_DEDUPE_WINDOW_MS = 15000;
 
 // Centralized target-profit basis: fixed profit amount per target order.
-const TARGET_PROFIT_FIXED_AMOUNT = 700;
+const TARGET_PROFIT_FIXED_AMOUNT = 250;
 
 // Tick precheck throttling: avoid repeated positions/orders/margins calls on rapid ticks.
 const orderPrecheckInFlight = new Set(); // key: symbol_scanType
 const orderPrecheckLastRunAt = new Map(); // key -> epoch ms
 const ORDER_PRECHECK_COOLDOWN_MS = 30000;
+const MAX_EXECUTION_SLIPPAGE_PERCENT = 0.04;
+
+// Intraday equity charge model (approximation) used for net-target computation.
+const BROKERAGE_RATE = 0.0003; // 0.03% per side
+const BROKERAGE_CAP_PER_SIDE = 20;
+const STT_INTRADAY_SELL_RATE = 0.00025; // 0.025% on sell leg only
+const EXCHANGE_TXN_RATE = 0.0000297;
+const SEBI_RATE = 0.000001;
+const STAMP_DUTY_INTRADAY_BUY_RATE = 0.00003; // 0.003% on buy leg only
+const GST_RATE = 0.18;
 
 // Function to update global funds from Kite margins API
 async function updateGlobalFunds(accessToken) {
@@ -139,6 +148,58 @@ function calculateProfitTargetFromInvestment(investment) {
     return {
         targetProfitAmount,
         targetProfitPercent
+    };
+}
+
+function estimateIntradayRoundTripCharges(entryPrice, exitPrice, quantity, entrySide) {
+    const safeQty = Math.abs(parseInt(quantity || 0));
+    const entry = Math.max(0, Number(entryPrice || 0));
+    const exit = Math.max(0, Number(exitPrice || 0));
+    const normalizedSide = String(entrySide || '').toUpperCase();
+
+    if (safeQty <= 0 || entry <= 0 || exit <= 0) {
+        return {
+            buyTurnover: 0,
+            sellTurnover: 0,
+            totalTurnover: 0,
+            brokerage: 0,
+            stt: 0,
+            exchangeTxn: 0,
+            sebi: 0,
+            stampDuty: 0,
+            gst: 0,
+            totalCharges: 0
+        };
+    }
+
+    const isEntrySell = normalizedSide === 'SELL';
+    const buyTurnover = isEntrySell ? (exit * safeQty) : (entry * safeQty);
+    const sellTurnover = isEntrySell ? (entry * safeQty) : (exit * safeQty);
+    const totalTurnover = buyTurnover + sellTurnover;
+
+    const brokerageBuy = Math.min(BROKERAGE_CAP_PER_SIDE, buyTurnover * BROKERAGE_RATE);
+    const brokerageSell = Math.min(BROKERAGE_CAP_PER_SIDE, sellTurnover * BROKERAGE_RATE);
+    const brokerage = brokerageBuy + brokerageSell;
+
+    const stt = sellTurnover * STT_INTRADAY_SELL_RATE;
+    const exchangeTxn = totalTurnover * EXCHANGE_TXN_RATE;
+    const sebi = totalTurnover * SEBI_RATE;
+    const stampDuty = buyTurnover * STAMP_DUTY_INTRADAY_BUY_RATE;
+    const gst = (brokerage + exchangeTxn + sebi) * GST_RATE;
+
+    const totalCharges = brokerage + stt + exchangeTxn + sebi + stampDuty + gst;
+
+    return {
+        buyTurnover,
+        sellTurnover,
+        totalTurnover,
+        brokerage,
+        stt,
+        exchangeTxn,
+        sebi,
+        stampDuty,
+        gst,
+        totalCharges
     };
 }
 
@@ -529,7 +590,37 @@ async function getCurrentPositions(accessToken) {
     }
 }
 
-// Calculate target price using centralized leveraged-funds profit basis
+// Fetch executed average price for a specific order from order history.
+async function getExecutedAveragePriceFromOrder(accessToken, orderId) {
+    try {
+        if (!accessToken || accessToken === 'demo_token' || !orderId) {
+            return null;
+        }
+
+        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
+        kite.setAccessToken(accessToken);
+
+        const history = await kite.getOrderHistory(orderId);
+        if (!Array.isArray(history) || history.length === 0) {
+            return null;
+        }
+
+        const completed = history.filter((entry) => String(entry?.status || '').toUpperCase() === 'COMPLETE');
+        const candidate = (completed.length > 0 ? completed[completed.length - 1] : history[history.length - 1]) || null;
+        const avgPrice = Number(candidate?.average_price || candidate?.price || 0);
+
+        if (Number.isFinite(avgPrice) && avgPrice > 0) {
+            return avgPrice;
+        }
+
+        return null;
+    } catch (error) {
+        console.log(`⚠️ Could not fetch executed avg price for order ${orderId}: ${error.message}`);
+        return null;
+    }
+}
+
+// Calculate target price using fixed net-profit basis (after estimated charges).
 function calculateTargetPrice(avgPrice, quantity, side) {
     const safeQty = Math.abs(parseInt(quantity || 0));
     const safeAvgPrice = Number(avgPrice || 0);
@@ -538,31 +629,38 @@ function calculateTargetPrice(avgPrice, quantity, side) {
     }
 
     const investment = safeAvgPrice * safeQty;
-    const { targetProfitAmount, targetProfitPercent } = calculateProfitTargetFromInvestment(investment);
-    const profitPerShare = targetProfitAmount / safeQty;
-    
+    const { targetProfitAmount: desiredNetProfit, targetProfitPercent } = calculateProfitTargetFromInvestment(investment);
+
     console.log(`💰 Investment Calculation: ₹${safeAvgPrice} × ${safeQty} = ₹${investment.toLocaleString('en-IN')}`);
-    console.log(`🎯 Target Profit (fixed): ₹${targetProfitAmount.toFixed(2)} (${targetProfitPercent.toFixed(4)}% of investment, ₹${profitPerShare.toFixed(2)} per share)`);
-    
-    let rawTargetPrice;
-    if (side === 'BUY') {
-        // For BUY position, SELL at higher price for profit
-        rawTargetPrice = safeAvgPrice + profitPerShare;
-        console.log(`📈 BUY position: Raw target SELL at ₹${rawTargetPrice.toFixed(2)} (+₹${profitPerShare.toFixed(2)})`);
-    } else {
-        // For SELL position, BUY back at lower price for profit  
-        rawTargetPrice = safeAvgPrice - profitPerShare;
-        console.log(`📉 SELL position: Raw target BUY at ₹${rawTargetPrice.toFixed(2)} (-₹${profitPerShare.toFixed(2)})`);
+    console.log(`🎯 Target Net Profit (fixed): ₹${desiredNetProfit.toFixed(2)} (${targetProfitPercent.toFixed(4)}% of investment)`);
+
+    const sign = side === 'BUY' ? 1 : -1;
+    let rawTargetPrice = safeAvgPrice + (sign * (desiredNetProfit / safeQty));
+
+    // Iteratively include estimated charges in required gross profit.
+    for (let i = 0; i < 8; i++) {
+        const charges = estimateIntradayRoundTripCharges(safeAvgPrice, rawTargetPrice, safeQty, side);
+        const requiredGrossProfit = desiredNetProfit + Number(charges.totalCharges || 0);
+        const requiredProfitPerShare = requiredGrossProfit / safeQty;
+        const nextRaw = safeAvgPrice + (sign * requiredProfitPerShare);
+
+        if (Math.abs(nextRaw - rawTargetPrice) < 0.0001) {
+            rawTargetPrice = nextRaw;
+            break;
+        }
+        rawTargetPrice = nextRaw;
     }
-    
-    // Round to proper tick size
+
+    // Round to proper tick size then compute net/gross expectations for logging.
     const targetPrice = roundToTickSize(rawTargetPrice, safeAvgPrice);
-    const actualProfitPerShare = Math.abs(targetPrice - safeAvgPrice);
-    const actualTotalProfit = actualProfitPerShare * safeQty;
-    
+    const actualGrossProfitPerShare = Math.abs(targetPrice - safeAvgPrice);
+    const actualGrossTotalProfit = actualGrossProfitPerShare * safeQty;
+    const finalCharges = estimateIntradayRoundTripCharges(safeAvgPrice, targetPrice, safeQty, side);
+    const expectedNetProfit = actualGrossTotalProfit - Number(finalCharges.totalCharges || 0);
+
     console.log(`🎯 Final target price after tick size rounding: ₹${targetPrice.toFixed(2)}`);
-    console.log(`💰 Expected total profit: ₹${actualTotalProfit.toFixed(2)} (₹${actualProfitPerShare.toFixed(2)} per share)`);
-    
+    console.log(`💰 Expected gross profit: ₹${actualGrossTotalProfit.toFixed(2)} | charges: ₹${Number(finalCharges.totalCharges || 0).toFixed(2)} | net: ₹${expectedNetProfit.toFixed(2)}`);
+
     return targetPrice;
 }
 
@@ -1382,7 +1480,8 @@ router.get('/debug-market-impact-execution', (req, res) => {
                 autoTradeEnabled: global.autoTrade,
                 accessTokenAvailable: !!global.lastAccessToken,
                 executionCriteria: {
-                    maxSlippagePercent: 0.08,
+                    maxSlippagePercent: MAX_EXECUTION_SLIPPAGE_PERCENT,
+                    depthLevelsUsedForSlippage: 5,
                     orderAmount: globalUsableFunds
                 },
                 subscribedStocks: {
@@ -1469,18 +1568,21 @@ router.post('/clear-positions', (req, res) => {
     try {
         const clearedPositions = Array.from(activePositions.keys());
         const clearedTargetOrders = Array.from(targetOrders.keys());
+        const clearedTradedSymbols = Array.from(tradedMainOrderSymbols.values());
         
         // Clear all tracking maps
         activePositions.clear();
         targetOrders.clear();
+        tradedMainOrderSymbols.clear();
         
-        console.log(`🧹 POSITIONS CLEARED: ${clearedPositions.length} positions and ${clearedTargetOrders.length} target orders`);
+        console.log(`🧹 POSITIONS CLEARED: ${clearedPositions.length} positions, ${clearedTargetOrders.length} target orders, ${clearedTradedSymbols.length} traded symbols`);
         
         res.json({
             success: true,
-            message: 'All positions and target orders cleared',
+            message: 'All positions, target orders, and traded symbol locks cleared',
             clearedPositions: clearedPositions,
             clearedTargetOrders: clearedTargetOrders,
+            clearedTradedSymbols: clearedTradedSymbols,
             timestamp: new Date().toISOString()
         });
         
@@ -1571,6 +1673,27 @@ let sellCandidates = new Map(); // token -> {symbol, ema5_5, ema3_15, technical_
 let processedOrders = new Set(); // track symbols already processed to avoid duplicates
 let executedSignals = new Set(); // track executed signals to prevent repeated tick-based orders
 let lastSignalExecutionTime = {}; // track last execution time per signal to prevent spam
+let tradedMainOrderSymbols = new Set(); // session-level blocklist: symbols with completed main trades
+
+function normalizeTradeSymbol(symbol) {
+    return String(symbol || '')
+        .trim()
+        .replace(/^NSE:/i, '')
+        .replace(/^BSE:/i, '')
+        .toUpperCase();
+}
+
+function hasSymbolAlreadyTraded(symbol) {
+    const key = normalizeTradeSymbol(symbol);
+    return key ? tradedMainOrderSymbols.has(key) : false;
+}
+
+function markSymbolAsTraded(symbol) {
+    const key = normalizeTradeSymbol(symbol);
+    if (!key) return;
+    tradedMainOrderSymbols.add(key);
+    console.log(`🔒 Symbol marked as traded in current session: ${key}`);
+}
 
 // Helper function to create signal key
 function createSignalKey(symbol, signalType) {
@@ -2126,14 +2249,6 @@ async function getTradePrecheckSnapshot(accessToken, options = {}) {
 // Helper functions to call SEPARATE order routes
 async function callSeparateBuyOrderRoute(accessToken, symbol, ltp, requestedQuantity = null) {
     try {
-        // Sell-only mode: skip direct/main BUY execution from tick-driven path.
-        return {
-            success: false,
-            error: 'Main BUY orders are disabled (sell-only mode)',
-            order_category: 'BUY',
-            symbol: symbol
-        };
-
         const productType = 'MIS'; // Force MIS for all orders
         const roundedPrice = roundToTickSize(ltp, ltp);
         
@@ -2358,6 +2473,37 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
 
         // Extract tokens from both buy and sell stocks
         const newTokens = new Set();
+
+        const resolveTokenAndSymbol = (stock = {}) => {
+            let symbol = null;
+            let token = null;
+
+            // Prefer explicit token fields when present.
+            if (stock.token || stock.instrument_token) {
+                const numericToken = Number(stock.token || stock.instrument_token || 0);
+                if (Number.isFinite(numericToken) && numericToken > 0) {
+                    token = numericToken;
+                }
+            }
+
+            // Prefer explicit symbol field, fallback to TradingView s format.
+            if (stock.symbol && typeof stock.symbol === 'string') {
+                symbol = stock.symbol.replace('NSE:', '').replace('BSE:', '').trim();
+            } else if (stock.s && typeof stock.s === 'string' && stock.s.includes(':')) {
+                symbol = stock.s.split(':')[1];
+            }
+
+            // If token missing, resolve from symbol mappings.
+            if (!token && symbol && symbolMappings.symbolMappings[symbol]) {
+                token = Number(symbolMappings.symbolMappings[symbol]);
+            }
+
+            if (!Number.isFinite(token) || token <= 0) {
+                token = null;
+            }
+
+            return { symbol, token };
+        };
         
         if (ENABLE_VERBOSE_SCAN_LOGS) {
             console.log('🔍 DEBUG - buyStocks length:', buyStocks.length);
@@ -2371,36 +2517,11 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
                 console.log(`🔍 DEBUG - Processing buyStock[${index}]:`, JSON.stringify(stock, null, 2));
             }
             
-            // Extract symbol from TradingView format (NSE:SYMBOL)
-            let symbol = null;
-            let token = null;
-            
-            if (stock.s && typeof stock.s === 'string' && stock.s.includes(':')) {
-                symbol = stock.s.split(':')[1]; // Extract SYMBOL from "NSE:SYMBOL"
-                if (ENABLE_VERBOSE_SCAN_LOGS) {
-                    console.log(`🔍 Extracted symbol: "${symbol}" from "${stock.s}"`);
-                }
-                
-                if (symbol && symbolMappings.symbolMappings[symbol]) {
-                    token = symbolMappings.symbolMappings[symbol];
-                    if (ENABLE_VERBOSE_SCAN_LOGS) {
-                        console.log(`✅ Found token for ${symbol}: ${token}`);
-                    }
-                } else {
-                    if (ENABLE_VERBOSE_SCAN_LOGS) {
-                        console.log(`❌ No token mapping found for symbol: "${symbol}"`);
-                        console.log(`🔍 Available mappings sample:`, Object.keys(symbolMappings.symbolMappings).slice(0, 10));
-                    }
-                }
-            } else {
-                if (ENABLE_VERBOSE_SCAN_LOGS) {
-                    console.log(`❌ Invalid stock.s format:`, stock.s);
-                }
-            }
+            const { symbol, token } = resolveTokenAndSymbol(stock);
             
             if (token && symbol) {
-                newTokens.add(parseInt(token));
-                scanTypeTracker.set(parseInt(token), 'BUY_SCAN');
+                newTokens.add(Number(token));
+                scanTypeTracker.set(Number(token), 'BUY_SCAN');
                 console.log(`🟢 BUY ADDED: ${symbol} (${token}) -> BUY_SCAN tracked`);
             } else {
                 if (ENABLE_VERBOSE_SCAN_LOGS) {
@@ -2415,35 +2536,11 @@ async function autoSubscribeToResults(buyStocks, sellStocks, access_token) {
                 console.log(`🔍 DEBUG - Processing sellStock[${index}]:`, JSON.stringify(stock, null, 2));
             }
             
-            // Extract symbol from TradingView format (NSE:SYMBOL)
-            let symbol = null;
-            let token = null;
-            
-            if (stock.s && typeof stock.s === 'string' && stock.s.includes(':')) {
-                symbol = stock.s.split(':')[1]; // Extract SYMBOL from "NSE:SYMBOL"  
-                if (ENABLE_VERBOSE_SCAN_LOGS) {
-                    console.log(`🔍 Extracted symbol: "${symbol}" from "${stock.s}"`);
-                }
-                
-                if (symbol && symbolMappings.symbolMappings[symbol]) {
-                    token = symbolMappings.symbolMappings[symbol];
-                    if (ENABLE_VERBOSE_SCAN_LOGS) {
-                        console.log(`✅ Found token for ${symbol}: ${token}`);
-                    }
-                } else {
-                    if (ENABLE_VERBOSE_SCAN_LOGS) {
-                        console.log(`❌ No token mapping found for symbol: "${symbol}"`);
-                    }
-                }
-            } else {
-                if (ENABLE_VERBOSE_SCAN_LOGS) {
-                    console.log(`❌ Invalid stock.s format:`, stock.s);
-                }
-            }
+            const { symbol, token } = resolveTokenAndSymbol(stock);
             
             if (token && symbol) {
-                newTokens.add(parseInt(token));
-                scanTypeTracker.set(parseInt(token), 'SELL_SCAN');
+                newTokens.add(Number(token));
+                scanTypeTracker.set(Number(token), 'SELL_SCAN');
                 console.log(`🔴 SELL ADDED: ${symbol} (${token}) -> SELL_SCAN tracked`);
             } else {
                 if (ENABLE_VERBOSE_SCAN_LOGS) {
@@ -2710,18 +2807,33 @@ function setupTickerEventHandlers() {
                     return;
                 }
                 
-                // Skip if no depth data available for orderbook pre-trade analysis
+                // Skip if no depth data available for slippage gate analysis
                 if (!tick.depth || (!tick.depth.buy || !tick.depth.sell)) {
+                    return;
+                }
+
+                // Post-subscription execution gate: only slippage <= 0.04% using raw top-5 tick depth.
+                const rawBuyDepth = Array.isArray(tick.depth.buy) ? tick.depth.buy.slice(0, 5) : [];
+                const rawSellDepth = Array.isArray(tick.depth.sell) ? tick.depth.sell.slice(0, 5) : [];
+                if (rawBuyDepth.length === 0 || rawSellDepth.length === 0) {
+                    return;
+                }
+
+                const fiveLevelDepth = {
+                    buy: rawBuyDepth,
+                    sell: rawSellDepth
+                };
+
+                const marketImpactForExecution = calculateMarketImpact(fiveLevelDepth, ltp, scanType, globalUsableFunds);
+                const expectedSlippagePercent = Number(marketImpactForExecution?.totalSlippage || 0);
+                if (!Number.isFinite(expectedSlippagePercent) || Math.abs(expectedSlippagePercent) > MAX_EXECUTION_SLIPPAGE_PERCENT) {
+                    if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
+                        console.log(`⛔ ${symbol} execution blocked: slippage ${expectedSlippagePercent.toFixed(4)}% exceeds max ${MAX_EXECUTION_SLIPPAGE_PERCENT}%`);
+                    }
                     return;
                 }
                 
                 try {
-                    const orderbookGate = depthTrackEngine.evaluateOrderbookPreTradeGate({
-                        token,
-                        symbol,
-                        tick,
-                        scanType
-                    });
                     
                     // ====================================================================
                     // POSITION-FIRST EXECUTION STRATEGY:
@@ -2731,30 +2843,28 @@ function setupTickerEventHandlers() {
                     // ==================================================================== 
                     
                     // Early gate: only run expensive position/open-order checks for symbols that
-                    // pass orderbook gate + scan-type + duplicate guards.
+                    // pass scan-type + duplicate guards after strict depth/slippage checks.
                     if (!autoTradingActive) {
                         return;
                     }
 
-                    const potentialBuyByOrderbook =
+                    const potentialBuyExecution =
+                        ENABLE_BUY_TRADES &&
                         scanType === 'BUY_SCAN' &&
-                        orderbookGate.allowed &&
                         !processedOrders.has(`${symbol}_MARKET_BUY`);
 
-                    const potentialSellByOrderbook =
+                    const potentialSellExecution =
                         scanType === 'SELL_SCAN' &&
-                        orderbookGate.allowed &&
                         !processedOrders.has(`${symbol}_MARKET_SELL`);
 
-                    if (!potentialBuyByOrderbook && !potentialSellByOrderbook) {
+                    if (!potentialBuyExecution && !potentialSellExecution) {
                         return;
                     }
                     
                     if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
-                        console.log(`📊 ${symbol} Orderbook Gate:`);
-                        console.log(`   Allowed: ${orderbookGate.allowed} (${orderbookGate.reason})`);
-                        console.log(`   SlippageRisk: ${Number(orderbookGate.metrics?.slippageRisk || 0).toFixed(2)}`);
-                        console.log(`   Imbalance: ${Number(orderbookGate.metrics?.imbalance || 0).toFixed(4)}`);
+                        console.log(`📊 ${symbol} Execution Gate:`);
+                        console.log(`   Depth levels used (buy/sell): ${rawBuyDepth.length}/${rawSellDepth.length}`);
+                        console.log(`   Expected slippage: ${expectedSlippagePercent.toFixed(4)}%`);
                     }
                     
                     let orderExecuted = false;
@@ -2950,55 +3060,11 @@ function setupTickerEventHandlers() {
                         return;
                     }
                     
-                    console.log(`✅ AUTO TRADING ENABLED: Proceeding with enhanced execution criteria for ${symbol}`);
-                    
-                    // ====================================================================
-                    // ENHANCED LIVE LTP VERIFICATION: Enhanced scanner conditions with live tick data
-                    // ====================================================================
-                    const buyCandidate = buyCandidates.get(token);
-                    const sellCandidate = sellCandidates.get(token);
-                    let liveBuyConditionsValid = false;
-                    let liveSellConditionsValid = false;
-                    
-                    // 🔵 ENHANCED BUY CONDITIONS: ltp < ema3(15min) AND ltp > ema5(5min)
-                    if (buyCandidate && scanType === 'BUY_SCAN') {
-                        const liveLtpBelowEma3_15 = ltp < buyCandidate.ema3_15;  // LTP < EMA3 (15min)
-                        const liveLtpAboveEma5_5 = ltp > buyCandidate.ema5_5;   // LTP > EMA5 (5min)
-                        liveBuyConditionsValid = liveLtpBelowEma3_15 && liveLtpAboveEma5_5;
-                        
-                        console.log(`🔄 ENHANCED BUY VERIFICATION for ${symbol}:`);
-                        console.log(`   Live LTP: ₹${ltp}`);
-                        console.log(`   EMA3(15min): ₹${buyCandidate.ema3_15} | LTP < EMA3(15min): ${liveLtpBelowEma3_15}`);
-                        console.log(`   EMA5(5min): ₹${buyCandidate.ema5_5} | LTP > EMA5(5min): ${liveLtpAboveEma5_5}`);
-                        console.log(`   ✅ Enhanced BUY conditions: ${liveBuyConditionsValid}`);
-                    }
-                    
-                    // 🔴 ENHANCED SELL CONDITIONS: ltp < ema5(5min) AND ltp > ema3(15min)
-                    if (sellCandidate && scanType === 'SELL_SCAN') {
-                        const liveLtpBelowEma5_5 = ltp < sellCandidate.ema5_5;   // LTP < EMA5 (5min)
-                        const liveLtpAboveEma3_15 = ltp > sellCandidate.ema3_15; // LTP > EMA3 (15min)
-                        liveSellConditionsValid = liveLtpBelowEma5_5 && liveLtpAboveEma3_15;
-                        
-                        console.log(`🔄 ENHANCED SELL VERIFICATION for ${symbol}:`);
-                        console.log(`   Live LTP: ₹${ltp}`);
-                        console.log(`   EMA5(5min): ₹${sellCandidate.ema5_5} | LTP < EMA5(5min): ${liveLtpBelowEma5_5}`);
-                        console.log(`   EMA3(15min): ₹${sellCandidate.ema3_15} | LTP > EMA3(15min): ${liveLtpAboveEma3_15}`);
-                        console.log(`   ✅ Enhanced SELL conditions: ${liveSellConditionsValid}`);
-                    }
-                    
-                    // 📊 ENHANCED EXECUTION CRITERIA: orderbook gate + live EMA verification
-                    
-                    // 🔵 CHECK ENHANCED BUY EXECUTION CRITERIA
-                    if (potentialBuyByOrderbook &&
-                        !processedOrders.has(`${symbol}_MARKET_BUY`) &&
-                        (scanType === 'BUY_SCAN' ? liveBuyConditionsValid : false)) { // Enhanced BUY verification required
-                        
-                        console.log(`🚀 ✅ ENHANCED BUY EXECUTION CRITERIA MET: ${symbol}`);
-                        console.log(`   ✅ Auto Trading: ${autoTradingActive}`);
-                        console.log(`   ✅ LTP < EMA3(15min): ${ltp} < ${buyCandidate.ema3_15}`);
-                        console.log(`   ✅ LTP > EMA5(5min): ${ltp} > ${buyCandidate.ema5_5}`);
-                        console.log(`   ✅ Orderbook Gate: ${orderbookGate.reason}`);
-                        console.log(`   💰 Live LTP: ₹${ltp}`);
+                    console.log(`✅ AUTO TRADING ENABLED: Slippage gate passed for ${symbol}`);
+
+                    // 🔵 BUY execution: only duplicate-guard + slippage gate
+                    if (potentialBuyExecution && !processedOrders.has(`${symbol}_MARKET_BUY`)) {
+                        console.log(`🚀 ✅ BUY EXECUTION CRITERIA MET: ${symbol} (slippage=${expectedSlippagePercent.toFixed(4)}%)`);
                         
                         // Mark as processed to avoid duplicates
                         processedOrders.add(`${symbol}_MARKET_BUY`);
@@ -3012,6 +3078,17 @@ function setupTickerEventHandlers() {
                                 if (buyResult.success) {
                                     console.log(`✅ ENHANCED BUY ORDER SUCCESS: ${buyResult.order_id} for ${symbol}`);
                                     orderExecuted = true;
+
+                                    const triggerLtp = Number(ltp || 0);
+                                    const executedAvgPrice = Number(
+                                        (await getExecutedAveragePriceFromOrder(accessToken, buyResult.order_id)) ||
+                                        buyResult.price ||
+                                        ltp ||
+                                        0
+                                    );
+                                    const actualSlippagePercent = triggerLtp > 0
+                                        ? Math.abs(executedAvgPrice - triggerLtp) / triggerLtp * 100
+                                        : 0;
                                     
                                     // Process position after order placement
                                     setTimeout(() => {
@@ -3024,16 +3101,17 @@ function setupTickerEventHandlers() {
                                             type: 'enhanced_buy_order_executed',
                                             symbol: symbol,
                                             ltp: ltp,
+                                            triggeredLtp: triggerLtp,
+                                            executedPrice: executedAvgPrice,
                                             order_id: buyResult.order_id,
                                             criteria: {
                                                 autoTrading: autoTradingActive,
-                                                ltpBelowEma3_15min: ltp < buyCandidate.ema3_15,
-                                                ltpAboveEma5_5min: ltp > buyCandidate.ema5_5,
-                                                orderbookReason: orderbookGate.reason,
-                                                slippageRisk: Number(orderbookGate.metrics?.slippageRisk || 0).toFixed(2),
-                                                imbalance: Number(orderbookGate.metrics?.imbalance || 0).toFixed(4),
-                                                absorption: Number(orderbookGate.metrics?.absorption || 0).toFixed(2),
-                                                supportBreak: Boolean(orderbookGate.metrics?.supportBreak)
+                                                depthLevelsUsed: 5,
+                                                triggerLtp,
+                                                executedAvgPrice,
+                                                actualSlippagePercent: Number(actualSlippagePercent.toFixed(4)),
+                                                expectedSlippagePercent: Number(expectedSlippagePercent.toFixed(4)),
+                                                maxAllowedSlippagePercent: MAX_EXECUTION_SLIPPAGE_PERCENT
                                             },
                                             timestamp: new Date().toISOString()
                                         });
@@ -3045,20 +3123,16 @@ function setupTickerEventHandlers() {
                                 console.error(`❌ Error executing enhanced BUY order for ${symbol}:`, error.message);
                             }
                         } else {
-                            console.log(`📋 DEMO MODE: Enhanced BUY criteria met for ${symbol} @ ₹${ltp}`);
+                            console.log(`📋 DEMO MODE: BUY criteria met for ${symbol} @ ₹${ltp}`);
                         }
                     }
                     
-                    // 🔴 CHECK SELL EXECUTION CRITERIA (existing logic with enhanced levels)
+                    // 🔴 SELL execution: only duplicate-guard + slippage gate
                     if (!orderExecuted && 
-                        potentialSellByOrderbook &&
-                        !processedOrders.has(`${symbol}_MARKET_SELL`) &&
-                        (scanType === 'SELL_SCAN' ? liveSellConditionsValid : false)) {
-                        
-                        console.log(`🚀 ✅ ENHANCED SELL EXECUTION CRITERIA MET: ${symbol}`);
-                        console.log(`   ✅ Auto Trading: ${autoTradingActive}`);
-                        console.log(`   ✅ Orderbook Gate: ${orderbookGate.reason}`);
-                        console.log(`   💰 Live LTP: ₹${ltp}`);
+                        potentialSellExecution &&
+                        !processedOrders.has(`${symbol}_MARKET_SELL`)) {
+
+                        console.log(`🚀 ✅ SELL EXECUTION CRITERIA MET: ${symbol} (slippage=${expectedSlippagePercent.toFixed(4)}%)`);
                         
                         // Mark as processed to avoid duplicates
                         processedOrders.add(`${symbol}_MARKET_SELL`);
@@ -3072,6 +3146,17 @@ function setupTickerEventHandlers() {
                                 if (sellResult.success) {
                                     console.log(`✅ ENHANCED SELL ORDER SUCCESS: ${sellResult.order_id} for ${symbol}`);
                                     orderExecuted = true;
+
+                                    const triggerLtp = Number(ltp || 0);
+                                    const executedAvgPrice = Number(
+                                        (await getExecutedAveragePriceFromOrder(accessToken, sellResult.order_id)) ||
+                                        sellResult.price ||
+                                        ltp ||
+                                        0
+                                    );
+                                    const actualSlippagePercent = triggerLtp > 0
+                                        ? Math.abs(executedAvgPrice - triggerLtp) / triggerLtp * 100
+                                        : 0;
                                     
                                     // Process position after order placement
                                     setTimeout(() => {
@@ -3084,14 +3169,17 @@ function setupTickerEventHandlers() {
                                             type: 'enhanced_sell_order_executed',
                                             symbol: symbol,
                                             ltp: ltp,
+                                            triggeredLtp: triggerLtp,
+                                            executedPrice: executedAvgPrice,
                                             order_id: sellResult.order_id,
                                             criteria: {
                                                 autoTrading: autoTradingActive,
-                                                orderbookReason: orderbookGate.reason,
-                                                slippageRisk: Number(orderbookGate.metrics?.slippageRisk || 0).toFixed(2),
-                                                imbalance: Number(orderbookGate.metrics?.imbalance || 0).toFixed(4),
-                                                absorption: Number(orderbookGate.metrics?.absorption || 0).toFixed(2),
-                                                supportBreak: Boolean(orderbookGate.metrics?.supportBreak)
+                                                depthLevelsUsed: 5,
+                                                triggerLtp,
+                                                executedAvgPrice,
+                                                actualSlippagePercent: Number(actualSlippagePercent.toFixed(4)),
+                                                expectedSlippagePercent: Number(expectedSlippagePercent.toFixed(4)),
+                                                maxAllowedSlippagePercent: MAX_EXECUTION_SLIPPAGE_PERCENT
                                             },
                                             timestamp: new Date().toISOString()
                                         });
@@ -3103,13 +3191,13 @@ function setupTickerEventHandlers() {
                                 console.error(`❌ Error executing enhanced SELL order for ${symbol}:`, error.message);
                             }
                         } else {
-                            console.log(`📋 DEMO MODE: Enhanced SELL criteria met for ${symbol} @ ₹${ltp}`);
+                            console.log(`📋 DEMO MODE: SELL criteria met for ${symbol} @ ₹${ltp}`);
                         }
                     }
                     
                     // Log if no order executed after passing early checks.
                     if (!orderExecuted && ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
-                        console.log(`⚠️ ${symbol} - EXECUTION NOT TRIGGERED AFTER ORDERBOOK GATE (likely live EMA criteria/duplicate guard).`);
+                        console.log(`⚠️ ${symbol} - EXECUTION NOT TRIGGERED AFTER SLIPPAGE GATE (likely duplicate guard).`);
                     }
                     
                 } catch (error) {
@@ -3137,14 +3225,11 @@ function setupTickerEventHandlers() {
                 const scanType = scanTypeTracker.get(tick.instrument_token) || 'UNKNOWN';
                 
                 if (ENABLE_VERBOSE_TICK_LOGS) {
-                    console.log(`📡 BROADCASTING FULL 20-LEVEL TICK DATA: ${symbol} @ ₹${tick.last_price}`);
+                    console.log(`📡 BROADCASTING RAW 5-LEVEL TICK DATA: ${symbol} @ ₹${tick.last_price}`);
                 }
                 
                 // CAPTURE ORIGINAL UNTOUCHED DEPTH BEFORE ANY MODIFICATIONS
                 const originalUntouchedDepth = tick.depth ? JSON.parse(JSON.stringify(tick.depth)) : { buy: [], sell: [] };
-                
-                // Enhance to 20 levels for ALL symbols (no masking, just depth extension)
-                const fullDepth = enhanceDepthTo20Levels(tick.depth, tick.last_price, scanType, false);
                 
                 // LOG DEPTH LEVEL ANALYSIS
                 if (ENABLE_VERBOSE_TICK_LOGS) {
@@ -3157,19 +3242,11 @@ function setupTickerEventHandlers() {
                         lastBuyPrice: tick.depth?.buy?.[tick.depth?.buy?.length - 1]?.price || 'N/A',
                         firstSellPrice: tick.depth?.sell?.[0]?.price || 'N/A',
                         lastSellPrice: tick.depth?.sell?.[tick.depth?.sell?.length - 1]?.price || 'N/A'
-                    },
-                    enhancedDepth: {
-                        buyLevels: fullDepth.buy?.length || 0,
-                        sellLevels: fullDepth.sell?.length || 0,
-                        realLevels: tick.depth?.buy?.length || 0,
-                        estimatedLevels: (fullDepth.buy?.length || 0) - (tick.depth?.buy?.length || 0),
-                        level20BuyPrice: fullDepth.buy?.[19]?.price || 'N/A',
-                        level20SellPrice: fullDepth.sell?.[19]?.price || 'N/A'
                     }
                 });
                 }
                 
-                // Create structured tick data with 20-LEVEL DEPTH + RAW TICK DATA
+                // Create structured tick data with raw depth + raw tick data
                 const structuredTick = {
                     symbol: symbol,
                     last_price: tick.last_price || 0,
@@ -3177,7 +3254,7 @@ function setupTickerEventHandlers() {
                     change: change,
                     change_percent: tick.change ? ((tick.change / (tick.last_price - tick.change)) * 100).toFixed(2) : '0.00',
                     timestamp: new Date().toISOString(),
-                    depth: fullDepth, // 20-LEVEL ENHANCED DEPTH (MUST use fullDepth, not tick.depth!)
+                    depth: originalUntouchedDepth,
                     // RAW TICK DATA - ALL original properties preserved dynamically
                     rawTick: {
                         ...tick, // Include ALL properties from original tick
@@ -3227,14 +3304,11 @@ function setupTickerEventHandlers() {
                     const scanType = scanTypeTracker.get(tick.instrument_token) || 'UNKNOWN';
                     
                     if (ENABLE_VERBOSE_TICK_LOGS) {
-                        console.log(`📡 BATCH: FULL 20-LEVEL TICK DATA: ${symbol} @ ₹${tick.last_price}`);
+                        console.log(`📡 BATCH: RAW 5-LEVEL TICK DATA: ${symbol} @ ₹${tick.last_price}`);
                     }
                     
                     // CAPTURE ORIGINAL UNTOUCHED DEPTH BEFORE ANY MODIFICATIONS
                     const originalUntouchedDepth = tick.depth ? JSON.parse(JSON.stringify(tick.depth)) : { buy: [], sell: [] };
-                    
-                    // Enhance to 20 levels for ALL symbols (no masking, just depth extension)
-                    const fullDepth = enhanceDepthTo20Levels(tick.depth, tick.last_price, scanType, false);
                     
                     return {
                         symbol: symbol,
@@ -3243,7 +3317,7 @@ function setupTickerEventHandlers() {
                         change: change,
                         change_percent: tick.change ? ((tick.change / (tick.last_price - tick.change)) * 100).toFixed(2) : '0.00',
                         timestamp: new Date().toISOString(),
-                        depth: fullDepth, // 20-LEVEL ENHANCED DEPTH
+                        depth: originalUntouchedDepth,
                         // RAW TICK DATA - ALL original properties preserved dynamically
                         rawTick: {
                             ...tick, // Include ALL properties from original tick
@@ -3316,7 +3390,7 @@ router.post('/low-price-scanners', async (req, res) => {
                 success: false,
                 reason: 'scan_throttled',
                 message: `Scan throttled. Minimum ${Math.round(MIN_SCAN_GAP_MS / 1000)} second gap required between scans.`,
-                payload: streakResult.body,
+                payload: req.body || {},
                 waitMs,
                 minGapSeconds: Math.round(MIN_SCAN_GAP_MS / 1000),
                 nextScanAllowedAt,
@@ -3428,50 +3502,10 @@ router.post('/low-price-scanners', async (req, res) => {
         const pureCrossdownStocks = [];
         const separateCrossoverStocks = [];
         const separateCrossdownStocks = [];
+        const crossScanPayloads = [];
+        const crossScanResponses = [];
 
-        const crossScanPayloads = [
-            {
-                id: 'crossover_macd1_vs_signal1',
-                direction: 'up',
-                left: 'MACD.macd|1',
-                right: 'MACD.signal|1',
-                payload: buildLowPriceScannerPayload([
-                    { "left": "MACD.macd|1", "operation": "crosses_above", "right": "MACD.signal|1" }
-                ])
-            },
-            {
-                id: 'crossdown_macd1_vs_signal1',
-                direction: 'down',
-                left: 'MACD.macd|1',
-                right: 'MACD.signal|1',
-                payload: buildLowPriceScannerPayload([
-                    { "left": "MACD.macd|1", "operation": "crosses_below", "right": "MACD.signal|1" }
-                ])
-            }
-        ];
-
-        const crossScanRawResponses = await Promise.all(
-            crossScanPayloads.map((scan) =>
-                makeScannorCall(scan.payload, `low-price-${scan.id}`, req.body)
-            )
-        );
-
-        const crossScanResponses = crossScanPayloads.map((scan, index) => {
-            const raw = crossScanRawResponses[index];
-            const stocks = extractTradingViewStocks(raw).map(enrichLowPriceStockData);
-            return {
-                id: scan.id,
-                direction: scan.direction,
-                left: scan.left,
-                right: scan.right,
-                success: Boolean(raw?.success),
-                count: stocks.length,
-                rawResponse: raw?.data || null,
-                stocks
-            };
-        });
-
-        console.log('ℹ️ Sell crossdown intersection disabled: sell signals use technical filters only');
+        console.log('ℹ️ Intersection disabled: using low-price scan stocks directly');
 
     
         // Classify stocks into buy/sell based on conditions
@@ -3502,117 +3536,9 @@ router.post('/low-price-scanners', async (req, res) => {
             orders_failed: 0
         };
 
-        const shouldApplyUiFilters = Boolean(req.body?.applyUiFilters);
-        const requestedBuyFilters = req.body?.appliedFilters?.buy || {};
-        const requestedSellFilters = req.body?.appliedFilters?.sell || {};
-
         const FIXED_GAP_THRESHOLD_PCT = 0.04;
 
-        const buyFilterIdToConditionIndexes = {
-            plusDiAbove25_1mBuy: [0],
-            plusDiAboveAdx_1mBuy: [1],
-            adxAboveMinusDi_1mBuy: [2],
-            macdAboveSignal_1mBuy: [3],
-            macdAboveZero_1mBuy: [4],
-            ema3AboveEma5_1mBuy: [5],
-            rsiAbove65_1mBuy: [6],
-            ema9AboveMbb_1mBuy: [7],
-            ema3UbbGapWithinPoint1Pct_1mBuy: [8, 14],
-            ltpBelowUbb_5mBuy: [9],
-            ltpBelowUbb_15mBuy: [10],
-            macdAboveZero_5mBuy: [11],
-            plusDiAboveMinusDi_5mBuy: [12],
-            ltpBelowOrEqualEma3_1mBuy: [13]
-        };
-
-        const sellFilterIdToConditionIndexes = {
-            minusDiAbove25_1mSell: [0],
-            minusDiAboveAdx_1mSell: [1],
-            adxAbovePlusDi_1mSell: [2],
-            macdBelowSignal_1mSell: [3],
-            macdBelowZero_1mSell: [4],
-            ema3BelowEma5_1mSell: [5],
-            rsiBelow35_1mSell: [6],
-            ema9BelowMbb_1mSell: [7],
-            ema3LbbGapWithinPoint1Pct_1mSell: [8, 14],
-            ltpAboveLbb_5mSell: [9],
-            ltpAboveLbb_15mSell: [10],
-            macdBelowZero_5mSell: [11],
-            minusDiAbovePlusDi_5mSell: [12],
-            ltpAboveOrEqualEma3_1mSell: [13]
-        };
-
-        const buyFilterOrder = [
-            'plusDiAbove25_1mBuy',
-            'plusDiAboveAdx_1mBuy',
-            'adxAboveMinusDi_1mBuy',
-            'macdAboveSignal_1mBuy',
-            'macdAboveZero_1mBuy',
-            'ema3AboveEma5_1mBuy',
-            'rsiAbove65_1mBuy',
-            'ema9AboveMbb_1mBuy',
-            'ema3UbbGapWithinPoint1Pct_1mBuy',
-            'ltpBelowUbb_5mBuy',
-            'ltpBelowUbb_15mBuy',
-            'macdAboveZero_5mBuy',
-            'plusDiAboveMinusDi_5mBuy',
-            'ltpBelowOrEqualEma3_1mBuy'
-        ];
-
-        const sellFilterOrder = [
-            'minusDiAbove25_1mSell',
-            'minusDiAboveAdx_1mSell',
-            'adxAbovePlusDi_1mSell',
-            'macdBelowSignal_1mSell',
-            'macdBelowZero_1mSell',
-            'ema3BelowEma5_1mSell',
-            'rsiBelow35_1mSell',
-            'ema9BelowMbb_1mSell',
-            'ema3LbbGapWithinPoint1Pct_1mSell',
-            'ltpAboveLbb_5mSell',
-            'ltpAboveLbb_15mSell',
-            'macdBelowZero_5mSell',
-            'minusDiAbovePlusDi_5mSell',
-            'ltpAboveOrEqualEma3_1mSell'
-        ];
-
-        const hasCompactBuyIndexes = Array.isArray(req.body?.enabledBuyFilterIndexes);
-        const hasCompactSellIndexes = Array.isArray(req.body?.enabledSellFilterIndexes);
-
-        const activeBuyFilterIds = hasCompactBuyIndexes
-            ? req.body.enabledBuyFilterIndexes
-                .map((index) => buyFilterOrder[index])
-                .filter(Boolean)
-            : Object.entries(requestedBuyFilters)
-                .filter(([, enabled]) => enabled === true)
-                .map(([id]) => id);
-
-        const activeSellFilterIds = hasCompactSellIndexes
-            ? req.body.enabledSellFilterIndexes
-                .map((index) => sellFilterOrder[index])
-                .filter(Boolean)
-            : Object.entries(requestedSellFilters)
-                .filter(([, enabled]) => enabled === true)
-                .map(([id]) => id);
-
-        const evaluateWithSelectedFilters = (conditions, activeFilterIds, filterMap) => {
-            if (!shouldApplyUiFilters) {
-                return conditions.every(condition => condition);
-            }
-
-            const activeIndexes = activeFilterIds
-                .flatMap((filterId) => filterMap[filterId] || []);
-
-            if (activeIndexes.length === 0) {
-                return true;
-            }
-
-            return activeIndexes.every((index) => conditions[index]);
-        };
-
-        if (shouldApplyUiFilters) {
-            console.log(`🎛️ Applying UI filters on backend: buy=${activeBuyFilterIds.length}, sell=${activeSellFilterIds.length}`);
-        }
+        console.log('🎛️ Low-price scan simplified: applying only low-price gates (no DI/MACD/RSI filters).');
 
         enrichedStocks.forEach(async (stock) => {
             conditionStats.total_stocks++;
@@ -3628,23 +3554,12 @@ router.post('/low-price-scanners', async (req, res) => {
                 ? (Math.abs(ema3_5 - ubb5) / ubb5) * 100
                 : Number.POSITIVE_INFINITY;
 
-            // BUY CONDITIONS (default timeframe 1m unless specified)
+            // BUY CONDITIONS (low-price gates only)
             const buyConditions = [
-                stock.plusDI1 > 25,           // +DI(1m) > 25
-                stock.plusDI1 > stock.adx1,   // +DI(1m) > ADX(1m)
-                stock.adx1 > stock.minusDI1,  // ADX(1m) > -DI(1m)
-                stock.macd1 > stock.signal1,  // MACD(1m) > Signal(1m)
-                stock.macd1 > 0,              // MACD(1m) > 0
-                stock.ema3_1 > stock.ema5_1,  // EMA3(1m) > EMA5(1m)
-                stock.rsi1 > 65,              // RSI(1m) > 65
-                stock.ema9_1 > stock.mbb_1,   // EMA9(1m) > MBB(1m)
-                ema3GapPctFromUbb <= fixedGapThresholdPct, // |UBB(1m)-EMA3(1m)| <= fixed 0.04% threshold
-                (ubb1 > 0 && Number(stock.ltp || 0) < ubb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) < Number(stock.ema3_1 || 0)), // BUY 1m OR gate: LTP < UBB(1m) OR LTP < EMA3(1m)
-                true,                         // Deprecated 15m band gate (5m-only signal gate)
-                stock.macd5 > 0,              // MACD(5m) > 0
-                stock.plusDI5 > stock.minusDI5, // +DI(5m) > -DI(5m)
-                (ubb1 > 0 && Number(stock.ltp || 0) < ubb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) < Number(stock.ema3_1 || 0)), // Mirror OR gate for legacy filter slot
-                ema3GapPctFromUbb5 <= fixedGapThresholdPct // |UBB(5m)-EMA3(5m)| <= fixed 0.04% threshold
+                Number(stock.plusDI5 || 0) > 25, // +DI (5m) > 25
+                ema3GapPctFromUbb <= fixedGapThresholdPct, // |UBB(1m)-EMA3(1m)| <= 0.04%
+                ema3GapPctFromUbb5 <= fixedGapThresholdPct, // |UBB(5m)-EMA3(5m)| <= 0.04%
+                (ubb1 > 0 && Number(stock.ltp || 0) < ubb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) < Number(stock.ema3_1 || 0)) // LTP < UBB(1m) OR LTP < EMA3(1m)
             ];
 
             // Track condition pass counts
@@ -3652,22 +3567,7 @@ router.post('/low-price-scanners', async (req, res) => {
                 if (pass) conditionStats.buy_condition_passes[i]++;
             });
             
-            // DEBUG: Track individual condition passes for EMA 1min conditions
-            const ema3_ema5_1min_pass = stock.ema3_1 > stock.ema5_1;
-            const ema5_ema9_1min_pass = stock.ema5_1 > stock.ema9_1;
-            
-            if (!ema3_ema5_1min_pass || !ema5_ema9_1min_pass) {
-                conditionStats.ema_1min_issues.push({
-                    symbol: stock.symbol,
-                    ema3_1: stock.ema3_1,
-                    ema5_1: stock.ema5_1, 
-                    ema9_1: stock.ema9_1,
-                    ema3_gt_ema5: ema3_ema5_1min_pass,
-                    ema5_gt_ema9: ema5_ema9_1min_pass
-                });
-            }
-            
-            // SELL CONDITIONS (default timeframe 1m unless specified)
+            // SELL CONDITIONS (low-price gates only)
             const lbb1 = Number(stock.lbb_1 || 0);
             const lbb5 = Number(stock.lbb_5 || 0);
             const ema3GapPctFromLbb = lbb1 > 0
@@ -3678,35 +3578,15 @@ router.post('/low-price-scanners', async (req, res) => {
                 : Number.POSITIVE_INFINITY;
 
             const sellConditions = [
-                stock.minusDI1 > 25,          // -DI(1m) > 25
-                stock.minusDI1 > stock.adx1,  // -DI(1m) > ADX(1m)
-                stock.adx1 > stock.plusDI1,   // ADX(1m) > +DI(1m)
-                stock.macd1 < stock.signal1,  // MACD(1m) < Signal(1m)
-                stock.macd1 < 0,              // MACD(1m) < 0
-                stock.ema3_1 < stock.ema5_1,  // EMA3(1m) < EMA5(1m)
-                stock.rsi1 < 35,              // RSI(1m) < 35
-                stock.ema9_1 < stock.mbb_1,   // EMA9(1m) < MBB(1m)
-                ema3GapPctFromLbb <= fixedGapThresholdPct, // |LBB(1m)-EMA3(1m)| <= fixed 0.04% threshold
-                (lbb1 > 0 && Number(stock.ltp || 0) > lbb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) > Number(stock.ema3_1 || 0)), // SELL 1m OR gate: LTP > LBB(1m) OR LTP > EMA3(1m)
-                true,                         // Deprecated 15m band gate (5m-only signal gate)
-                stock.macd5 < 0,              // MACD(5m) < 0
-                stock.minusDI5 > stock.plusDI5, // -DI(5m) > +DI(5m)
-                (lbb1 > 0 && Number(stock.ltp || 0) > lbb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) > Number(stock.ema3_1 || 0)), // Mirror OR gate for legacy filter slot
-                ema3GapPctFromLbb5 <= fixedGapThresholdPct // |LBB(5m)-EMA3(5m)| <= fixed 0.04% threshold
+                Number(stock.minusDI5 || 0) > 25, // -DI (5m) > 25
+                ema3GapPctFromLbb <= fixedGapThresholdPct, // |LBB(1m)-EMA3(1m)| <= 0.04%
+                ema3GapPctFromLbb5 <= fixedGapThresholdPct, // |LBB(5m)-EMA3(5m)| <= 0.04%
+                (lbb1 > 0 && Number(stock.ltp || 0) > lbb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) > Number(stock.ema3_1 || 0)) // LTP > LBB(1m) OR LTP > EMA3(1m)
             ];
             
             
-            const isBuySignal = evaluateWithSelectedFilters(
-                buyConditions,
-                activeBuyFilterIds,
-                buyFilterIdToConditionIndexes
-            );
-
-            const isSellSignal = evaluateWithSelectedFilters(
-                sellConditions,
-                activeSellFilterIds,
-                sellFilterIdToConditionIndexes
-            );
+            const isBuySignal = buyConditions.every(condition => condition === true);
+            const isSellSignal = sellConditions.every(condition => condition === true);
             
             if (isBuySignal) {
                 // 💰 Pre-calculate quantity based on global funds
@@ -3820,36 +3700,18 @@ router.post('/low-price-scanners', async (req, res) => {
         console.log(`🎯 SCAN RESULTS: ${buyStocks.length} buy signals, ${sellStocks.length} sell signals`);
         console.log(`📊 ORDER EXECUTION: Attempted=${conditionStats.orders_attempted}, Success=${conditionStats.orders_successful}, Failed=${conditionStats.orders_failed}`);
 
-        // Build separate crossover/crossdown sets from dedicated 4 cross scans.
-        // Sell crossdown intersection is intentionally disabled.
-        const stockKey = (row) => String(row?.symbol || '').trim().toUpperCase();
-        const crossoverFromLowPrice = crossScanResponses.find((item) => item.id === 'crossover_macd1_vs_signal1')?.stocks || [];
-        const crossdownFromLowPrice = crossScanResponses.find((item) => item.id === 'crossdown_macd1_vs_signal1')?.stocks || [];
-
-        separateCrossoverStocks.push(...crossoverFromLowPrice);
-        separateCrossdownStocks.push(...crossdownFromLowPrice);
-
-        const crossoverKeys = new Set(separateCrossoverStocks.map(stockKey));
-        const crossdownKeys = new Set(separateCrossdownStocks.map(stockKey));
-
-        const intersectedBuyStocks = buyStocks.filter((stock) => crossoverKeys.has(stockKey(stock)));
-        const intersectedSellStocks = sellStocks.filter((stock) => crossdownKeys.has(stockKey(stock)));
-        const buyWithoutIntersectionStocks = buyStocks.filter((stock) => !crossoverKeys.has(stockKey(stock)));
-        const sellWithoutIntersectionStocks = sellStocks.filter((stock) => !crossdownKeys.has(stockKey(stock)));
-
-        pureCrossoverStocks.push(...intersectedBuyStocks);
-        pureCrossdownStocks.push(...intersectedSellStocks);
-
-        const finalBuyStocks = intersectedBuyStocks;
+        const finalBuyStocks = buyStocks;
         const finalSellStocks = sellStocks;
-        const hasIntersectedSignals = finalBuyStocks.length > 0 || finalSellStocks.length > 0;
-        const fallbackTestBuyStocks = hasIntersectedSignals ? [] : buyStocks.slice(0, 1);
-        const fallbackTestSellStocks = hasIntersectedSignals ? [] : sellStocks.slice(0, 1);
-        const subscriptionBuyStocks = hasIntersectedSignals ? finalBuyStocks : fallbackTestBuyStocks;
+        const buyWithoutIntersectionStocks = [];
+        const sellWithoutIntersectionStocks = [];
+        const fallbackTestBuyStocks = [];
+        const fallbackTestSellStocks = [];
+
+        // Subscribe low-price BUY and SELL stocks for tick execution.
+        const subscriptionBuyStocks = finalBuyStocks;
         const subscriptionSellStocks = finalSellStocks;
 
-        console.log(`🔗 INTERSECTION: buy ${intersectedBuyStocks.length}/${buyStocks.length}, sell DISABLED (${sellStocks.length} filtered sell signals)`);
-        console.log(`📡 SUBSCRIPTION MODE: SELL_FILTERED_ONLY (buy=${subscriptionBuyStocks.length}, sell=${subscriptionSellStocks.length})`);
+        console.log(`📡 SUBSCRIPTION MODE: LOW_PRICE_BUY_SELL (buy=${subscriptionBuyStocks.length}, sell=${subscriptionSellStocks.length})`);
 
         // NO AUTO-SUBSCRIPTION - Direct execution mode
         // Store buy/sell stocks globally for API access (if needed)
@@ -3890,7 +3752,7 @@ router.post('/low-price-scanners', async (req, res) => {
             console.log(`🔍 No force cleanup needed: buyStocks=${subscriptionBuyStocks.length}, sellStocks=${subscriptionSellStocks.length}, subscriptions=${currentlySubscribed.size}`);
         }
         
-        await autoSubscribeToResults(subscriptionBuyStocks, subscriptionSellStocks, req.body.access_token);
+        await autoSubscribeToResults(subscriptionBuyStocks, subscriptionSellStocks, effectiveAccessToken);
         
         console.log(`✅ SCAN COMPLETE - Direct execution with subscription management`);
 
@@ -4000,7 +3862,7 @@ router.post('/low-price-scanners', async (req, res) => {
             qualifiedSellStocks: sellStocks,
             fallbackTestBuyStocks,
             fallbackTestSellStocks,
-            subscriptionMode: hasIntersectedSignals ? 'INTERSECTED' : 'FALLBACK_TEST',
+            subscriptionMode: 'LOW_PRICE_BUY_SELL',
             buyStocks: finalBuyStocks,
             sellStocks: finalSellStocks,
             buyTable: buyTableData,
@@ -4714,16 +4576,27 @@ router.post('/buy-order', async (req, res) => {
         // 🔄 ACCEPT SIMPLE FORMAT: symbol, ltp, access_token from frontend
         const { symbol, ltp, orderParams: existingOrderParams, isTargetOrder } = req.body;
 
-        // Sell-only mode: block main BUY orders, but allow target BUY orders when explicitly requested.
-        if (!isTargetOrder) {
-            return res.status(403).json({
+        if (!isTargetOrder && symbol && hasSymbolAlreadyTraded(symbol)) {
+            return res.status(409).json({
                 success: false,
-                error: 'Main BUY orders are disabled (sell-only mode). Only SELL main orders and target BUY are allowed.',
+                error: `MAIN BUY blocked: ${symbol} already traded in this session`,
                 order_category: 'BUY',
-                symbol: symbol || null
+                symbol,
+                suggestion: 'Use a different symbol or clear session locks via /api/clear-positions.'
             });
         }
-        
+
+        // SELL-only enforcement: block new BUY entries, allow BUY only when it is a target order.
+        if (!isTargetOrder && !ENABLE_BUY_TRADES) {
+            return res.status(403).json({
+                success: false,
+                error: 'BUY main trades are disabled (SELL-only mode active).',
+                order_category: 'BUY',
+                symbol,
+                suggestion: 'Use SELL signals for main trades. BUY is allowed only for target/exit orders.'
+            });
+        }
+
         // 🔒 SIGNAL EXECUTION TRACKING: Prevent repeated orders for same signal
         if (!isTargetOrder && symbol) {
             const signalKey = createSignalKey(symbol, 'BUY');
@@ -5218,6 +5091,7 @@ router.post('/buy-order', async (req, res) => {
             // 🔒 MARK SIGNAL AS EXECUTED: Prevent repeated attempts
             if (!isTargetOrder && symbol) {
                 markSignalAsExecuted(symbol, 'BUY');
+                markSymbolAsTraded(symbol);
                 console.log(`🔒 BUY signal marked as executed for ${symbol} - 5 minute cooldown active`);
             }
             
@@ -5258,7 +5132,11 @@ router.post('/buy-order', async (req, res) => {
                     const newPosition = newPositions.find(pos => pos.tradingsymbol === orderParams.tradingsymbol && pos.quantity !== 0);
                     
                     if (newPosition) {
-                        const avgPrice = parseFloat(newPosition.average_price);
+                        const executedAvgPrice = await getExecutedAveragePriceFromOrder(access_token, result.order_id);
+                        const positionAvgPrice = parseFloat(newPosition.average_price || 0);
+                        const avgPrice = (Number.isFinite(executedAvgPrice) && executedAvgPrice > 0)
+                            ? executedAvgPrice
+                            : positionAvgPrice;
                         const quantity = Math.abs(parseInt(newPosition.quantity));
                         const side = parseInt(newPosition.quantity) > 0 ? 'BUY' : 'SELL';
                         const targetPrice = calculateTargetPrice(avgPrice, quantity, side);
@@ -5274,9 +5152,11 @@ router.post('/buy-order', async (req, res) => {
                             
                             // Calculate investment and profit details for frontend display
                             const investment = avgPrice * quantity;
-                            const { targetProfitAmount, targetProfitPercent } = calculateProfitTargetFromInvestment(investment);
+                            const { targetProfitPercent } = calculateProfitTargetFromInvestment(investment);
                             const actualProfitPerShare = Math.abs(targetPrice - avgPrice);
                             const actualTotalProfit = actualProfitPerShare * quantity;
+                            const chargeBreakdown = estimateIntradayRoundTripCharges(avgPrice, targetPrice, quantity, side);
+                            const expectedNetProfit = actualTotalProfit - Number(chargeBreakdown.totalCharges || 0);
                             
                             // 📊 AUTO KITE CHART: Open chart for successful target order
                             if (global.broadcastLiveData) {
@@ -5303,7 +5183,7 @@ router.post('/buy-order', async (req, res) => {
                                         quantity: quantity,
                                         investment: investment,
                                         targetPrice: targetPrice,
-                                        expectedProfit: actualTotalProfit,
+                                        expectedProfit: expectedNetProfit,
                                         profitPercentage: targetProfitPercent,
                                         side: side,
                                         targetSide: targetSide,
@@ -5376,6 +5256,16 @@ router.post('/sell-order', async (req, res) => {
         
         // 🔄 ACCEPT SIMPLE FORMAT: symbol, ltp, access_token from frontend
         const { symbol, ltp, orderParams: existingOrderParams, isTargetOrder } = req.body;
+
+        if (!isTargetOrder && symbol && hasSymbolAlreadyTraded(symbol)) {
+            return res.status(409).json({
+                success: false,
+                error: `MAIN SELL blocked: ${symbol} already traded in this session`,
+                order_category: 'SELL',
+                symbol,
+                suggestion: 'Use a different symbol or clear session locks via /api/clear-positions.'
+            });
+        }
         
         // 🔒 SIGNAL EXECUTION TRACKING: Prevent repeated orders for same signal
         if (!isTargetOrder && symbol) {
@@ -5770,6 +5660,7 @@ router.post('/sell-order', async (req, res) => {
             // 🔒 MARK SIGNAL AS EXECUTED: Prevent repeated attempts
             if (!isTargetOrder && symbol) {
                 markSignalAsExecuted(symbol, 'SELL');
+                markSymbolAsTraded(symbol);
                 console.log(`🔒 SELL signal marked as executed for ${symbol} - 5 minute cooldown active`);
             }
             
@@ -5820,7 +5711,11 @@ router.post('/sell-order', async (req, res) => {
                     const newPosition = allNewPositions.find(pos => pos.tradingsymbol === orderParams.tradingsymbol && pos.quantity !== 0);
                     
                     if (newPosition) {
-                        const avgPrice = parseFloat(newPosition.average_price);
+                        const executedAvgPrice = await getExecutedAveragePriceFromOrder(access_token, result.order_id);
+                        const positionAvgPrice = parseFloat(newPosition.average_price || 0);
+                        const avgPrice = (Number.isFinite(executedAvgPrice) && executedAvgPrice > 0)
+                            ? executedAvgPrice
+                            : positionAvgPrice;
                         const quantity = Math.abs(parseInt(newPosition.quantity));
                         const side = parseInt(newPosition.quantity) > 0 ? 'BUY' : 'SELL';
                         const targetPrice = calculateTargetPrice(avgPrice, quantity, side);
@@ -5836,9 +5731,11 @@ router.post('/sell-order', async (req, res) => {
                             
                             // Calculate investment and profit details for frontend display
                             const investment = avgPrice * quantity;
-                            const { targetProfitAmount, targetProfitPercent } = calculateProfitTargetFromInvestment(investment);
+                            const { targetProfitPercent } = calculateProfitTargetFromInvestment(investment);
                             const actualProfitPerShare = Math.abs(targetPrice - avgPrice);
                             const actualTotalProfit = actualProfitPerShare * quantity;
+                            const chargeBreakdown = estimateIntradayRoundTripCharges(avgPrice, targetPrice, quantity, side);
+                            const expectedNetProfit = actualTotalProfit - Number(chargeBreakdown.totalCharges || 0);
                             
                             // 📊 AUTO KITE CHART: Open chart for successful target order
                             if (global.broadcastLiveData) {
@@ -5865,7 +5762,7 @@ router.post('/sell-order', async (req, res) => {
                                         quantity: quantity,
                                         investment: investment,
                                         targetPrice: targetPrice,
-                                        expectedProfit: actualTotalProfit,
+                                        expectedProfit: expectedNetProfit,
                                         profitPercentage: targetProfitPercent,
                                         side: side,
                                         targetSide: targetSide,

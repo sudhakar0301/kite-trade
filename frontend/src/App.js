@@ -5,6 +5,7 @@ import TradingControlPanel from './components/TradingControlPanel';
 // import TickAnalysisTable from './components/TickAnalysisTable';
 import OrderExecutionPanel from './components/OrderExecutionPanel';
 import SubscribedStockTracker from './components/SubscribedStockTracker';
+import ExecutedOrderDetailsPanel from './components/ExecutedOrderDetailsPanel';
 // import ScanResultsTables from './components/ScanResultsTables'; // Hidden for streak-only flow
 import PositionsOrdersTable from './components/PositionsOrdersTable'; // NEW: Positions and Orders display
 import TargetOrderDetails from './components/TargetOrderDetails'; // NEW: Target order details display
@@ -37,7 +38,7 @@ const STREAK_BUY_1MIN_CONDITION_STORAGE_KEY = 'streak_buy_1min_condition';
 const STREAK_BUY_5MIN_CONDITION_STORAGE_KEY = 'streak_buy_5min_condition';
 const STREAK_SELL_1MIN_CONDITION_STORAGE_KEY = 'streak_sell_1min_condition';
 const STREAK_SELL_5MIN_CONDITION_STORAGE_KEY = 'streak_sell_5min_condition';
-const USE_STREAK_SCAN_ONLY = true;
+const USE_STREAK_SCAN_ONLY = false;
 const BUY_FILTER_KEYS = [
   'plusDiAbove25_1mBuy',
   'plusDiAboveAdx_1mBuy',
@@ -221,6 +222,8 @@ function App() {
   // NEW: Target Order Details
   const [targetOrderDetails, setTargetOrderDetails] = useState([]);
   const [showTargetOrderDetails, setShowTargetOrderDetails] = useState(false);
+  const [executedTradeDetails, setExecutedTradeDetails] = useState([]);
+  const [showExecutedTradeDetails, setShowExecutedTradeDetails] = useState(false);
 
   // NEW: Signal Stocks Tracking for Tick-Driven Execution
   const [signalStocks, setSignalStocks] = useState({
@@ -498,6 +501,64 @@ function App() {
       setPositionsData(positions);
       setOrdersData(orders);
       setLastPositionsOrdersUpdate(new Date().toLocaleTimeString());
+
+      // Hydrate executed/main-order style rows from currently open positions immediately.
+      const existingPositionRows = (Array.isArray(positions) ? positions : [])
+        .filter((pos) => Number(pos?.quantity || 0) !== 0)
+        .map((pos) => {
+          const quantity = Number(pos?.quantity || 0);
+          const side = quantity > 0 ? 'BUY' : 'SELL';
+          const symbol = String(pos?.tradingsymbol || '').trim();
+          const executedPrice = Number(pos?.average_price || pos?.price || 0);
+
+          // Try to pick the latest complete main order for better timestamp/order id context.
+          const latestMainOrder = (Array.isArray(orders) ? orders : [])
+            .filter((order) =>
+              String(order?.tradingsymbol || '') === symbol &&
+              String(order?.transaction_type || '').toUpperCase() === side &&
+              String(order?.status || '').toUpperCase() === 'COMPLETE'
+            )
+            .sort((a, b) => new Date(b?.order_timestamp || 0) - new Date(a?.order_timestamp || 0))[0];
+
+          return {
+            symbol,
+            side,
+            orderId: latestMainOrder?.order_id || null,
+            executedPrice,
+            slippage: 0,
+            profit: 0,
+            targetPrice: 0,
+            targetValue: 0,
+            timestamp: latestMainOrder?.order_timestamp || new Date().toISOString()
+          };
+        })
+        .filter((row) => row.symbol);
+
+      if (existingPositionRows.length > 0) {
+        setExecutedTradeDetails((prev) => {
+          const safePrev = Array.isArray(prev) ? prev : [];
+          const merged = [...safePrev];
+
+          existingPositionRows.forEach((row) => {
+            const existingIndex = merged.findIndex((item) =>
+              (row.orderId && item.orderId === row.orderId) ||
+              (!row.orderId && item.symbol === row.symbol && item.side === row.side)
+            );
+
+            if (existingIndex >= 0) {
+              merged[existingIndex] = { ...merged[existingIndex], ...row };
+            } else {
+              merged.push(row);
+            }
+          });
+
+          return merged
+            .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))
+            .slice(0, 20);
+        });
+
+        setShowExecutedTradeDetails(true);
+      }
       
       // Match positions with orders to identify target orders
       const matchedTargetOrders = identifyTargetOrders(positions, orders);
@@ -532,6 +593,26 @@ function App() {
         });
         
         setShowTargetOrderDetails(true);
+
+        // Backfill target details onto executed rows so existing orders look same as live flow.
+        setExecutedTradeDetails((prev) => {
+          const safePrev = Array.isArray(prev) ? prev : [];
+          return safePrev.map((item) => {
+            const target = matchedTargetOrders.find((t) => String(t.symbol || '') === String(item.symbol || ''));
+            if (!target) {
+              return item;
+            }
+
+            const targetPrice = Number(target.targetPrice || 0);
+            return {
+              ...item,
+              profit: Number(target.expectedProfit || item.profit || 0),
+              targetPrice: targetPrice > 0 ? targetPrice : Number(item.targetPrice || 0),
+              targetValue: targetPrice > 0 ? targetPrice : Number(item.targetValue || 0)
+            };
+          });
+        });
+
         console.log(`🎯 Found ${matchedTargetOrders.length} target orders from positions/orders matching:`, 
           matchedTargetOrders.map(t => `${t.symbol}:${t.orderId}(${t.status})`));
       }
@@ -541,7 +622,17 @@ function App() {
     } finally {
       setPositionsOrdersLoading(false);
     }
-  }, [accessToken]);
+  }, [accessToken, identifyTargetOrders]);
+
+  // One-time immediate sync after token is available, so existing main/target orders are shown
+  // without depending on polling cycles.
+  useEffect(() => {
+    if (!accessToken) {
+      return;
+    }
+
+    fetchPositionsAndOrders();
+  }, [accessToken, fetchPositionsAndOrders]);
 
   // Do not auto-call positions/orders/margins on login.
   // Keep this data on-demand only to avoid repeated precheck API calls.
@@ -1159,6 +1250,19 @@ function App() {
       const preCalcInfo = stock.preCalculated ? `Qty=${stock.preCalculated.quantity}, Investment=₹${stock.preCalculated.investment.toFixed(2)}` : 'No pre-calc data';
       console.log(`${type === 'BUY' ? '🔵' : '🔴'} Attempting ${orderTypeText} ${type} order for ${stock.symbol} @ ₹${stock.ltp} (${preCalcInfo})`);
 
+      // User-facing notification for order placement attempt
+      setOrderNotification({
+        type: 'info',
+        title: `⏳ Placing ${orderTypeText} ${type} Order`,
+        message: `${stock.symbol} @ ₹${Number(stock.ltp || 0).toFixed(2)}`,
+        details: stock.preCalculated?.quantity ? `Qty: ${stock.preCalculated.quantity}` : 'Submitting order to broker...',
+        timestamp: new Date().toLocaleTimeString()
+      });
+
+      if (voiceEnabled) {
+        speak(`Placing ${type.toLowerCase()} order for ${stock.symbol}`);
+      }
+
       console.log(`🔎 Order submission for ${stock.symbol}: delegating precheck to backend order route`);
       
       // Prepare order data with pre-calculated quantities
@@ -1196,6 +1300,15 @@ function App() {
       
       if (result.success) {
         console.log(`✅ ${orderTypeText} ${type} order successful: ${stock.symbol} - Order ID: ${result.order_id}`);
+
+        setOrderNotification({
+          type: 'success',
+          title: `✅ ${orderTypeText} ${type} Order Placed`,
+          message: `${stock.symbol} order placed successfully`,
+          details: `Order ID: ${result.order_id || 'pending'}`,
+          timestamp: new Date().toLocaleTimeString()
+        });
+        setTimeout(() => setOrderNotification(null), 5000);
         
         // Open chart for successful orders
         openNamedChart(stock.symbol);
@@ -1203,6 +1316,23 @@ function App() {
         return { success: true, orderId: result.order_id };
       } else {
         console.log(`❌ ${orderTypeText} ${type} order failed: ${stock.symbol} - ${result.error}`);
+
+        const backendError = String(result.error || 'Order placement failed');
+        const backendSuggestion = result.suggestion ? String(result.suggestion) : '';
+        const composedDetails = backendSuggestion ? `${backendError}. ${backendSuggestion}` : backendError;
+
+        setOrderNotification({
+          type: 'error',
+          title: `❌ ${orderTypeText} ${type} Order Failed`,
+          message: `${stock.symbol}`,
+          details: composedDetails,
+          timestamp: new Date().toLocaleTimeString()
+        });
+        setTimeout(() => setOrderNotification(null), 8000);
+
+        if (voiceEnabled) {
+          speak(`${type} order failed for ${stock.symbol}. ${backendError}`);
+        }
 
         const errorText = String(result.error || '').toLowerCase();
         if (!isTargetOrder && (
@@ -1219,9 +1349,24 @@ function App() {
       }
     } catch (error) {
       console.error(`❌ ${type} order error for ${stock.symbol}:`, error);
+
+      const runtimeError = String(error?.message || 'Network or runtime error while placing order');
+      setOrderNotification({
+        type: 'error',
+        title: `❌ ${type} Order Error`,
+        message: `${stock.symbol}`,
+        details: runtimeError,
+        timestamp: new Date().toLocaleTimeString()
+      });
+      setTimeout(() => setOrderNotification(null), 8000);
+
+      if (voiceEnabled) {
+        speak(`${type} order error for ${stock.symbol}. ${runtimeError}`);
+      }
+
       return { success: false, error: error.message };
     }
-  }, [openNamedChart]);
+  }, [openNamedChart, voiceEnabled, speak]);
 
   // Scanner data fetch function
   const fetchScannerData = useCallback(async () => {
@@ -2205,6 +2350,44 @@ function App() {
             }, index * 500); // 500ms delay between each tab
           });
         }
+      } else if (data.type === 'enhanced_buy_order_executed' || data.type === 'enhanced_sell_order_executed') {
+        const side = data.type === 'enhanced_sell_order_executed' ? 'SELL' : 'BUY';
+        const symbol = String(data.symbol || '').trim();
+        if (!symbol) {
+          return;
+        }
+
+        const newOrder = {
+          symbol,
+          side,
+          orderId: data.order_id || null,
+          triggeredLtp: Number(data?.triggeredLtp || data?.criteria?.triggerLtp || data.ltp || 0),
+          executedPrice: Number(data.executedPrice || data.ltp || 0),
+          slippage: Number(data?.criteria?.actualSlippagePercent ?? data?.criteria?.expectedSlippagePercent ?? 0),
+          profit: Number(data?.criteria?.expectedProfit || 0),
+          targetPrice: Number(data?.criteria?.targetPrice || data?.targetPrice || 0),
+          targetValue: Number(data?.criteria?.targetPrice || data?.targetPrice || data?.criteria?.targetValue || 0),
+          timestamp: new Date().toISOString()
+        };
+
+        setExecutedTradeDetails((prev) => {
+          const safePrev = Array.isArray(prev) ? prev : [];
+          const existingIndex = safePrev.findIndex((item) =>
+            (newOrder.orderId && item.orderId === newOrder.orderId) ||
+            (!newOrder.orderId && item.symbol === newOrder.symbol && item.side === newOrder.side)
+          );
+
+          if (existingIndex >= 0) {
+            const updated = [...safePrev];
+            updated[existingIndex] = { ...updated[existingIndex], ...newOrder };
+            return updated;
+          }
+
+          return [newOrder, ...safePrev].slice(0, 20);
+        });
+
+        setShowExecutedTradeDetails(true);
+
       } else if (data.type === 'target_order_placed') {
         // Handle target order details for display (supports both {targetOrder} and {position} payload shapes)
         const rawTarget = data?.targetOrder || data?.position || null;
@@ -2246,9 +2429,28 @@ function App() {
 
           return newDetails;
         });
+
+        setExecutedTradeDetails((prev) => {
+          const safePrev = Array.isArray(prev) ? prev : [];
+          const targetPrice = Number(normalizedTargetOrder.targetPrice || 0);
+
+          return safePrev.map((item) => {
+            if (item.symbol !== normalizedTargetOrder.symbol) {
+              return item;
+            }
+
+            return {
+              ...item,
+              profit: Number(normalizedTargetOrder.expectedProfit || item.profit || 0),
+              targetPrice: targetPrice > 0 ? targetPrice : Number(item.targetPrice || 0),
+              targetValue: targetPrice > 0 ? targetPrice : Number(item.targetValue || 0)
+            };
+          });
+        });
         
         // Show the target order details section
         setShowTargetOrderDetails(true);
+        setShowExecutedTradeDetails(true);
 
         // Safety behavior: target order placement forces auto-trading OFF for new main orders.
         setAutoTradingEnabled(false);
@@ -2515,46 +2717,56 @@ function App() {
               </summary>
               <div style={{ padding: '10px 12px 12px' }}>
                 <div style={{ fontSize: '11px', color: '#93c5fd', fontWeight: 700, marginBottom: '8px' }}>
-                  All listed conditions must pass
+                  Conditions currently active in backend
+                </div>
+                <div style={{ marginBottom: '10px', padding: '10px', borderRadius: '10px', background: 'rgba(30, 41, 59, 0.45)', border: '1px solid rgba(148, 163, 184, 0.35)' }}>
+                  <div style={{ fontWeight: 800, fontSize: '12px', color: '#bfdbfe', marginBottom: '8px' }}>
+                    Low Price Scan Base Filters
+                  </div>
+                  <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
+                    <li>Universe: NSE CNX500 common stocks (pre-IPO excluded)</li>
+                    <li>Not blacklisted</li>
+                    <li>Price range: Close(1m) &gt; ₹100 and ≤ ₹4000</li>
+                    <li>Average 10-day volume &gt; 5,00,000</li>
+                  </ol>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
                   <div style={{ padding: '10px', borderRadius: '10px', background: 'rgba(20, 83, 45, 0.28)', border: '1px solid rgba(74, 222, 128, 0.35)' }}>
                     <div style={{ fontWeight: 800, fontSize: '12px', color: '#86efac', marginBottom: '8px' }}>
-                      Buy Conditions
+                      Low Price Buy Gates
                     </div>
                     <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
-                      <li>MACD(5m) &gt; Signal(5m)</li>
-                      <li>MACD(5m) &gt; 0</li>
-                      <li>ADX(5m) &gt; 20</li>
                       <li>+DI(5m) &gt; 25</li>
-                      <li>-DI(5m) &lt; 15</li>
-                      <li>EMA3(5m) &gt; EMA5(5m)</li>
-                      <li>RSI(5m) &gt; 60</li>
-                      <li>ADX(1m) &gt; 20</li>
-                      <li>+DI(1m) &gt; 25</li>
-                      <li>RSI(1m) &gt; 65</li>
-                      <li>EMA9(1m) &lt; EMA3(5m)</li>
+                      <li>|UBB(1m) - EMA3(1m)| / UBB(1m) ≤ 0.04%</li>
+                      <li>|UBB(5m) - EMA3(5m)| / UBB(5m) ≤ 0.04%</li>
+                      <li>LTP &lt; UBB(1m) OR LTP &lt; EMA3(1m)</li>
                     </ol>
                   </div>
 
                   <div style={{ padding: '10px', borderRadius: '10px', background: 'rgba(127, 29, 29, 0.28)', border: '1px solid rgba(248, 113, 113, 0.35)' }}>
                     <div style={{ fontWeight: 800, fontSize: '12px', color: '#fca5a5', marginBottom: '8px' }}>
-                      Sell Conditions
+                      Low Price Sell Gates
                     </div>
                     <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
-                      <li>MACD(5m) &lt; Signal(5m)</li>
-                      <li>MACD(5m) &lt; 0</li>
-                      <li>ADX(5m) &gt; 20</li>
                       <li>-DI(5m) &gt; 25</li>
-                      <li>+DI(5m) &lt; 15</li>
-                      <li>EMA3(5m) &lt; EMA5(5m)</li>
-                      <li>RSI(5m) &lt; 40</li>
-                      <li>ADX(1m) &gt; 20</li>
-                      <li>-DI(1m) &gt; 25</li>
-                      <li>RSI(1m) &lt; 35</li>
-                      <li>EMA9(1m) &gt; EMA3(5m)</li>
+                      <li>|LBB(1m) - EMA3(1m)| / LBB(1m) ≤ 0.04%</li>
+                      <li>|LBB(5m) - EMA3(5m)| / LBB(5m) ≤ 0.04%</li>
+                      <li>LTP &gt; LBB(1m) OR LTP &gt; EMA3(1m)</li>
                     </ol>
                   </div>
+                </div>
+
+                <div style={{ marginTop: '10px', padding: '10px', borderRadius: '10px', background: 'rgba(15, 23, 42, 0.7)', border: '1px solid rgba(59, 130, 246, 0.35)' }}>
+                  <div style={{ fontWeight: 800, fontSize: '12px', color: '#93c5fd', marginBottom: '8px' }}>
+                    Post-Subscription Trade Execution Gate
+                  </div>
+                  <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
+                    <li>Only one condition is used: expected slippage ≤ 0.04%</li>
+                    <li>Slippage is calculated from raw tick orderbook depth using top 5 levels (L1-L5)</li>
+                    <li>Both BUY and SELL trades are executed</li>
+                    <li>Subscriptions are based only on low-price scan stocks (no intersection/streak dependency)</li>
+                    <li>20-level depth enhancement is not used for execution</li>
+                  </ol>
                 </div>
               </div>
             </details>
@@ -2581,25 +2793,30 @@ function App() {
               </div>
             </details>
 
-            <SubscribedStockTracker 
-              tickData={tickData}
-              onOpenChart={openNamedChart}
-              subscribedCount={trackerSubscribedSymbols.length}
-              buySignalsCount={trackerBuyRows.length}
-              sellSignalsCount={trackerSellRows.length}
-              pollCountdown={pollCountdown}
-              subscribedSymbols={trackerSubscribedSymbols}
-              signalStocks={signalStocks}
-              emaCheckSignalStocks={{
-                buySignals: trackerBuyRows,
-                sellSignals: trackerSellRows
-              }}
-              marginsData={scannerMargins}
-              streakScanRows={streakScanData.rows}
-              streakScanCount={streakScanData.total}
-              technicalDetailRows={lowPriceScanStocks}
-              streakScanError={streakScanData.error}
-            />
+            {showExecutedTradeDetails && executedTradeDetails.length > 0 ? (
+              <ExecutedOrderDetailsPanel orders={executedTradeDetails} />
+            ) : (
+              <SubscribedStockTracker 
+                tickData={tickData}
+                onOpenChart={openNamedChart}
+                subscribedCount={trackerSubscribedSymbols.length}
+                buySignalsCount={trackerBuyRows.length}
+                sellSignalsCount={trackerSellRows.length}
+                pollCountdown={pollCountdown}
+                subscribedSymbols={trackerSubscribedSymbols}
+                signalStocks={signalStocks}
+                emaCheckSignalStocks={{
+                  buySignals: trackerBuyRows,
+                  sellSignals: trackerSellRows
+                }}
+                marginsData={scannerMargins}
+                streakScanRows={streakScanData.rows}
+                streakScanCount={streakScanData.total}
+                technicalDetailRows={lowPriceScanStocks}
+                executedTradeDetails={executedTradeDetails}
+                streakScanError={streakScanData.error}
+              />
+            )}
 
             {/* Streak-only mode: hide filter/crossover tables for now. */}
             {/*

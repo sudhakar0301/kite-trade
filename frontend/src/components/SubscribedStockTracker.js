@@ -53,6 +53,12 @@ const pulse = keyframes`
   100% { opacity: 0.6; transform: scale(1); }
 `;
 
+const slippageBlink = keyframes`
+  0% { opacity: 1; }
+  50% { opacity: 0.3; }
+  100% { opacity: 1; }
+`;
+
 // Terminal glow animation
 const terminalGlow = keyframes`
   0%, 100% { 
@@ -306,7 +312,8 @@ const SubscribedStockTracker = ({
   signalStocks = { buySignals: [], sellSignals: [] },
   emaCheckSignalStocks = null,
   marginsData = null,
-  technicalDetailRows = []
+  technicalDetailRows = [],
+  executedTradeDetails = []
 }) => {
   // State to track currently selected stock symbol
   const [selectedSymbol, setSelectedSymbol] = useState(null);
@@ -1533,309 +1540,9 @@ const SubscribedStockTracker = ({
           );
         })()}
 
-        {/* Technical details table under subscribed analyzer */}
-        {(() => {
-          const FIXED_GAP_THRESHOLD_PCT = 0.04;
-
-          const normalizeTechnicalRows = (rows) => (Array.isArray(rows) ? rows : []).map((row) => {
-            const symbol = extractSymbolName(row?.symbol || row?.seg_sym || row?.s || '');
-            const ltp = Number(row?.at || row?.ltp || row?.d?.[0] || 0);
-            const ema3_1 = Number(row?.ema3_1 || row?.d?.[36] || 0);
-            const ema3_5 = Number(row?.ema3_5 || row?.d?.[32] || 0);
-            const ubb_1 = Number(row?.ubb_1 || row?.d?.[41] || 0);
-            const lbb_1 = Number(row?.lbb_1 || row?.d?.[40] || 0);
-            const ubb_5 = Number(row?.ubb_5 || row?.d?.[27] || 0);
-            const lbb_5 = Number(row?.lbb_5 || row?.d?.[28] || 0);
-            const fourTickPct = FIXED_GAP_THRESHOLD_PCT;
-
-            const gap1mUbbPct = ubb_1 > 0 ? (Math.abs(ema3_1 - ubb_1) / ubb_1) * 100 : null;
-            const gap1mLbbPct = lbb_1 > 0 ? (Math.abs(ema3_1 - lbb_1) / lbb_1) * 100 : null;
-            const gap5mUbbPct = ubb_5 > 0 ? (Math.abs(ema3_5 - ubb_5) / ubb_5) * 100 : null;
-            const gap5mLbbPct = lbb_5 > 0 ? (Math.abs(ema3_5 - lbb_5) / lbb_5) * 100 : null;
-
-            const gap1mUbbPass = fourTickPct !== null && gap1mUbbPct !== null ? gap1mUbbPct <= fourTickPct : null;
-            const gap1mLbbPass = fourTickPct !== null && gap1mLbbPct !== null ? gap1mLbbPct <= fourTickPct : null;
-            const gap5mUbbPass = fourTickPct !== null && gap5mUbbPct !== null ? gap5mUbbPct <= fourTickPct : null;
-            const gap5mLbbPass = fourTickPct !== null && gap5mLbbPct !== null ? gap5mLbbPct <= fourTickPct : null;
-            const buyBandPass = ((ubb_1 > 0 && ltp < ubb_1) || (ema3_1 > 0 && ltp < ema3_1));
-            const sellBandPass = ((lbb_1 > 0 && ltp > lbb_1) || (ema3_1 > 0 && ltp > ema3_1));
-
-            const buyLowPricePass = gap1mUbbPass === true && gap5mUbbPass === true && buyBandPass === true;
-            const sellLowPricePass = gap1mLbbPass === true && gap5mLbbPass === true && sellBandPass === true;
-
-            return {
-              symbol,
-              token: row?.token || null,
-              ltp,
-              ema3_1,
-              ema3_5,
-              ubb_1,
-              lbb_1,
-              ubb_5,
-              lbb_5,
-              fourTickPct,
-              gap1mUbbPct,
-              gap1mLbbPct,
-              gap5mUbbPct,
-              gap5mLbbPct,
-              gap1mUbbPass,
-              gap1mLbbPass,
-              gap5mUbbPass,
-              gap5mLbbPass,
-              buyBandPass,
-              sellBandPass,
-              buyLowPricePass,
-              sellLowPricePass,
-              lowPriceSignalType: buyLowPricePass && sellLowPricePass ? 'BOTH' : buyLowPricePass ? 'BUY' : sellLowPricePass ? 'SELL' : null
-            };
-          });
-
-          const technicalRows = normalizeTechnicalRows(technicalDetailRows);
-          const subscribedSet = new Set(getSubscribedStocks().map((sym) => String(extractSymbolName(sym || '')).toUpperCase()));
-          const visibleRows = technicalRows.filter((row) => {
-            const symbolMatched = subscribedSet.size === 0 || subscribedSet.has(String(row.symbol || '').toUpperCase());
-            return symbolMatched && (row.buyLowPricePass || row.sellLowPricePass);
-          });
-
-          const renderSymbolCell = (row) => (
-            row.symbol ? (
-              <button
-                type="button"
-                onClick={() => onOpenChart && onOpenChart({ symbol: row.symbol, token: row.token }, 'technical-details')}
-                style={{ background: 'transparent', border: 'none', padding: 0, margin: 0, color: '#1d4ed8', textDecoration: 'underline', cursor: 'pointer', fontWeight: 700, fontSize: '11px' }}
-                title={`Open ${row.symbol} chart`}
-              >
-                {row.symbol}
-              </button>
-            ) : '-'
-          );
-
-          return (
-            <div style={{ marginTop: '10px', marginBottom: '12px' }}>
-              <div style={{ background: '#f8fafc', border: '1px solid #bfdbfe', borderRadius: '8px', padding: '10px' }}>
-                <div style={{ fontSize: '13px', fontWeight: 700, color: '#1e3a8a', marginBottom: '8px', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-                  Technical Details (Qualified BUY/SELL Low-Price Pass Only) ({visibleRows.length})
-                </div>
-
-                {visibleRows.length === 0 ? (
-                  <div style={{ padding: '8px', color: '#64748b' }}>No technical rows available yet.</div>
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <div>
-                      <div style={{ marginBottom: '6px', fontSize: '12px', fontWeight: 700, color: '#0f766e' }}>1min (BUY and SELL)</div>
-                      <div style={{ overflowX: 'auto' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1060px', fontSize: '11px' }}>
-                          <thead>
-                            <tr style={{ background: '#f1f5f9' }}>
-                              <th style={{ padding: '6px', textAlign: 'left', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Symbol</th>
-                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Type</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>LTP</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>4 Tick %</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>EMA3(1m)</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY UBB(1m)</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY Gap%</th>
-                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY Pass</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL LBB(1m)</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL Gap%</th>
-                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL Pass</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {visibleRows.map((row, idx) => {
-                              const showBuy = row.lowPriceSignalType === 'BUY' || row.lowPriceSignalType === 'BOTH';
-                              const showSell = row.lowPriceSignalType === 'SELL' || row.lowPriceSignalType === 'BOTH';
-                              return (
-                                <tr key={`tech1m-${row.symbol}-${idx}`}>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a', fontWeight: 600 }}>{renderSymbolCell(row)}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: row.lowPriceSignalType === 'BUY' ? '#166534' : row.lowPriceSignalType === 'SELL' ? '#991b1b' : '#1d4ed8', fontWeight: 700 }}>{row.lowPriceSignalType || '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ltp > 0 ? `₹${row.ltp.toFixed(2)}` : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a', fontWeight: 700 }}>{row.fourTickPct !== null ? `${row.fourTickPct.toFixed(4)}%` : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ema3_1 > 0 ? row.ema3_1.toFixed(2) : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{showBuy && row.ubb_1 > 0 ? row.ubb_1.toFixed(2) : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: showBuy ? '#166534' : '#64748b', fontWeight: 700 }}>{showBuy && row.gap1mUbbPct !== null ? `${row.gap1mUbbPct.toFixed(4)}%` : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showBuy || row.gap1mUbbPass === null ? '#64748b' : row.gap1mUbbPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showBuy || row.gap1mUbbPass === null ? '-' : row.gap1mUbbPass ? 'YES' : 'NO'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{showSell && row.lbb_1 > 0 ? row.lbb_1.toFixed(2) : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: showSell ? '#991b1b' : '#64748b', fontWeight: 700 }}>{showSell && row.gap1mLbbPct !== null ? `${row.gap1mLbbPct.toFixed(4)}%` : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showSell || row.gap1mLbbPass === null ? '#64748b' : row.gap1mLbbPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showSell || row.gap1mLbbPass === null ? '-' : row.gap1mLbbPass ? 'YES' : 'NO'}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div style={{ marginBottom: '6px', fontSize: '12px', fontWeight: 700, color: '#1e3a8a' }}>5min (BUY and SELL)</div>
-                      <div style={{ overflowX: 'auto' }}>
-                        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '1120px', fontSize: '11px' }}>
-                          <thead>
-                            <tr style={{ background: '#f1f5f9' }}>
-                              <th style={{ padding: '6px', textAlign: 'left', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Symbol</th>
-                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Type</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>LTP</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>4 Tick %</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>EMA3(5m)</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY UBB(5m)</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY Gap%</th>
-                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY Pass</th>
-                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>BUY (LTP&lt;UBB1 OR LTP&lt;EMA3)</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL LBB(5m)</th>
-                              <th style={{ padding: '6px', textAlign: 'right', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL Gap%</th>
-                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL Pass</th>
-                              <th style={{ padding: '6px', textAlign: 'center', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>SELL (LTP&gt;LBB1 OR LTP&gt;EMA3)</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {visibleRows.map((row, idx) => {
-                              const showBuy = row.lowPriceSignalType === 'BUY' || row.lowPriceSignalType === 'BOTH';
-                              const showSell = row.lowPriceSignalType === 'SELL' || row.lowPriceSignalType === 'BOTH';
-                              return (
-                                <tr key={`tech5m-${row.symbol}-${idx}`}>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a', fontWeight: 600 }}>{renderSymbolCell(row)}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: row.lowPriceSignalType === 'BUY' ? '#166534' : row.lowPriceSignalType === 'SELL' ? '#991b1b' : '#1d4ed8', fontWeight: 700 }}>{row.lowPriceSignalType || '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ltp > 0 ? `₹${row.ltp.toFixed(2)}` : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a', fontWeight: 700 }}>{row.fourTickPct !== null ? `${row.fourTickPct.toFixed(4)}%` : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{row.ema3_5 > 0 ? row.ema3_5.toFixed(2) : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{showBuy && row.ubb_5 > 0 ? row.ubb_5.toFixed(2) : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: showBuy ? '#166534' : '#64748b', fontWeight: 700 }}>{showBuy && row.gap5mUbbPct !== null ? `${row.gap5mUbbPct.toFixed(4)}%` : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showBuy || row.gap5mUbbPass === null ? '#64748b' : row.gap5mUbbPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showBuy || row.gap5mUbbPass === null ? '-' : row.gap5mUbbPass ? 'YES' : 'NO'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showBuy || row.buyBandPass === null ? '#64748b' : row.buyBandPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showBuy || row.buyBandPass === null ? '-' : row.buyBandPass ? 'YES' : 'NO'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>{showSell && row.lbb_5 > 0 ? row.lbb_5.toFixed(2) : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: showSell ? '#991b1b' : '#64748b', fontWeight: 700 }}>{showSell && row.gap5mLbbPct !== null ? `${row.gap5mLbbPct.toFixed(4)}%` : '-'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showSell || row.gap5mLbbPass === null ? '#64748b' : row.gap5mLbbPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showSell || row.gap5mLbbPass === null ? '-' : row.gap5mLbbPass ? 'YES' : 'NO'}</td>
-                                  <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', textAlign: 'center', color: !showSell || row.sellBandPass === null ? '#64748b' : row.sellBandPass ? '#166534' : '#b91c1c', fontWeight: 700 }}>{!showSell || row.sellBandPass === null ? '-' : row.sellBandPass ? 'YES' : 'NO'}</td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })()}
-
-        {/* Streak-only BUY/SELL stocks below Technical Details */}
-        {(() => {
-          const effectiveSignalStocks = emaCheckSignalStocks || signalStocks;
-          const normalizeSymbol = (value) => String(extractSymbolName(value || '') || '').trim();
-
-          const normalizeRows = (rows) => {
-            const source = Array.isArray(rows) ? rows : [];
-            const bySymbol = new Map();
-
-            source.forEach((row) => {
-              const symbol = normalizeSymbol(typeof row === 'string' ? row : (row?.symbol || row?.s || row?.seg_sym));
-              if (!symbol) return;
-
-              if (!bySymbol.has(symbol)) {
-                bySymbol.set(symbol, {
-                  symbol,
-                  token: row?.token || null
-                });
-              }
-            });
-
-            return Array.from(bySymbol.values());
-          };
-
-          const streakBuyRows = normalizeRows(effectiveSignalStocks?.buySignals);
-          const streakSellRows = normalizeRows(effectiveSignalStocks?.sellSignals);
-
-          const renderSymbolButton = (row) => (
-            row.symbol ? (
-              <button
-                type="button"
-                onClick={() => onOpenChart && onOpenChart({ symbol: row.symbol, token: row.token }, 'streak-only-signals')}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  padding: 0,
-                  margin: 0,
-                  color: '#1d4ed8',
-                  textDecoration: 'underline',
-                  cursor: 'pointer',
-                  fontWeight: 700,
-                  fontSize: '11px'
-                }}
-                title={`Open ${row.symbol} chart`}
-              >
-                {row.symbol}
-              </button>
-            ) : '-'
-          );
-
-          return (
-            <div style={{ marginTop: '10px', marginBottom: '12px' }}>
-              <div style={{ background: '#f8fafc', border: '1px solid #cbd5e1', borderRadius: '8px', padding: '10px' }}>
-                <div style={{ fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '8px', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-                  Streak-Only Stocks (Below Technical Details)
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                  <div>
-                    <div style={{ marginBottom: '6px', fontSize: '12px', fontWeight: 700, color: '#166534' }}>
-                      BUY ({streakBuyRows.length})
-                    </div>
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '220px', fontSize: '11px' }}>
-                        <thead>
-                          <tr style={{ background: '#f1f5f9' }}>
-                            <th style={{ padding: '6px', textAlign: 'left', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Symbol</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {streakBuyRows.length === 0 ? (
-                            <tr>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#64748b' }}>No streak BUY stocks</td>
-                            </tr>
-                          ) : streakBuyRows.map((row, idx) => (
-                            <tr key={`streak-buy-${row.symbol}-${idx}`}>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a' }}>{renderSymbolButton(row)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div style={{ marginBottom: '6px', fontSize: '12px', fontWeight: 700, color: '#991b1b' }}>
-                      SELL ({streakSellRows.length})
-                    </div>
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '220px', fontSize: '11px' }}>
-                        <thead>
-                          <tr style={{ background: '#f1f5f9' }}>
-                            <th style={{ padding: '6px', textAlign: 'left', borderBottom: '1px solid #e2e8f0', color: '#334155' }}>Symbol</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {streakSellRows.length === 0 ? (
-                            <tr>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#64748b' }}>No streak SELL stocks</td>
-                            </tr>
-                          ) : streakSellRows.map((row, idx) => (
-                            <tr key={`streak-sell-${row.symbol}-${idx}`}>
-                              <td style={{ padding: '6px', borderBottom: '1px solid #f1f5f9', color: '#0f172a' }}>{renderSymbolButton(row)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
-        
         {/* Real-Time Order Book Display */}
         {selectedSymbol && (() => {
+          const MAX_ALLOWED_SLIPPAGE_PERCENT = 0.04;
           const symbolKey = extractSymbolName(selectedSymbol);
           const symbolData = tickData?.[symbolKey];
           const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;
@@ -1850,6 +1557,68 @@ const SubscribedStockTracker = ({
             scan_type: 'PENDING',
             timestamp: new Date().toISOString()
           };
+
+          const scanType = latestTick?.scan_type || displayTick?.scan_type;
+          const currentPrice = latestTick?.last_price || latestTick?.ltp || displayTick?.last_price || displayTick?.ltp || 0;
+          const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
+          const calcQuantity = fundsBasedQty > 0 ? fundsBasedQty :
+            latestTick?.calculated_quantity ||
+            latestTick?.calculated_quantity_buy ||
+            latestTick?.calculated_quantity_sell ||
+            latestTick?.marketImpact?.buy?.quantity ||
+            latestTick?.marketImpact?.sell?.quantity ||
+            latestTick?.calculatedQuantity ||
+            latestTick?.quantity ||
+            latestTick?.target_quantity ||
+            latestTick?.targetQuantity || 0;
+
+          const calculateSlippagePercent = (levels, firstLevelPrice, isBuy) => {
+            if (!(calcQuantity > 0) || !Array.isArray(levels) || levels.length === 0 || !(firstLevelPrice > 0)) {
+              return null;
+            }
+
+            let remainingQty = calcQuantity;
+            let totalValue = 0;
+            let filledQty = 0;
+
+            for (const level of levels) {
+              if (remainingQty <= 0) break;
+              const levelPrice = Number(level?.price || 0);
+              const levelQty = Number(level?.quantity || 0);
+
+              if (levelPrice > 0 && levelQty > 0) {
+                const fillQty = Math.min(remainingQty, levelQty);
+                totalValue += fillQty * levelPrice;
+                filledQty += fillQty;
+                remainingQty -= fillQty;
+              }
+            }
+
+            if (!(filledQty > 0) || !(totalValue > 0)) {
+              return null;
+            }
+
+            const avgPrice = totalValue / filledQty;
+            const pct = isBuy
+              ? ((avgPrice - firstLevelPrice) / firstLevelPrice) * 100
+              : ((firstLevelPrice - avgPrice) / firstLevelPrice) * 100;
+            return Number.isFinite(pct) ? pct : null;
+          };
+
+          const buySlippagePct = calculateSlippagePercent(rawDepth?.sell, Number(rawDepth?.sell?.[0]?.price || 0), true);
+          const sellSlippagePct = calculateSlippagePercent(rawDepth?.buy, Number(rawDepth?.buy?.[0]?.price || 0), false);
+
+          const normalizedSelectedSymbol = String(symbolKey || '').toUpperCase();
+          const hasPlacedOrderForSide = (side) => (Array.isArray(executedTradeDetails) ? executedTradeDetails : []).some((order) => {
+            const orderSymbol = String(extractSymbolName(order?.symbol || '') || '').toUpperCase();
+            const orderSide = String(order?.side || '').toUpperCase();
+            return orderSymbol === normalizedSelectedSymbol && orderSide === side;
+          });
+
+          const buyOrderPlaced = hasPlacedOrderForSide('BUY');
+          const sellOrderPlaced = hasPlacedOrderForSide('SELL');
+          const shouldBlinkBuySlippage = scanType === 'BUY_SCAN' && !buyOrderPlaced && buySlippagePct !== null && buySlippagePct > MAX_ALLOWED_SLIPPAGE_PERCENT;
+          const shouldBlinkSellSlippage = scanType === 'SELL_SCAN' && !sellOrderPlaced && sellSlippagePct !== null && sellSlippagePct > MAX_ALLOWED_SLIPPAGE_PERCENT;
           
           if (!rawDepth || !rawDepth.buy || !rawDepth.sell) {
             return null;
@@ -2113,100 +1882,14 @@ const SubscribedStockTracker = ({
                 </div>
                 <div>
                   <div style={{ color: '#6b7280', fontSize: '9px' }}>BUY SLIP</div>
-                  <div style={{ color: '#dc2626', fontWeight: '600' }}>
-                    {(() => {
-                      // Calculate funds-based quantity first
-                      const currentPrice = latestTick?.last_price || latestTick?.ltp || displayTick?.last_price || displayTick?.ltp || 0;
-                      const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
-                      
-                      // Try multiple sources for calculated quantity (prioritize funds-based calculation)
-                      const calcQuantity = fundsBasedQty > 0 ? fundsBasedQty :
-                                          latestTick?.calculated_quantity_buy || // Specific buy quantity
-                                          latestTick?.calculated_quantity || 
-                                          latestTick?.marketImpact?.buy?.quantity ||
-                                          latestTick?.calculatedQuantity ||
-                                          latestTick?.quantity ||
-                                          latestTick?.target_quantity ||
-                                          latestTick?.targetQuantity || 0;
-                      const bestAsk = rawDepth.sell?.[0]?.price || 0;
-                      
-                      console.log('BUY SLIP Debug:', { calcQuantity, bestAsk, sellDepth: rawDepth.sell });
-                      
-                      if (calcQuantity > 0 && Array.isArray(rawDepth.sell) && rawDepth.sell.length > 0 && bestAsk > 0) {
-                        let remainingQty = calcQuantity;
-                        let totalCost = 0;
-                        let filledQty = 0;
-                        
-                        for (const level of rawDepth.sell) {
-                          if (remainingQty <= 0) break;
-                          const levelPrice = level.price || 0;
-                          const levelQty = level.quantity || 0;
-                          
-                          if (levelPrice > 0 && levelQty > 0) {
-                            const fillQty = Math.min(remainingQty, levelQty);
-                            totalCost += fillQty * levelPrice;
-                            filledQty += fillQty;
-                            remainingQty -= fillQty;
-                          }
-                        }
-                        
-                        if (filledQty > 0 && totalCost > 0) {
-                          const avgPrice = totalCost / filledQty;
-                          const slippage = ((avgPrice - bestAsk) / bestAsk) * 100;
-                          return `${slippage.toFixed(3)}%`;
-                        }
-                      }
-                      return 'N/A';
-                    })()}
+                  <div style={{ color: '#dc2626', fontWeight: '600', animation: shouldBlinkBuySlippage ? `${slippageBlink} 0.9s linear infinite` : 'none' }}>
+                    {buySlippagePct !== null ? `${buySlippagePct.toFixed(3)}%` : 'N/A'}
                   </div>
                 </div>
                 <div>
                   <div style={{ color: '#6b7280', fontSize: '9px' }}>SELL SLIP</div>
-                  <div style={{ color: '#059669', fontWeight: '600' }}>
-                    {(() => {
-                      // Calculate funds-based quantity first
-                      const currentPrice = latestTick?.last_price || latestTick?.ltp || displayTick?.last_price || displayTick?.ltp || 0;
-                      const fundsBasedQty = calculateQuantityFromFunds(currentPrice);
-                      
-                      // Try multiple sources for calculated quantity (prioritize funds-based calculation)
-                      const calcQuantity = fundsBasedQty > 0 ? fundsBasedQty :
-                                          latestTick?.calculated_quantity_sell || // Specific sell quantity
-                                          latestTick?.calculated_quantity || 
-                                          latestTick?.marketImpact?.sell?.quantity ||
-                                          latestTick?.calculatedQuantity ||
-                                          latestTick?.quantity ||
-                                          latestTick?.target_quantity ||
-                                          latestTick?.targetQuantity || 0;
-                      const bestBid = rawDepth.buy?.[0]?.price || 0;
-                      
-                      console.log('SELL SLIP Debug:', { calcQuantity, bestBid, buyDepth: rawDepth.buy });
-                      
-                      if (calcQuantity > 0 && Array.isArray(rawDepth.buy) && rawDepth.buy.length > 0 && bestBid > 0) {
-                        let remainingQty = calcQuantity;
-                        let totalValue = 0;
-                        let filledQty = 0;
-                        
-                        for (const level of rawDepth.buy) {
-                          if (remainingQty <= 0) break;
-                          const levelPrice = level.price || 0;
-                          const levelQty = level.quantity || 0;
-                          
-                          if (levelPrice > 0 && levelQty > 0) {
-                            const fillQty = Math.min(remainingQty, levelQty);
-                            totalValue += fillQty * levelPrice;
-                            filledQty += fillQty;
-                            remainingQty -= fillQty;
-                          }
-                        }
-                        
-                        if (filledQty > 0 && totalValue > 0) {
-                          const avgPrice = totalValue / filledQty;
-                          const slippage = ((bestBid - avgPrice) / bestBid) * 100;
-                          return `${slippage.toFixed(3)}%`;
-                        }
-                      }
-                      return 'N/A';
-                    })()}
+                  <div style={{ color: '#059669', fontWeight: '600', animation: shouldBlinkSellSlippage ? `${slippageBlink} 0.9s linear infinite` : 'none' }}>
+                    {sellSlippagePct !== null ? `${sellSlippagePct.toFixed(3)}%` : 'N/A'}
                   </div>
                 </div>
                 <div>
