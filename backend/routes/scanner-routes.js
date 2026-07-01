@@ -3593,16 +3593,66 @@ router.post('/low-price-scanners', async (req, res) => {
         const globalFunds = scanPrecheck.globalFunds;
         console.log(`💰 Using global funds: Available=₹${globalFunds.availableFunds.toLocaleString('en-IN')}, Leveraged=₹${globalFunds.leverageFunds.toLocaleString('en-IN')}, Usable=₹${globalFunds.usableFunds.toLocaleString('en-IN')}`);
 
-        const stocksPayload = buildLowPriceScannerPayload();
-        const stocksResult = await makeScannorCall(stocksPayload, 'low-price-stocks-scan', req.body);
+        const buyTechnicalPrefilters = [
+            // 15m direct filters
+            { left: 'ADX+DI|15', operation: 'greater', right: 25 },
+            { left: 'MACD.macd|15', operation: 'greater', right: 'MACD.signal|15' },
+
+            // 5m direct filters
+            { left: 'MACD.macd|5', operation: 'greater', right: 'MACD.signal|5' },
+            { left: 'ADX+DI|5', operation: 'greater', right: 25 },
+            { left: 'ADX+DI|5', operation: 'greater', right: 'ADX|5' },
+            { left: 'ADX|5', operation: 'greater', right: 'ADX-DI|5' },
+            { left: 'RSI|5', operation: 'greater', right: 60 },
+
+            // 1m direct filters
+            { left: 'MACD.macd|1', operation: 'greater', right: 'MACD.signal|1' },
+            { left: 'MACD.macd|1', operation: 'greater', right: 0 },
+            { left: 'ADX+DI|1', operation: 'greater', right: 25 },
+            { left: 'ADX+DI|1', operation: 'greater', right: 'ADX|1' },
+            { left: 'ADX|1', operation: 'greater', right: 'ADX-DI|1' },
+            { left: 'RSI|1', operation: 'greater', right: 60 },
+            { left: 'EMA3|1', operation: 'greater', right: 'EMA5|1' }
+        ];
+
+        const sellTechnicalPrefilters = [
+            // 15m direct filters
+            { left: 'ADX-DI|15', operation: 'greater', right: 25 },
+            { left: 'MACD.macd|15', operation: 'less', right: 'MACD.signal|15' },
+
+            // 5m direct filters
+            { left: 'MACD.macd|5', operation: 'less', right: 'MACD.signal|5' },
+            { left: 'ADX-DI|5', operation: 'greater', right: 25 },
+            { left: 'ADX-DI|5', operation: 'greater', right: 'ADX|5' },
+            { left: 'ADX|5', operation: 'greater', right: 'ADX+DI|5' },
+            { left: 'RSI|5', operation: 'less', right: 40 },
+
+            // 1m direct filters
+            { left: 'MACD.macd|1', operation: 'less', right: 'MACD.signal|1' },
+            { left: 'MACD.macd|1', operation: 'less', right: 0 },
+            { left: 'ADX-DI|1', operation: 'greater', right: 25 },
+            { left: 'ADX-DI|1', operation: 'greater', right: 'ADX|1' },
+            { left: 'ADX|1', operation: 'greater', right: 'ADX+DI|1' },
+            { left: 'RSI|1', operation: 'less', right: 40 },
+            { left: 'EMA3|1', operation: 'less', right: 'EMA5|1' }
+        ];
+
+        const buyStocksPayload = buildLowPriceScannerPayload(buyTechnicalPrefilters);
+        const sellStocksPayload = buildLowPriceScannerPayload(sellTechnicalPrefilters);
+
+        const [buyStocksResult, sellStocksResult] = await Promise.all([
+            makeScannorCall(buyStocksPayload, 'low-price-buy-stocks-scan', req.body),
+            makeScannorCall(sellStocksPayload, 'low-price-sell-stocks-scan', req.body)
+        ]);
 
         const duration = Date.now() - startTime;
         console.log(`⚡ Low price stocks scanner completed in ${duration}ms`);
 
-        // Extract and transform data from TradingView response
-        const allStocks = extractTradingViewStocks(stocksResult);
+        const buyCandidateStocks = extractTradingViewStocks(buyStocksResult);
+        const sellCandidateStocks = extractTradingViewStocks(sellStocksResult);
+        const allStocks = mergeStocksBySymbol(buyCandidateStocks, sellCandidateStocks);
 
-        console.log(`📊 Low Price Scanner Results: ${allStocks.length} stocks (≤₹4000)`);
+        console.log(`📊 Low Price Scanner Candidate Results: BUY=${buyCandidateStocks.length}, SELL=${sellCandidateStocks.length}, UNION=${allStocks.length}`);
 
         // 💰 Use global funds for quantity pre-calculation (already declared earlier)
         let fundsCalculationError = null;
@@ -3620,8 +3670,22 @@ router.post('/low-price-scanners', async (req, res) => {
                 
         // Enhanced scanner processing with pre-calculated quantities
         
-        // Enrich all stocks with technical data
+        // Enrich all scanner candidates with technical data
         const enrichedStocks = allStocks.map(enrichLowPriceStockData);
+        const buyCandidateSymbolSet = new Set(
+            buyCandidateStocks
+                .map((stock) => String(stock?.s || '').trim())
+                .map((symbol) => (symbol.includes(':') ? symbol.split(':')[1] : symbol))
+                .map((symbol) => String(symbol || '').trim().toUpperCase())
+                .filter(Boolean)
+        );
+        const sellCandidateSymbolSet = new Set(
+            sellCandidateStocks
+                .map((stock) => String(stock?.s || '').trim())
+                .map((symbol) => (symbol.includes(':') ? symbol.split(':')[1] : symbol))
+                .map((symbol) => String(symbol || '').trim().toUpperCase())
+                .filter(Boolean)
+        );
         const pureCrossoverStocks = [];
         const pureCrossdownStocks = [];
         const separateCrossoverStocks = [];
@@ -3652,38 +3716,87 @@ router.post('/low-price-scanners', async (req, res) => {
         // DEBUG: Track condition pass counts
         let conditionStats = {
             total_stocks: 0,
-            buy_condition_passes: Array(15).fill(0),
-            sell_condition_passes: Array(15).fill(0),
+            buy_condition_passes: Array(20).fill(0),
+            sell_condition_passes: Array(20).fill(0),
             ema_1min_issues: [],
             orders_attempted: 0,
             orders_successful: 0,
             orders_failed: 0
         };
 
-        const FIXED_GAP_THRESHOLD_PCT = 0.04;
+        function getDynamicGapThresholdsByPrice(price) {
+            const ltp = Number(price || 0);
 
-        console.log('🎛️ Low-price scan simplified: applying only low-price gates (no DI/MACD/RSI filters).');
+            // First value = 1m threshold (%), second value = 5m threshold (%).
+            if (ltp >= 50 && ltp < 250) {
+                return { gap1mPct: 0.016, gap5mPct: 0.08 };
+            }
+
+            if (ltp >= 250 && ltp < 1000) {
+                return { gap1mPct: 0.02, gap5mPct: 0.08 };
+            }
+
+            if (ltp >= 1000 && ltp < 5000) {
+                return { gap1mPct: 0.008, gap5mPct: 0.04 };
+            }
+
+            // 5000+
+            return { gap1mPct: 0.02, gap5mPct: 0.08 };
+        }
+
+        console.log('🎛️ Low-price scan using strict multi-timeframe BUY filters (15m + 5m + 1m).');
 
         enrichedStocks.forEach(async (stock) => {
             conditionStats.total_stocks++;
+            const normalizedSymbol = String(stock?.symbol || '').trim().toUpperCase();
+            const isBuyCandidate = buyCandidateSymbolSet.has(normalizedSymbol);
+            const isSellCandidate = sellCandidateSymbolSet.has(normalizedSymbol);
+            // Enforce exclusive candidate type: BUY takes precedence when symbol appears in both lists.
+            const candidateType = isBuyCandidate ? 'BUY' : (isSellCandidate ? 'SELL' : null);
+            const eligibleForBuy = candidateType === 'BUY';
+            const eligibleForSell = candidateType === 'SELL';
+            stock.candidateType = candidateType;
             
             const ubb1 = Number(stock.ubb_1 || 0);
             const ubb5 = Number(stock.ubb_5 || 0);
             const ema3_5 = Number(stock.ema3_5 || 0);
-            const fixedGapThresholdPct = FIXED_GAP_THRESHOLD_PCT;
-            const ema3GapPctFromUbb = ubb1 > 0
-                ? (Math.abs(Number(stock.ema3_1 || 0) - ubb1) / ubb1) * 100
+            const ema3_1 = Number(stock.ema3_1 || 0);
+            const ltp = Number(stock.ltp || 0);
+            const { gap1mPct, gap5mPct } = getDynamicGapThresholdsByPrice(ltp);
+            const ema3GapPctFromUbb1 = ubb1 > 0
+                ? (Math.abs(ema3_1 - ubb1) / ubb1) * 100
                 : Number.POSITIVE_INFINITY;
             const ema3GapPctFromUbb5 = ubb5 > 0
                 ? (Math.abs(ema3_5 - ubb5) / ubb5) * 100
                 : Number.POSITIVE_INFINITY;
+            const ltpGapPctFromUbb1 = ubb1 > 0
+                ? (Math.abs(ltp - ubb1) / ubb1) * 100
+                : Number.POSITIVE_INFINITY;
 
-            // BUY CONDITIONS (low-price gates only)
+            // BUY CONDITIONS (strict multi-timeframe filters)
             const buyConditions = [
-                Number(stock.plusDI5 || 0) > 25, // +DI (5m) > 25
-                ema3GapPctFromUbb <= fixedGapThresholdPct, // |UBB(1m)-EMA3(1m)| <= 0.04%
-                ema3GapPctFromUbb5 <= fixedGapThresholdPct, // |UBB(5m)-EMA3(5m)| <= 0.04%
-                (ubb1 > 0 && Number(stock.ltp || 0) < ubb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) < Number(stock.ema3_1 || 0)) // LTP < UBB(1m) OR LTP < EMA3(1m)
+                // 15m
+                Number(stock.plusDI15 || 0) > 25,
+                Number(stock.macd15 || 0) > Number(stock.signal15 || 0),
+
+                // 5m
+                Number(stock.macd5 || 0) > Number(stock.signal5 || 0),
+                Number(stock.plusDI5 || 0) > 25,
+                Number(stock.plusDI5 || 0) > Number(stock.adx5 || 0),
+                Number(stock.adx5 || 0) > Number(stock.minusDI5 || 0),
+                Number(stock.rsi5 || 0) > 60,
+                ema3GapPctFromUbb5 < gap5mPct,
+
+                // 1m
+                Number(stock.macd1 || 0) > Number(stock.signal1 || 0),
+                Number(stock.macd1 || 0) > 0,
+                Number(stock.plusDI1 || 0) > 25,
+                Number(stock.plusDI1 || 0) > Number(stock.adx1 || 0),
+                Number(stock.adx1 || 0) > Number(stock.minusDI1 || 0),
+                Number(stock.rsi1 || 0) > 60,
+                ema3GapPctFromUbb1 < gap1mPct,
+                ltpGapPctFromUbb1 <= gap1mPct,
+                Number(stock.ema3_1 || 0) > Number(stock.ema5_1 || 0)
             ];
 
             // Track condition pass counts
@@ -3700,22 +3813,55 @@ router.post('/low-price-scanners', async (req, res) => {
             const ema3GapPctFromLbb5 = lbb5 > 0
                 ? (Math.abs(ema3_5 - lbb5) / lbb5) * 100
                 : Number.POSITIVE_INFINITY;
+            const ltpGapPctFromLbb1 = lbb1 > 0
+                ? (Math.abs(ltp - lbb1) / lbb1) * 100
+                : Number.POSITIVE_INFINITY;
 
             const sellConditions = [
-                Number(stock.minusDI5 || 0) > 25, // -DI (5m) > 25
-                Number(stock.macd5 || 0) < Number(stock.signal5 || 0), // MACD (5m) < Signal (5m)
-                Number(stock.ema3_15 || 0) < Number(stock.mbb_1 || 0), // EMA3 (15m) < MBB
-                ema3GapPctFromLbb <= fixedGapThresholdPct, // |LBB(1m)-EMA3(1m)| <= 0.04%
-                ema3GapPctFromLbb5 <= fixedGapThresholdPct, // |LBB(5m)-EMA3(5m)| <= 0.04%
-                (lbb1 > 0 && Number(stock.ltp || 0) > lbb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) > Number(stock.ema3_1 || 0)), // LTP > LBB(1m) OR LTP > EMA3(1m)
-                Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) > Number(stock.ema3_1 || 0) // LTP > EMA3(1m)
+                // 15m
+                Number(stock.minusDI15 || 0) > 25,
+                Number(stock.macd15 || 0) < Number(stock.signal15 || 0),
+
+                // 5m
+                Number(stock.macd5 || 0) < Number(stock.signal5 || 0),
+                Number(stock.minusDI5 || 0) > 25,
+                Number(stock.minusDI5 || 0) > Number(stock.adx5 || 0),
+                Number(stock.adx5 || 0) > Number(stock.plusDI5 || 0),
+                Number(stock.rsi5 || 0) < 40,
+                ema3GapPctFromLbb5 < gap5mPct,
+
+                // 1m
+                Number(stock.macd1 || 0) < Number(stock.signal1 || 0),
+                Number(stock.macd1 || 0) < 0,
+                Number(stock.minusDI1 || 0) > 25,
+                Number(stock.minusDI1 || 0) > Number(stock.adx1 || 0),
+                Number(stock.adx1 || 0) > Number(stock.plusDI1 || 0),
+                Number(stock.rsi1 || 0) < 40,
+                ema3GapPctFromLbb < gap1mPct,
+                ltpGapPctFromLbb1 <= gap1mPct,
+                Number(stock.ema3_1 || 0) < Number(stock.ema5_1 || 0)
             ];
             
             
-            const isBuySignal = buyConditions.every(condition => condition === true);
-            const isSellSignal = sellConditions.every(condition => condition === true);
+            const isBuySignal = eligibleForBuy && buyConditions.every(condition => condition === true);
+            const isSellSignal = eligibleForSell && sellConditions.every(condition => condition === true);
+
+            stock.conditionEvaluation = {
+                candidateType,
+                eligibleForBuy,
+                eligibleForSell,
+                buyAllPassed: isBuySignal,
+                sellAllPassed: isSellSignal,
+                buyPassedCount: buyConditions.filter(Boolean).length,
+                sellPassedCount: sellConditions.filter(Boolean).length,
+                buyTotalConditions: buyConditions.length,
+                sellTotalConditions: sellConditions.length,
+                buyChecks: buyConditions.map((condition) => Boolean(condition)),
+                sellChecks: sellConditions.map((condition) => Boolean(condition))
+            };
             
             if (isBuySignal) {
+                stock.candidateType = 'BUY';
                 // 💰 Pre-calculate quantity based on global funds
                 let preCalculatedQuantity = 0;
                 let maxPossibleQuantity = 0;
@@ -3755,6 +3901,7 @@ router.post('/low-price-scanners', async (req, res) => {
             }
 
             if (isSellSignal) {
+                stock.candidateType = 'SELL';
                 // 💰 Pre-calculate quantity for SELL orders based on global funds
                 let preCalculatedQuantity = 0;
                 let maxPossibleQuantity = 0;
@@ -3805,21 +3952,6 @@ router.post('/low-price-scanners', async (req, res) => {
         });
         // DEBUG: Print condition statistics
         console.log('🔍 CONDITION ANALYSIS:');
-        const conditionLabels = [
-            '+DI (1m) > 25',
-            '+DI (1m) > ADX (1m)',
-            'ADX (1m) > -DI (1m)',
-            'MACD (1m) > Signal (1m)',
-            'MACD (1m) > 0',
-            'EMA3 (1m) > EMA5 (1m)',
-            'RSI (1m) > 65',
-            'EMA9 (1m) > MBB (1m)',
-            '|UBB (1m) - EMA3 (1m)| <= 0.05%',
-            'LTP < UBB (5m)',
-            'LTP < UBB (15m)',
-            'MACD (5m) > 0',
-            '+DI (5m) > -DI (5m)'
-        ];
        
     
 
@@ -4006,8 +4138,20 @@ router.post('/low-price-scanners', async (req, res) => {
             },
             scanPayloads: [
                 {
+                    id: 'low_price_buy_scan',
+                    payload: buyStocksPayload
+                },
+                {
+                    id: 'low_price_sell_scan',
+                    payload: sellStocksPayload
+                },
+                {
                     id: 'low_price_scan',
-                    payload: stocksPayload
+                    payload: {
+                        mode: 'combined_buy_sell_candidates',
+                        buyPrefilters: buyTechnicalPrefilters,
+                        sellPrefilters: sellTechnicalPrefilters
+                    }
                 },
                 ...crossScanPayloads.map((scan) => ({
                     id: scan.id,
@@ -4019,10 +4163,35 @@ router.post('/low-price-scanners', async (req, res) => {
             ],
             scanResponses: [
                 {
+                    id: 'low_price_buy_scan',
+                    success: Boolean(buyStocksResult?.success),
+                    count: buyCandidateStocks.length,
+                    rawResponse: buyStocksResult?.data || null
+                },
+                {
+                    id: 'low_price_sell_scan',
+                    success: Boolean(sellStocksResult?.success),
+                    count: sellCandidateStocks.length,
+                    rawResponse: sellStocksResult?.data || null
+                },
+                {
                     id: 'low_price_scan',
-                    success: Boolean(stocksResult?.success),
+                    success: Boolean(buyStocksResult?.success || sellStocksResult?.success),
                     count: enrichedStocks.length,
-                    rawResponse: stocksResult?.data || null
+                    rawResponse: {
+                        data: enrichedStocks,
+                        unfilteredCandidateRows: allStocks,
+                        orderPlacementGate: {
+                            mainOrdersAllowed: mainOrdersAllowedInScan,
+                            positionsFound: precheckActivePositions.length > 0,
+                            openOrdersFound: precheckOpenOrders.length > 0,
+                            note: 'Scan rows are returned in full regardless of order placement gate.'
+                        },
+                        sources: {
+                            buy: buyStocksResult?.data || null,
+                            sell: sellStocksResult?.data || null
+                        }
+                    }
                 },
                 ...crossScanResponses.map((scanResponse) => ({
                     id: scanResponse.id,
@@ -5962,12 +6131,19 @@ router.get('/positions', async (req, res) => {
             });
         }
         
-        // Get positions using same logic as webhook server
-        const activePositions = await getActivePositions(access_token);
+        // Return full net positions (including zero quantity rows) for response tab visibility.
+        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
+        kite.setAccessToken(access_token);
+        const positionsResponse = await kite.getPositions();
+        const allNetPositions = Array.isArray(positionsResponse?.net) ? positionsResponse.net : [];
+        const activePositions = allNetPositions.filter((pos) => Number(pos?.quantity || 0) !== 0);
         
         res.json({
             success: true,
-            positions: activePositions,
+            positions: allNetPositions,
+            activePositions,
+            totalCount: allNetPositions.length,
+            activeCount: activePositions.length,
             timestamp: new Date().toISOString()
         });
         

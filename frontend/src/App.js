@@ -7,8 +7,6 @@ import OrderExecutionPanel from './components/OrderExecutionPanel';
 import SubscribedStockTracker from './components/SubscribedStockTracker';
 import ExecutedOrderDetailsPanel from './components/ExecutedOrderDetailsPanel';
 // import ScanResultsTables from './components/ScanResultsTables'; // Hidden for streak-only flow
-import PositionsOrdersTable from './components/PositionsOrdersTable'; // NEW: Positions and Orders display
-import TargetOrderDetails from './components/TargetOrderDetails'; // NEW: Target order details display
 // import SignalFilterPlayground from './components/SignalFilterPlayground';
 // import AlgorithmTutorial from './components/AlgorithmTutorial';
 import {
@@ -39,6 +37,8 @@ const STREAK_BUY_5MIN_CONDITION_STORAGE_KEY = 'streak_buy_5min_condition';
 const STREAK_SELL_1MIN_CONDITION_STORAGE_KEY = 'streak_sell_1min_condition';
 const STREAK_SELL_5MIN_CONDITION_STORAGE_KEY = 'streak_sell_5min_condition';
 const EXECUTED_ORDER_DETAILS_STORAGE_KEY = 'executed_order_details_history';
+const EXECUTION_METADATA_STORAGE_KEY = 'executed_order_metadata_by_symbol_v1';
+const USE_POSITIONS_ONLY_EXECUTED_DETAILS = true;
 const USE_STREAK_SCAN_ONLY = false;
 const BUY_FILTER_KEYS = [
   'plusDiAbove25_1mBuy',
@@ -95,6 +95,27 @@ const persistHistory = (storageKey, value) => {
   }
 };
 
+const loadExecutionMetadata = () => {
+  try {
+    const raw = localStorage.getItem(EXECUTION_METADATA_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    console.warn('Failed to read execution metadata cache', error);
+    return {};
+  }
+};
+
+const saveExecutionMetadata = (value) => {
+  try {
+    const safeValue = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    localStorage.setItem(EXECUTION_METADATA_STORAGE_KEY, JSON.stringify(safeValue));
+  } catch (error) {
+    console.warn('Failed to persist execution metadata cache', error);
+  }
+};
+
 const toFiniteNumber = (value, fallback = 0) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -103,6 +124,21 @@ const toFiniteNumber = (value, fallback = 0) => {
 
 
 function App() {
+  const upsertExecutionMetadata = useCallback((symbol, patch = {}) => {
+    const normalizedSymbol = String(symbol || '').trim().toUpperCase();
+    if (!normalizedSymbol) return;
+
+    const current = loadExecutionMetadata();
+    const existing = current[normalizedSymbol] || {};
+    current[normalizedSymbol] = {
+      ...existing,
+      ...patch,
+      symbol: normalizedSymbol,
+      updatedAt: new Date().toISOString()
+    };
+    saveExecutionMetadata(current);
+  }, []);
+
   const sanitizeHeaderValue = useCallback((value) => {
     if (value === undefined || value === null) return '';
     return String(value).replace(/[\r\n]+/g, ' ').trim();
@@ -231,11 +267,13 @@ function App() {
   const [executedTradeDetails, setExecutedTradeDetails] = useState(() => {
     const restored = loadPersistedHistory(EXECUTED_ORDER_DETAILS_STORAGE_KEY);
     return restored.map((item) => {
-      const isCurrent = Boolean(item?.isCurrent);
+      const status = String(item?.orderStatus || item?.tag || '').toUpperCase();
+      const isCurrent = status ? status === 'OPEN' : Boolean(item?.isCurrent);
       return {
         ...item,
         isCurrent,
-        tag: isCurrent ? 'Current' : 'History'
+        orderStatus: isCurrent ? 'OPEN' : 'CLOSED',
+        tag: isCurrent ? 'OPEN' : 'CLOSED'
       };
     });
   });
@@ -543,10 +581,13 @@ function App() {
       
       let positions = [];
       let orders = [];
+      let positionsSnapshotTimestamp = new Date().toISOString();
+      const executionMetadataBySymbol = loadExecutionMetadata();
       
       if (positionsRes.ok) {
         const posData = await positionsRes.json();
         positions = posData.positions || [];
+        positionsSnapshotTimestamp = posData?.timestamp || positionsSnapshotTimestamp;
       }
       
       if (ordersRes.ok) {
@@ -568,78 +609,102 @@ function App() {
       setOrdersData(orders);
       setLastPositionsOrdersUpdate(new Date().toLocaleTimeString());
 
-      // Hydrate executed/main-order style rows from currently open positions immediately.
+      // Hydrate executed/main-order style rows from positions payload.
+      // Include closed intraday rows (quantity=0) when they have day trade activity, so PnL is visible.
       const existingPositionRows = (Array.isArray(positions) ? positions : [])
-        .filter((pos) => Number(pos?.quantity || 0) !== 0)
+        .filter((pos) => {
+          const netQty = Number(pos?.quantity || 0);
+          const hasDayTrades =
+            Number(pos?.day_buy_quantity || 0) > 0 ||
+            Number(pos?.day_sell_quantity || 0) > 0 ||
+            Number(pos?.buy_quantity || 0) > 0 ||
+            Number(pos?.sell_quantity || 0) > 0;
+          return netQty !== 0 || hasDayTrades;
+        })
         .map((pos) => {
           const quantity = Number(pos?.quantity || 0);
-          const side = quantity > 0 ? 'BUY' : 'SELL';
+          const isActivePosition = quantity !== 0;
           const symbol = String(pos?.tradingsymbol || '').trim();
-          const executedPrice = Number(pos?.average_price || pos?.price || 0);
+          const symbolKey = symbol.toUpperCase();
+          const executionMeta = executionMetadataBySymbol[symbolKey] || {};
+          const dayBuyQty = Number(pos?.day_buy_quantity || pos?.buy_quantity || 0);
+          const daySellQty = Number(pos?.day_sell_quantity || pos?.sell_quantity || 0);
+          const inferredSide = quantity > 0
+            ? 'BUY'
+            : (quantity < 0
+              ? 'SELL'
+              : (dayBuyQty > 0 && daySellQty > 0
+                ? 'CLOSED'
+                : (dayBuyQty > 0 ? 'BUY' : (daySellQty > 0 ? 'SELL' : 'CLOSED'))));
+          const sideFromExecution = String(executionMeta?.sideAtExecution || '').toUpperCase();
+          const liveProfitLoss = Number(
+            pos?.pnl ?? pos?.unrealised ?? pos?.m2m ?? 0
+          );
 
-          // Try to pick the latest complete main order for better timestamp/order id context.
-          const latestMainOrder = (Array.isArray(orders) ? orders : [])
-            .filter((order) =>
-              String(order?.tradingsymbol || '') === symbol &&
-              String(order?.transaction_type || '').toUpperCase() === side &&
-              String(order?.status || '').toUpperCase() === 'COMPLETE'
-            )
-            .sort((a, b) => new Date(b?.order_timestamp || 0) - new Date(a?.order_timestamp || 0))[0];
+          const side = sideFromExecution || String(inferredSide || 'CLOSED').toUpperCase();
+          const dayEntryPrice = side === 'SELL'
+            ? Number(pos?.day_sell_price || pos?.sell_price || 0)
+            : Number(pos?.day_buy_price || pos?.buy_price || 0);
+          const metadataExecutedPrice = Number(executionMeta?.executedPrice || 0);
+          const executedPrice = Number(
+            metadataExecutedPrice ||
+            pos?.average_price ||
+            dayEntryPrice ||
+            pos?.last_price ||
+            0
+          );
+
+          const displayQuantity = Math.max(
+            Math.abs(quantity),
+            side === 'SELL' ? daySellQty : dayBuyQty,
+            0
+          );
 
           return {
             symbol,
             side,
-            orderId: latestMainOrder?.order_id || null,
-            triggeredLtp: null,
+            orderId: null,
+            quantity: displayQuantity,
+            triggeredLtp: Number.isFinite(Number(executionMeta?.triggeredLtp))
+              ? Number(executionMeta.triggeredLtp)
+              : null,
             executedPrice,
-            slippage: null,
+            slippage: Number.isFinite(Number(executionMeta?.slippage))
+              ? Number(executionMeta.slippage)
+              : null,
             profit: 0,
-            targetPrice: 0,
-            targetValue: 0,
-            timestamp: latestMainOrder?.order_timestamp || new Date().toISOString(),
-            isCurrent: true,
-            tag: 'Current'
+            profitLoss: Number.isFinite(liveProfitLoss) ? liveProfitLoss : 0,
+            targetPrice: Number.isFinite(Number(executionMeta?.targetPrice))
+              ? Number(executionMeta.targetPrice)
+              : 0,
+            targetValue: Number.isFinite(Number(executionMeta?.targetPrice))
+              ? Number(executionMeta.targetPrice)
+              : 0,
+            timestamp: executionMeta?.timestamp || positionsSnapshotTimestamp,
+            isCurrent: isActivePosition,
+            orderStatus: isActivePosition ? 'OPEN' : 'CLOSED',
+            tag: isActivePosition ? 'OPEN' : 'CLOSED'
           };
         })
         .filter((row) => row.symbol);
 
       if (existingPositionRows.length > 0) {
-        setExecutedTradeDetails((prev) => {
-          const safePrev = Array.isArray(prev) ? prev : [];
-          const merged = safePrev.map((item) => ({ ...item, isCurrent: false, tag: 'History' }));
-
-          existingPositionRows.forEach((row) => {
-            const existingIndex = merged.findIndex((item) =>
-              (row.orderId && item.orderId === row.orderId) ||
-              (!row.orderId && item.symbol === row.symbol && item.side === row.side)
-            );
-
-            if (existingIndex >= 0) {
-              const existing = merged[existingIndex] || {};
-              const existingTriggeredLtp = Number(existing?.triggeredLtp);
-              const normalizedExistingTriggeredLtp = Number.isFinite(existingTriggeredLtp) && existingTriggeredLtp > 0
-                ? existingTriggeredLtp
-                : null;
-              merged[existingIndex] = {
-                ...existing,
-                ...row,
-                // Do not clobber known slippage/trigger values with placeholder hydration defaults.
-                triggeredLtp: row.triggeredLtp ?? normalizedExistingTriggeredLtp,
-                slippage: row.slippage ?? existing.slippage ?? null
-              };
-            }
+        const uniqueBySymbol = new Map();
+        existingPositionRows.forEach((row) => {
+          if (!row?.symbol) return;
+          uniqueBySymbol.set(String(row.symbol).trim().toUpperCase(), {
+            ...row
           });
-
-          return merged
-            .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
         });
 
+        const nextRows = Array.from(uniqueBySymbol.values())
+          .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+
+        // Keep executed details sourced only from positions payload.
+        setExecutedTradeDetails(nextRows);
         setShowExecutedTradeDetails(true);
       } else {
-        setExecutedTradeDetails((prev) => {
-          const safePrev = Array.isArray(prev) ? prev : [];
-          return safePrev.map((item) => ({ ...item, isCurrent: false, tag: 'History' }));
-        });
+        setExecutedTradeDetails([]);
       }
       
       // Match positions with orders to identify target orders
@@ -2435,6 +2500,47 @@ function App() {
       } else if (data.type === 'enhanced_buy_order_executed' || data.type === 'enhanced_sell_order_executed') {
         const side = data.type === 'enhanced_sell_order_executed' ? 'SELL' : 'BUY';
         const symbol = String(data.symbol || '').trim();
+
+        // Always persist execution-time metadata for later positions-based rendering.
+        if (symbol) {
+          const triggeredLtp = toFiniteNumber(
+            data?.triggeredLtp
+              ?? data?.criteria?.triggeredLtp
+              ?? data?.criteria?.triggerLtp
+              ?? data?.criteria?.ltp
+              ?? data?.ltp,
+            NaN
+          );
+          const executedPrice = toFiniteNumber(
+            data?.executedPrice
+              ?? data?.criteria?.executedAvgPrice
+              ?? data?.criteria?.executedPrice,
+            NaN
+          );
+          let slippage = toFiniteNumber(
+            data?.criteria?.actualSlippagePercent
+              ?? data?.actualSlippagePercent,
+            NaN
+          );
+          if (!Number.isFinite(slippage) && Number.isFinite(triggeredLtp) && triggeredLtp > 0 && Number.isFinite(executedPrice) && executedPrice > 0) {
+            slippage = (Math.abs(executedPrice - triggeredLtp) / triggeredLtp) * 100;
+          }
+
+          upsertExecutionMetadata(symbol, {
+            sideAtExecution: side,
+            timestamp: new Date().toISOString(),
+            triggeredLtp: Number.isFinite(triggeredLtp) && triggeredLtp > 0 ? triggeredLtp : null,
+            executedPrice: Number.isFinite(executedPrice) && executedPrice > 0 ? executedPrice : null,
+            slippage: Number.isFinite(slippage) ? slippage : null,
+            targetPrice: Number(data?.criteria?.targetPrice || data?.targetPrice || 0) || null,
+            orderId: data?.order_id || null
+          });
+        }
+
+        if (USE_POSITIONS_ONLY_EXECUTED_DETAILS) {
+          // Executed order details are derived from /positions only to avoid duplicate rows.
+          return;
+        }
         if (!symbol) {
           return;
         }
@@ -2443,6 +2549,7 @@ function App() {
           symbol,
           side,
           orderId: data.order_id || null,
+          quantity: toFiniteNumber(data?.quantity ?? data?.criteria?.quantity, NaN),
           triggeredLtp: toFiniteNumber(
             data?.triggeredLtp
               ?? data?.criteria?.triggeredLtp
@@ -2464,6 +2571,13 @@ function App() {
             NaN
           ),
           profit: Number(data?.criteria?.expectedProfit || 0),
+          profitLoss: toFiniteNumber(
+            data?.criteria?.profitLoss
+              ?? data?.criteria?.pnl
+              ?? data?.profitLoss
+              ?? data?.pnl,
+            NaN
+          ),
           targetPrice: Number(data?.criteria?.targetPrice || data?.targetPrice || 0),
           targetValue: Number(data?.criteria?.targetPrice || data?.targetPrice || data?.criteria?.targetValue || 0),
           timestamp: new Date().toISOString(),
@@ -2476,6 +2590,12 @@ function App() {
         }
         if (!Number.isFinite(newOrder.executedPrice) || newOrder.executedPrice <= 0) {
           newOrder.executedPrice = null;
+        }
+        if (!Number.isFinite(newOrder.quantity) || newOrder.quantity <= 0) {
+          newOrder.quantity = null;
+        }
+        if (!Number.isFinite(newOrder.profitLoss)) {
+          newOrder.profitLoss = null;
         }
 
         newOrder.slippage = toFiniteNumber(
@@ -2579,6 +2699,12 @@ function App() {
           orderType: rawTarget.orderType || 'TARGET'
         };
 
+        // Persist target price metadata so positions-only executed details can display it.
+        upsertExecutionMetadata(normalizedTargetOrder.symbol, {
+          targetPrice: Number(normalizedTargetOrder.targetPrice || 0) || null,
+          timestamp: normalizedTargetOrder.placedAt || new Date().toISOString()
+        });
+
         setTargetOrderDetails(prevDetails => {
           const safePrev = (prevDetails || []).filter(order => order && order.symbol);
           const existingIndex = safePrev.findIndex(order => order.orderId && normalizedTargetOrder.orderId && order.orderId === normalizedTargetOrder.orderId);
@@ -2594,38 +2720,43 @@ function App() {
           return newDetails;
         });
 
-        setExecutedTradeDetails((prev) => {
-          const safePrev = Array.isArray(prev) ? prev : [];
-          const targetPrice = Number(normalizedTargetOrder.targetPrice || 0);
+        if (!USE_POSITIONS_ONLY_EXECUTED_DETAILS) {
+          setExecutedTradeDetails((prev) => {
+            const safePrev = Array.isArray(prev) ? prev : [];
+            const targetPrice = Number(normalizedTargetOrder.targetPrice || 0);
 
-          const existingIndex = safePrev.findIndex((item) =>
-            String(item?.symbol || '') === String(normalizedTargetOrder.symbol || '')
-          );
+            const existingIndex = safePrev.findIndex((item) =>
+              String(item?.symbol || '') === String(normalizedTargetOrder.symbol || '')
+            );
 
-          if (existingIndex >= 0) {
-            const updated = [...safePrev];
-            const existing = updated[existingIndex] || {};
-            updated[existingIndex] = {
-              ...existing,
-              symbol: normalizedTargetOrder.symbol,
-              side: existing.side || normalizedTargetOrder.side,
-              // Keep known trigger/slippage values from executed event if already available.
-              triggeredLtp: existing.triggeredLtp ?? null,
-              executedPrice: existing.executedPrice ?? (Number(normalizedTargetOrder.avgPrice || 0) > 0 ? Number(normalizedTargetOrder.avgPrice) : null),
-              slippage: existing.slippage ?? null,
-              profit: Number(normalizedTargetOrder.expectedProfit || existing.profit || 0),
-              targetPrice: targetPrice > 0 ? targetPrice : Number(existing.targetPrice || 0),
-              targetValue: targetPrice > 0 ? targetPrice : Number(existing.targetValue || 0),
-              timestamp: existing.timestamp || normalizedTargetOrder.placedAt || new Date().toISOString(),
-              isCurrent: true,
-              tag: 'Current'
-            };
-            return updated;
-          }
+            if (existingIndex >= 0) {
+              const updated = [...safePrev];
+              const existing = updated[existingIndex] || {};
+              updated[existingIndex] = {
+                ...existing,
+                symbol: normalizedTargetOrder.symbol,
+                side: existing.side || normalizedTargetOrder.side,
+                // Keep known trigger/slippage values from executed event if already available.
+                triggeredLtp: existing.triggeredLtp ?? null,
+                executedPrice: existing.executedPrice ?? (Number(normalizedTargetOrder.avgPrice || 0) > 0 ? Number(normalizedTargetOrder.avgPrice) : null),
+                slippage: existing.slippage ?? null,
+                profit: Number(normalizedTargetOrder.expectedProfit || existing.profit || 0),
+                profitLoss: Number.isFinite(Number(existing.profitLoss))
+                  ? Number(existing.profitLoss)
+                  : null,
+                targetPrice: targetPrice > 0 ? targetPrice : Number(existing.targetPrice || 0),
+                targetValue: targetPrice > 0 ? targetPrice : Number(existing.targetValue || 0),
+                timestamp: existing.timestamp || normalizedTargetOrder.placedAt || new Date().toISOString(),
+                isCurrent: true,
+                tag: 'Current'
+              };
+              return updated;
+            }
 
-          // Do not add placeholder rows from target events; wait for actual execution payload.
-          return safePrev;
-        });
+            // Do not add placeholder rows from target events; wait for actual execution payload.
+            return safePrev;
+          });
+        }
         
         // Show the target order details section
         setShowTargetOrderDetails(true);
@@ -2954,29 +3085,11 @@ function App() {
               </div>
             </details>
 
-            <details style={{ marginBottom: '12px', border: '1px solid rgba(148, 163, 184, 0.35)', borderRadius: '10px', background: 'rgba(15, 23, 42, 0.75)' }}>
-              <summary style={{ cursor: 'pointer', padding: '10px 12px', fontWeight: 800, fontSize: '13px', color: '#e2e8f0' }}>
-                Positions, Orders, and Targets (Click to Expand)
-              </summary>
-              <div style={{ padding: '10px 12px 12px' }}>
-                <PositionsOrdersTable 
-                  positions={positionsData}
-                  orders={ordersData}
-                  loading={positionsOrdersLoading}
-                  error={positionsOrdersError}
-                  lastUpdated={lastPositionsOrdersUpdate}
-                  onRefresh={fetchPositionsAndOrders}
-                />
-
-                <TargetOrderDetails 
-                  targetOrders={targetOrderDetails}
-                  isVisible={showTargetOrderDetails}
-                  onClose={() => setShowTargetOrderDetails(false)}
-                />
-              </div>
-            </details>
-
-            <ExecutedOrderDetailsPanel orders={executedTradeDetails} />
+            <ExecutedOrderDetailsPanel
+              orders={executedTradeDetails}
+              activePositions={(positionsData || []).filter((pos) => Number(pos?.quantity || 0) !== 0)}
+              openOrders={ordersData || []}
+            />
 
             {!hasActivePositions && (
               <SubscribedStockTracker 
