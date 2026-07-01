@@ -38,6 +38,7 @@ const STREAK_BUY_1MIN_CONDITION_STORAGE_KEY = 'streak_buy_1min_condition';
 const STREAK_BUY_5MIN_CONDITION_STORAGE_KEY = 'streak_buy_5min_condition';
 const STREAK_SELL_1MIN_CONDITION_STORAGE_KEY = 'streak_sell_1min_condition';
 const STREAK_SELL_5MIN_CONDITION_STORAGE_KEY = 'streak_sell_5min_condition';
+const EXECUTED_ORDER_DETAILS_STORAGE_KEY = 'executed_order_details_history';
 const USE_STREAK_SCAN_ONLY = false;
 const BUY_FILTER_KEYS = [
   'plusDiAbove25_1mBuy',
@@ -92,6 +93,11 @@ const persistHistory = (storageKey, value) => {
   } catch (error) {
     console.warn(`Failed to persist history for key: ${storageKey}`, error);
   }
+};
+
+const toFiniteNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 };
 
 
@@ -222,7 +228,17 @@ function App() {
   // NEW: Target Order Details
   const [targetOrderDetails, setTargetOrderDetails] = useState([]);
   const [showTargetOrderDetails, setShowTargetOrderDetails] = useState(false);
-  const [executedTradeDetails, setExecutedTradeDetails] = useState([]);
+  const [executedTradeDetails, setExecutedTradeDetails] = useState(() => {
+    const restored = loadPersistedHistory(EXECUTED_ORDER_DETAILS_STORAGE_KEY);
+    return restored.map((item) => {
+      const isCurrent = Boolean(item?.isCurrent);
+      return {
+        ...item,
+        isCurrent,
+        tag: isCurrent ? 'Current' : 'History'
+      };
+    });
+  });
   const [showExecutedTradeDetails, setShowExecutedTradeDetails] = useState(false);
 
   // NEW: Signal Stocks Tracking for Tick-Driven Execution
@@ -318,6 +334,56 @@ function App() {
   useEffect(() => {
     persistHistory(QUALIFIED_LOW_PRICE_STORAGE_KEY, qualifiedLowPriceStocks);
   }, [qualifiedLowPriceStocks]);
+
+  useEffect(() => {
+    persistHistory(EXECUTED_ORDER_DETAILS_STORAGE_KEY, executedTradeDetails);
+  }, [executedTradeDetails]);
+
+  useEffect(() => {
+    setExecutedTradeDetails((prev) => {
+      const safePrev = Array.isArray(prev) ? prev : [];
+      let changed = false;
+
+      const next = safePrev.map((item) => {
+        const triggeredLtp = Number(item?.triggeredLtp);
+        const executedPrice = Number(item?.executedPrice);
+        const currentSlippage = Number(item?.slippage);
+        let nextItem = item;
+
+        // Normalize placeholder values from old rows.
+        if (!Number.isFinite(triggeredLtp) || triggeredLtp <= 0) {
+          if (item?.triggeredLtp !== null) {
+            changed = true;
+            nextItem = { ...nextItem, triggeredLtp: null };
+          }
+        }
+
+        if (!Number.isFinite(executedPrice) || executedPrice <= 0) {
+          if (item?.executedPrice !== null || item?.slippage !== null) {
+            changed = true;
+            nextItem = { ...nextItem, executedPrice: null, slippage: null };
+          }
+          return nextItem;
+        }
+
+        const normalizedTriggeredLtp = Number(nextItem?.triggeredLtp);
+        if (Number.isFinite(normalizedTriggeredLtp) && normalizedTriggeredLtp > 0 && Number.isFinite(executedPrice) && executedPrice > 0) {
+          const computedSlippage = (Math.abs(executedPrice - normalizedTriggeredLtp) / normalizedTriggeredLtp) * 100;
+          if (!Number.isFinite(currentSlippage) || Math.abs(currentSlippage - computedSlippage) > 0.000001) {
+            changed = true;
+            return {
+              ...nextItem,
+              slippage: computedSlippage
+            };
+          }
+        }
+
+        return nextItem;
+      });
+
+      return changed ? next : safePrev;
+    });
+  }, []);
 
   useEffect(() => {
     try {
@@ -524,12 +590,15 @@ function App() {
             symbol,
             side,
             orderId: latestMainOrder?.order_id || null,
+            triggeredLtp: null,
             executedPrice,
-            slippage: 0,
+            slippage: null,
             profit: 0,
             targetPrice: 0,
             targetValue: 0,
-            timestamp: latestMainOrder?.order_timestamp || new Date().toISOString()
+            timestamp: latestMainOrder?.order_timestamp || new Date().toISOString(),
+            isCurrent: true,
+            tag: 'Current'
           };
         })
         .filter((row) => row.symbol);
@@ -537,7 +606,7 @@ function App() {
       if (existingPositionRows.length > 0) {
         setExecutedTradeDetails((prev) => {
           const safePrev = Array.isArray(prev) ? prev : [];
-          const merged = [...safePrev];
+          const merged = safePrev.map((item) => ({ ...item, isCurrent: false, tag: 'History' }));
 
           existingPositionRows.forEach((row) => {
             const existingIndex = merged.findIndex((item) =>
@@ -546,18 +615,31 @@ function App() {
             );
 
             if (existingIndex >= 0) {
-              merged[existingIndex] = { ...merged[existingIndex], ...row };
-            } else {
-              merged.push(row);
+              const existing = merged[existingIndex] || {};
+              const existingTriggeredLtp = Number(existing?.triggeredLtp);
+              const normalizedExistingTriggeredLtp = Number.isFinite(existingTriggeredLtp) && existingTriggeredLtp > 0
+                ? existingTriggeredLtp
+                : null;
+              merged[existingIndex] = {
+                ...existing,
+                ...row,
+                // Do not clobber known slippage/trigger values with placeholder hydration defaults.
+                triggeredLtp: row.triggeredLtp ?? normalizedExistingTriggeredLtp,
+                slippage: row.slippage ?? existing.slippage ?? null
+              };
             }
           });
 
           return merged
-            .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))
-            .slice(0, 20);
+            .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
         });
 
         setShowExecutedTradeDetails(true);
+      } else {
+        setExecutedTradeDetails((prev) => {
+          const safePrev = Array.isArray(prev) ? prev : [];
+          return safePrev.map((item) => ({ ...item, isCurrent: false, tag: 'History' }));
+        });
       }
       
       // Match positions with orders to identify target orders
@@ -2361,14 +2443,53 @@ function App() {
           symbol,
           side,
           orderId: data.order_id || null,
-          triggeredLtp: Number(data?.triggeredLtp || data?.criteria?.triggerLtp || data.ltp || 0),
-          executedPrice: Number(data.executedPrice || data.ltp || 0),
-          slippage: Number(data?.criteria?.actualSlippagePercent ?? data?.criteria?.expectedSlippagePercent ?? 0),
+          triggeredLtp: toFiniteNumber(
+            data?.triggeredLtp
+              ?? data?.criteria?.triggeredLtp
+              ?? data?.criteria?.triggerLtp
+              ?? data?.criteria?.ltp
+              ?? data?.ltp,
+            NaN
+          ),
+          executedPrice: toFiniteNumber(
+            data?.executedPrice
+              ?? data?.criteria?.executedAvgPrice
+              ?? data?.criteria?.executedPrice,
+            NaN
+          ),
+          slippage: null,
+          expectedSlippagePercent: toFiniteNumber(
+            data?.criteria?.expectedSlippagePercent
+              ?? data?.expectedSlippagePercent,
+            NaN
+          ),
           profit: Number(data?.criteria?.expectedProfit || 0),
           targetPrice: Number(data?.criteria?.targetPrice || data?.targetPrice || 0),
           targetValue: Number(data?.criteria?.targetPrice || data?.targetPrice || data?.criteria?.targetValue || 0),
-          timestamp: new Date().toISOString()
+          timestamp: new Date().toISOString(),
+          isCurrent: true,
+          tag: 'Current'
         };
+
+        if (!Number.isFinite(newOrder.triggeredLtp) || newOrder.triggeredLtp <= 0) {
+          newOrder.triggeredLtp = null;
+        }
+        if (!Number.isFinite(newOrder.executedPrice) || newOrder.executedPrice <= 0) {
+          newOrder.executedPrice = null;
+        }
+
+        newOrder.slippage = toFiniteNumber(
+          data?.criteria?.actualSlippagePercent
+            ?? data?.actualSlippagePercent,
+          NaN
+        );
+        if (!Number.isFinite(newOrder.slippage)) {
+          if (newOrder.triggeredLtp > 0 && newOrder.executedPrice > 0) {
+            newOrder.slippage = Math.abs(newOrder.executedPrice - newOrder.triggeredLtp) / newOrder.triggeredLtp * 100;
+          } else {
+            newOrder.slippage = null;
+          }
+        }
 
         setExecutedTradeDetails((prev) => {
           const safePrev = Array.isArray(prev) ? prev : [];
@@ -2383,10 +2504,53 @@ function App() {
             return updated;
           }
 
-          return [newOrder, ...safePrev].slice(0, 20);
+          return [newOrder, ...safePrev];
         });
 
         setShowExecutedTradeDetails(true);
+
+        // Ensure executed price uses broker-reported average fill price from order history.
+        if (newOrder.orderId && accessToken) {
+          try {
+            const avgPriceResponse = await fetch(
+              `http://localhost:5000/api/order-average-price?order_id=${encodeURIComponent(newOrder.orderId)}`,
+              {
+                headers: {
+                  ...(accessToken && { 'Authorization': `Bearer ${accessToken}` })
+                }
+              }
+            );
+
+            if (avgPriceResponse.ok) {
+              const avgPricePayload = await avgPriceResponse.json();
+              const avgPrice = Number(avgPricePayload?.averagePrice || 0);
+
+              if (Number.isFinite(avgPrice) && avgPrice > 0) {
+                setExecutedTradeDetails((prev) => {
+                  const safePrev = Array.isArray(prev) ? prev : [];
+                  return safePrev.map((item) => {
+                    if (String(item?.orderId || '') !== String(newOrder.orderId)) {
+                      return item;
+                    }
+
+                    const trigger = Number(item?.triggeredLtp);
+                    const recomputedSlippage = Number.isFinite(trigger) && trigger > 0
+                      ? (Math.abs(avgPrice - trigger) / trigger) * 100
+                      : item?.slippage ?? null;
+
+                    return {
+                      ...item,
+                      executedPrice: avgPrice,
+                      slippage: Number.isFinite(recomputedSlippage) ? recomputedSlippage : null
+                    };
+                  });
+                });
+              }
+            }
+          } catch (error) {
+            console.warn(`Could not refresh avg price for order ${newOrder.orderId}:`, error?.message || error);
+          }
+        }
 
       } else if (data.type === 'target_order_placed') {
         // Handle target order details for display (supports both {targetOrder} and {position} payload shapes)
@@ -2434,18 +2598,33 @@ function App() {
           const safePrev = Array.isArray(prev) ? prev : [];
           const targetPrice = Number(normalizedTargetOrder.targetPrice || 0);
 
-          return safePrev.map((item) => {
-            if (item.symbol !== normalizedTargetOrder.symbol) {
-              return item;
-            }
+          const existingIndex = safePrev.findIndex((item) =>
+            String(item?.symbol || '') === String(normalizedTargetOrder.symbol || '')
+          );
 
-            return {
-              ...item,
-              profit: Number(normalizedTargetOrder.expectedProfit || item.profit || 0),
-              targetPrice: targetPrice > 0 ? targetPrice : Number(item.targetPrice || 0),
-              targetValue: targetPrice > 0 ? targetPrice : Number(item.targetValue || 0)
+          if (existingIndex >= 0) {
+            const updated = [...safePrev];
+            const existing = updated[existingIndex] || {};
+            updated[existingIndex] = {
+              ...existing,
+              symbol: normalizedTargetOrder.symbol,
+              side: existing.side || normalizedTargetOrder.side,
+              // Keep known trigger/slippage values from executed event if already available.
+              triggeredLtp: existing.triggeredLtp ?? null,
+              executedPrice: existing.executedPrice ?? (Number(normalizedTargetOrder.avgPrice || 0) > 0 ? Number(normalizedTargetOrder.avgPrice) : null),
+              slippage: existing.slippage ?? null,
+              profit: Number(normalizedTargetOrder.expectedProfit || existing.profit || 0),
+              targetPrice: targetPrice > 0 ? targetPrice : Number(existing.targetPrice || 0),
+              targetValue: targetPrice > 0 ? targetPrice : Number(existing.targetValue || 0),
+              timestamp: existing.timestamp || normalizedTargetOrder.placedAt || new Date().toISOString(),
+              isCurrent: true,
+              tag: 'Current'
             };
-          });
+            return updated;
+          }
+
+          // Do not add placeholder rows from target events; wait for actual execution payload.
+          return safePrev;
         });
         
         // Show the target order details section
@@ -2694,6 +2873,9 @@ function App() {
   const trackerSubscribedSymbols = Array.isArray(scannerSubscriptionData?.subscribedSymbols)
     ? scannerSubscriptionData.subscribedSymbols
     : [];
+  const hasActivePositions = Array.isArray(positionsData)
+    ? positionsData.some((pos) => Number(pos?.quantity || 0) !== 0)
+    : false;
 
   return (
     <AppContainer>
@@ -2749,6 +2931,7 @@ function App() {
                     </div>
                     <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
                       <li>-DI(5m) &gt; 25</li>
+                      <li>MACD(5m) &lt; Signal(5m)</li>
                       <li>|LBB(1m) - EMA3(1m)| / LBB(1m) ≤ 0.04%</li>
                       <li>|LBB(5m) - EMA3(5m)| / LBB(5m) ≤ 0.04%</li>
                       <li>LTP &gt; LBB(1m) OR LTP &gt; EMA3(1m)</li>
@@ -2761,7 +2944,7 @@ function App() {
                     Post-Subscription Trade Execution Gate
                   </div>
                   <ol style={{ margin: 0, paddingLeft: '18px', color: '#e2e8f0', fontSize: '12px', lineHeight: '1.55' }}>
-                    <li>Only one condition is used: expected slippage ≤ 0.04%</li>
+                    <li>Only one condition is used: expected slippage ≤ 0.02%</li>
                     <li>Slippage is calculated from raw tick orderbook depth using top 5 levels (L1-L5)</li>
                     <li>Both BUY and SELL trades are executed</li>
                     <li>Subscriptions are based only on low-price scan stocks (no intersection/streak dependency)</li>
@@ -2793,9 +2976,9 @@ function App() {
               </div>
             </details>
 
-            {showExecutedTradeDetails && executedTradeDetails.length > 0 ? (
-              <ExecutedOrderDetailsPanel orders={executedTradeDetails} />
-            ) : (
+            <ExecutedOrderDetailsPanel orders={executedTradeDetails} />
+
+            {!hasActivePositions && (
               <SubscribedStockTracker 
                 tickData={tickData}
                 onOpenChart={openNamedChart}

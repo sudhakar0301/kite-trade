@@ -41,6 +41,17 @@ const Td = styled.td`
   border-bottom: 1px solid rgba(71, 85, 105, 0.35);
 `;
 
+const Tag = styled.span`
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  background: ${(props) => (props.current ? 'rgba(34, 197, 94, 0.2)' : 'rgba(148, 163, 184, 0.2)')};
+  color: ${(props) => (props.current ? '#86efac' : '#cbd5e1')};
+  border: 1px solid ${(props) => (props.current ? 'rgba(34, 197, 94, 0.45)' : 'rgba(148, 163, 184, 0.4)')};
+`;
+
 const sideColor = (side) => (String(side || '').toUpperCase() === 'SELL' ? '#fca5a5' : '#86efac');
 
 const toNum = (value) => {
@@ -48,8 +59,12 @@ const toNum = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const hasFinite = (value) => Number.isFinite(Number(value));
+
 const fmtMoney = (value) => `₹${toNum(value).toFixed(2)}`;
+const fmtMoneyOrNA = (value) => (hasFinite(value) ? `₹${Number(value).toFixed(2)}` : '₹0.00');
 const fmtPct = (value) => `${toNum(value).toFixed(4)}%`;
+const fmtPctOrNA = (value) => (hasFinite(value) ? `${Number(value).toFixed(6)}%` : '0.000000%');
 
 function ExecutedOrderDetailsPanel({ orders = [] }) {
   return (
@@ -62,6 +77,7 @@ function ExecutedOrderDetailsPanel({ orders = [] }) {
               <Th>Time</Th>
               <Th>Symbol</Th>
               <Th>Side</Th>
+              <Th>Tag</Th>
               <Th>Triggered LTP</Th>
               <Th>Executed Price</Th>
               <Th>Slippage</Th>
@@ -72,7 +88,7 @@ function ExecutedOrderDetailsPanel({ orders = [] }) {
           <tbody>
             {orders.length === 0 ? (
               <tr>
-                <Td colSpan={8} style={{ color: '#94a3b8' }}>
+                <Td colSpan={9} style={{ color: '#94a3b8' }}>
                   No executed orders available.
                 </Td>
               </tr>
@@ -82,9 +98,14 @@ function ExecutedOrderDetailsPanel({ orders = [] }) {
                   <Td>{order.timestamp ? new Date(order.timestamp).toLocaleTimeString() : 'N/A'}</Td>
                   <Td>{order.symbol || 'N/A'}</Td>
                   <Td style={{ color: sideColor(order.side), fontWeight: 700 }}>{order.side || 'N/A'}</Td>
-                  <Td>{fmtMoney(order.triggeredLtp)}</Td>
+                  <Td>
+                    <Tag current={Boolean(order.isCurrent)}>
+                      {order.tag || (order.isCurrent ? 'Current' : 'History')}
+                    </Tag>
+                  </Td>
+                  <Td>{fmtMoneyOrNA(order.triggeredLtp)}</Td>
                   <Td>{fmtMoney(order.executedPrice)}</Td>
-                  <Td>{fmtPct(order.slippage)}</Td>
+                  <Td>{fmtPctOrNA(order.slippage)}</Td>
                   <Td>{fmtMoney(order.profit)}</Td>
                   <Td>{fmtMoney(order.targetPrice || order.targetValue)}</Td>
                 </tr>

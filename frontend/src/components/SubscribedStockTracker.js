@@ -1542,7 +1542,7 @@ const SubscribedStockTracker = ({
 
         {/* Real-Time Order Book Display */}
         {selectedSymbol && (() => {
-          const MAX_ALLOWED_SLIPPAGE_PERCENT = 0.04;
+          const MAX_ALLOWED_SLIPPAGE_PERCENT = 0.02;
           const symbolKey = extractSymbolName(selectedSymbol);
           const symbolData = tickData?.[symbolKey];
           const latestTick = symbolData && symbolData.length > 0 ? symbolData[symbolData.length - 1] : null;

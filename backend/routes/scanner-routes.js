@@ -62,13 +62,15 @@ const recentTargetOrderPlacements = new Map(); // key -> { ts, orderId }
 const TARGET_ORDER_DEDUPE_WINDOW_MS = 15000;
 
 // Centralized target-profit basis: fixed profit amount per target order.
-const TARGET_PROFIT_FIXED_AMOUNT = 250;
+const TARGET_PROFIT_FIXED_AMOUNT = 500;
+const STOP_LOSS_FIXED_AMOUNT = 500;
+const ENABLE_STOP_LOSS_ORDERS = false;
 
 // Tick precheck throttling: avoid repeated positions/orders/margins calls on rapid ticks.
 const orderPrecheckInFlight = new Set(); // key: symbol_scanType
 const orderPrecheckLastRunAt = new Map(); // key -> epoch ms
 const ORDER_PRECHECK_COOLDOWN_MS = 30000;
-const MAX_EXECUTION_SLIPPAGE_PERCENT = 0.04;
+const MAX_EXECUTION_SLIPPAGE_PERCENT = 0.02;
 
 // Intraday equity charge model (approximation) used for net-target computation.
 const BROKERAGE_RATE = 0.0003; // 0.03% per side
@@ -620,6 +622,21 @@ async function getExecutedAveragePriceFromOrder(accessToken, orderId) {
     }
 }
 
+async function getExecutedAveragePriceWithRetry(accessToken, orderId, attempts = 4, delayMs = 700) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        const price = await getExecutedAveragePriceFromOrder(accessToken, orderId);
+        if (Number.isFinite(Number(price)) && Number(price) > 0) {
+            return Number(price);
+        }
+
+        if (attempt < attempts) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+    }
+
+    return null;
+}
+
 // Calculate target price using fixed net-profit basis (after estimated charges).
 function calculateTargetPrice(avgPrice, quantity, side) {
     const safeQty = Math.abs(parseInt(quantity || 0));
@@ -662,6 +679,90 @@ function calculateTargetPrice(avgPrice, quantity, side) {
     console.log(`💰 Expected gross profit: ₹${actualGrossTotalProfit.toFixed(2)} | charges: ₹${Number(finalCharges.totalCharges || 0).toFixed(2)} | net: ₹${expectedNetProfit.toFixed(2)}`);
 
     return targetPrice;
+}
+
+function calculateStopLossPrice(avgPrice, quantity, side) {
+    const safeQty = Math.abs(parseInt(quantity || 0));
+    const safeAvgPrice = Number(avgPrice || 0);
+    if (safeQty <= 0 || !Number.isFinite(safeAvgPrice) || safeAvgPrice <= 0) {
+        return Number(safeAvgPrice || 0);
+    }
+
+    const riskPerShare = STOP_LOSS_FIXED_AMOUNT / safeQty;
+    const rawStopLoss = side === 'BUY'
+        ? (safeAvgPrice - riskPerShare)
+        : (safeAvgPrice + riskPerShare);
+
+    const boundedStopLoss = Math.max(0.05, rawStopLoss);
+    const stopLossPrice = roundToTickSize(boundedStopLoss, safeAvgPrice);
+
+    console.log(`🛑 Stop-loss price for ${side} position: entry ₹${safeAvgPrice.toFixed(2)}, qty ${safeQty}, risk ₹${STOP_LOSS_FIXED_AMOUNT.toFixed(2)} => stop ₹${stopLossPrice.toFixed(2)}`);
+    return stopLossPrice;
+}
+
+async function placeStopLossOrderForOpenPosition(accessToken, symbol) {
+    try {
+        const kite = new KiteConnect({ api_key: 'r1a7qo9w30bxsfax' });
+        kite.setAccessToken(accessToken);
+
+        const positions = await kite.getPositions();
+        const netPositions = positions?.net || [];
+        const position = netPositions.find((pos) => pos.tradingsymbol === symbol && Number(pos.quantity || 0) !== 0);
+
+        if (!position) {
+            return { success: false, skipped: true, reason: 'no_active_position' };
+        }
+
+        const quantity = Math.abs(parseInt(position.quantity || 0));
+        const avgPrice = Number(position.average_price || 0);
+        const side = Number(position.quantity || 0) > 0 ? 'BUY' : 'SELL';
+        const stopLossSide = side === 'BUY' ? 'SELL' : 'BUY';
+        const stopLossPrice = calculateStopLossPrice(avgPrice, quantity, side);
+
+        if (quantity <= 0 || !Number.isFinite(stopLossPrice) || stopLossPrice <= 0) {
+            return { success: false, skipped: true, reason: 'invalid_stop_loss_params' };
+        }
+
+        const existingOrders = await kite.getOrders();
+        const existingStopLoss = (existingOrders || []).find((order) =>
+            order.tradingsymbol === symbol &&
+            order.transaction_type === stopLossSide &&
+            Math.abs(parseInt(order.quantity || 0)) === quantity &&
+            (order.status === 'OPEN' || order.status === 'TRIGGER PENDING' || order.status === 'MODIFY_PENDING') &&
+            String(order.tag || '').startsWith('SL_')
+        );
+
+        if (existingStopLoss) {
+            console.log(`🛑 Existing stop-loss already present for ${symbol}: ${existingStopLoss.order_id}`);
+            return { success: true, orderId: existingStopLoss.order_id, alreadyExists: true };
+        }
+
+        const orderParams = {
+            exchange: 'NSE',
+            tradingsymbol: symbol,
+            transaction_type: stopLossSide,
+            order_type: 'SL',
+            quantity,
+            price: Number(stopLossPrice.toFixed(2)),
+            trigger_price: Number(stopLossPrice.toFixed(2)),
+            product: 'MIS',
+            validity: 'DAY',
+            tag: `SL_${symbol.substring(0, 9)}`
+        };
+
+        console.log(`🛑 Placing STOP-LOSS order: ${stopLossSide} ${quantity} ${symbol} @ ₹${orderParams.trigger_price} (risk ₹${STOP_LOSS_FIXED_AMOUNT})`);
+        const result = await kite.placeOrder('regular', orderParams);
+
+        if (result?.order_id) {
+            console.log(`✅ STOP-LOSS ORDER PLACED: ${result.order_id} for ${symbol}`);
+            return { success: true, orderId: result.order_id, stopLossPrice: orderParams.trigger_price };
+        }
+
+        return { success: false, error: 'Failed to place stop-loss order' };
+    } catch (error) {
+        console.error(`❌ STOP-LOSS ORDER ERROR for ${symbol}:`, error.message);
+        return { success: false, error: error.message };
+    }
 }
 
 // Place target order
@@ -719,8 +820,23 @@ async function placeTargetOrder(accessToken, symbol, quantity, targetPrice, side
                 symbol,
                 targetOrderId: matchingOpenTarget.order_id
             });
+            let stopLossResult = { success: false, skipped: true, reason: 'disabled' };
+            if (ENABLE_STOP_LOSS_ORDERS) {
+                stopLossResult = await placeStopLossOrderForOpenPosition(accessToken, symbol);
+                if (!stopLossResult.success && !stopLossResult.skipped) {
+                    console.log(`⚠️ Stop-loss placement failed after existing target detection for ${symbol}: ${stopLossResult.error}`);
+                }
+            } else {
+                console.log(`⏭️ STOP-LOSS placement disabled for ${symbol}`);
+            }
             console.log(`✅ Matching open target already exists for ${symbol}: ${matchingOpenTarget.order_id} - deduped`);
-            return { success: true, orderId: matchingOpenTarget.order_id, alreadyExists: true };
+            return {
+                success: true,
+                orderId: matchingOpenTarget.order_id,
+                alreadyExists: true,
+                stopLossOrderId: stopLossResult.orderId || null,
+                stopLossPlaced: Boolean(stopLossResult.success)
+            };
         }
         
         const orderParams = {
@@ -756,8 +872,22 @@ async function placeTargetOrder(accessToken, symbol, quantity, targetPrice, side
                 symbol,
                 targetOrderId: result.order_id
             });
+            let stopLossResult = { success: false, skipped: true, reason: 'disabled' };
+            if (ENABLE_STOP_LOSS_ORDERS) {
+                stopLossResult = await placeStopLossOrderForOpenPosition(accessToken, symbol);
+                if (!stopLossResult.success && !stopLossResult.skipped) {
+                    console.log(`⚠️ Stop-loss placement failed after target placement for ${symbol}: ${stopLossResult.error}`);
+                }
+            } else {
+                console.log(`⏭️ STOP-LOSS placement disabled for ${symbol}`);
+            }
             
-            return { success: true, orderId: result.order_id };
+            return {
+                success: true,
+                orderId: result.order_id,
+                stopLossOrderId: stopLossResult.orderId || null,
+                stopLossPlaced: Boolean(stopLossResult.success)
+            };
         } else {
             console.error(`❌ TARGET ORDER FAILED for ${symbol}:`, result);
             return { success: false, error: 'Failed to place target order' };
@@ -2014,7 +2144,8 @@ async function runStreakAllScansWithGap(streakToken, pollIntervalMs = 0, conditi
         return (
             gap1mLbbPct <= thresholdPct &&
             gap5mLbbPct <= thresholdPct &&
-            ((lbb_1 > 0 && ltp > lbb_1) || (ema3_1 > 0 && ltp > ema3_1))
+            ((lbb_1 > 0 && ltp > lbb_1) || (ema3_1 > 0 && ltp > ema3_1)) &&
+            (ema3_1 > 0 && ltp > ema3_1)
         );
     };
 
@@ -2812,7 +2943,7 @@ function setupTickerEventHandlers() {
                     return;
                 }
 
-                // Post-subscription execution gate: only slippage <= 0.04% using raw top-5 tick depth.
+                // Post-subscription execution gate: only slippage <= 0.02% using raw top-5 tick depth.
                 const rawBuyDepth = Array.isArray(tick.depth.buy) ? tick.depth.buy.slice(0, 5) : [];
                 const rawSellDepth = Array.isArray(tick.depth.sell) ? tick.depth.sell.slice(0, 5) : [];
                 if (rawBuyDepth.length === 0 || rawSellDepth.length === 0) {
@@ -3063,7 +3194,7 @@ function setupTickerEventHandlers() {
                     console.log(`✅ AUTO TRADING ENABLED: Slippage gate passed for ${symbol}`);
 
                     // 🔵 BUY execution: only duplicate-guard + slippage gate
-                    if (potentialBuyExecution && !processedOrders.has(`${symbol}_MARKET_BUY`)) {
+                    if (potentialBuyExecution && !processedOrders.has(`${symbol}_MARKET_BUY`) && !hasSymbolAlreadyTraded(symbol)) {
                         console.log(`🚀 ✅ BUY EXECUTION CRITERIA MET: ${symbol} (slippage=${expectedSlippagePercent.toFixed(4)}%)`);
                         
                         // Mark as processed to avoid duplicates
@@ -3078,17 +3209,13 @@ function setupTickerEventHandlers() {
                                 if (buyResult.success) {
                                     console.log(`✅ ENHANCED BUY ORDER SUCCESS: ${buyResult.order_id} for ${symbol}`);
                                     orderExecuted = true;
+                                    markSymbolAsTraded(symbol);
 
                                     const triggerLtp = Number(ltp || 0);
-                                    const executedAvgPrice = Number(
-                                        (await getExecutedAveragePriceFromOrder(accessToken, buyResult.order_id)) ||
-                                        buyResult.price ||
-                                        ltp ||
-                                        0
-                                    );
-                                    const actualSlippagePercent = triggerLtp > 0
+                                    const executedAvgPrice = await getExecutedAveragePriceWithRetry(accessToken, buyResult.order_id);
+                                    const actualSlippagePercent = (triggerLtp > 0 && Number.isFinite(executedAvgPrice) && executedAvgPrice > 0)
                                         ? Math.abs(executedAvgPrice - triggerLtp) / triggerLtp * 100
-                                        : 0;
+                                        : null;
                                     
                                     // Process position after order placement
                                     setTimeout(() => {
@@ -3102,14 +3229,14 @@ function setupTickerEventHandlers() {
                                             symbol: symbol,
                                             ltp: ltp,
                                             triggeredLtp: triggerLtp,
-                                            executedPrice: executedAvgPrice,
+                                            executedPrice: Number.isFinite(executedAvgPrice) && executedAvgPrice > 0 ? Number(executedAvgPrice) : null,
                                             order_id: buyResult.order_id,
                                             criteria: {
                                                 autoTrading: autoTradingActive,
                                                 depthLevelsUsed: 5,
                                                 triggerLtp,
                                                 executedAvgPrice,
-                                                actualSlippagePercent: Number(actualSlippagePercent.toFixed(4)),
+                                                actualSlippagePercent: Number.isFinite(actualSlippagePercent) ? Number(actualSlippagePercent) : null,
                                                 expectedSlippagePercent: Number(expectedSlippagePercent.toFixed(4)),
                                                 maxAllowedSlippagePercent: MAX_EXECUTION_SLIPPAGE_PERCENT
                                             },
@@ -3130,7 +3257,8 @@ function setupTickerEventHandlers() {
                     // 🔴 SELL execution: only duplicate-guard + slippage gate
                     if (!orderExecuted && 
                         potentialSellExecution &&
-                        !processedOrders.has(`${symbol}_MARKET_SELL`)) {
+                        !processedOrders.has(`${symbol}_MARKET_SELL`) &&
+                        !hasSymbolAlreadyTraded(symbol)) {
 
                         console.log(`🚀 ✅ SELL EXECUTION CRITERIA MET: ${symbol} (slippage=${expectedSlippagePercent.toFixed(4)}%)`);
                         
@@ -3146,17 +3274,13 @@ function setupTickerEventHandlers() {
                                 if (sellResult.success) {
                                     console.log(`✅ ENHANCED SELL ORDER SUCCESS: ${sellResult.order_id} for ${symbol}`);
                                     orderExecuted = true;
+                                    markSymbolAsTraded(symbol);
 
                                     const triggerLtp = Number(ltp || 0);
-                                    const executedAvgPrice = Number(
-                                        (await getExecutedAveragePriceFromOrder(accessToken, sellResult.order_id)) ||
-                                        sellResult.price ||
-                                        ltp ||
-                                        0
-                                    );
-                                    const actualSlippagePercent = triggerLtp > 0
+                                    const executedAvgPrice = await getExecutedAveragePriceWithRetry(accessToken, sellResult.order_id);
+                                    const actualSlippagePercent = (triggerLtp > 0 && Number.isFinite(executedAvgPrice) && executedAvgPrice > 0)
                                         ? Math.abs(executedAvgPrice - triggerLtp) / triggerLtp * 100
-                                        : 0;
+                                        : null;
                                     
                                     // Process position after order placement
                                     setTimeout(() => {
@@ -3170,14 +3294,14 @@ function setupTickerEventHandlers() {
                                             symbol: symbol,
                                             ltp: ltp,
                                             triggeredLtp: triggerLtp,
-                                            executedPrice: executedAvgPrice,
+                                            executedPrice: Number.isFinite(executedAvgPrice) && executedAvgPrice > 0 ? Number(executedAvgPrice) : null,
                                             order_id: sellResult.order_id,
                                             criteria: {
                                                 autoTrading: autoTradingActive,
                                                 depthLevelsUsed: 5,
                                                 triggerLtp,
                                                 executedAvgPrice,
-                                                actualSlippagePercent: Number(actualSlippagePercent.toFixed(4)),
+                                                actualSlippagePercent: Number.isFinite(actualSlippagePercent) ? Number(actualSlippagePercent) : null,
                                                 expectedSlippagePercent: Number(expectedSlippagePercent.toFixed(4)),
                                                 maxAllowedSlippagePercent: MAX_EXECUTION_SLIPPAGE_PERCENT
                                             },
@@ -3579,9 +3703,12 @@ router.post('/low-price-scanners', async (req, res) => {
 
             const sellConditions = [
                 Number(stock.minusDI5 || 0) > 25, // -DI (5m) > 25
+                Number(stock.macd5 || 0) < Number(stock.signal5 || 0), // MACD (5m) < Signal (5m)
+                Number(stock.ema3_15 || 0) < Number(stock.mbb_1 || 0), // EMA3 (15m) < MBB
                 ema3GapPctFromLbb <= fixedGapThresholdPct, // |LBB(1m)-EMA3(1m)| <= 0.04%
                 ema3GapPctFromLbb5 <= fixedGapThresholdPct, // |LBB(5m)-EMA3(5m)| <= 0.04%
-                (lbb1 > 0 && Number(stock.ltp || 0) > lbb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) > Number(stock.ema3_1 || 0)) // LTP > LBB(1m) OR LTP > EMA3(1m)
+                (lbb1 > 0 && Number(stock.ltp || 0) > lbb1) || (Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) > Number(stock.ema3_1 || 0)), // LTP > LBB(1m) OR LTP > EMA3(1m)
+                Number(stock.ema3_1 || 0) > 0 && Number(stock.ltp || 0) > Number(stock.ema3_1 || 0) // LTP > EMA3(1m)
             ];
             
             
@@ -5892,6 +6019,49 @@ router.get('/orders', async (req, res) => {
             success: false,
             error: error.message,
             orders: []
+        });
+    }
+});
+
+// ORDER AVERAGE PRICE API - returns exact broker-reported average fill price for an order
+router.get('/order-average-price', async (req, res) => {
+    try {
+        const authHeader = req.headers.authorization;
+        const headerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.substring(7) : null;
+        const orderId = String(req.query.order_id || '').trim();
+
+        let access_token = headerToken;
+        if (!access_token && req.query.access_token) {
+            access_token = String(req.query.access_token).trim();
+        }
+
+        if (!access_token) {
+            return res.status(401).json({
+                success: false,
+                error: 'Access token required'
+            });
+        }
+
+        if (!orderId) {
+            return res.status(400).json({
+                success: false,
+                error: 'order_id is required'
+            });
+        }
+
+        const averagePrice = await getExecutedAveragePriceWithRetry(access_token, orderId, 6, 700);
+
+        return res.json({
+            success: true,
+            orderId,
+            averagePrice: Number.isFinite(Number(averagePrice)) ? Number(averagePrice) : null,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('❌ Order average price API error:', error?.message || error);
+        return res.status(500).json({
+            success: false,
+            error: error?.message || 'Failed to fetch order average price'
         });
     }
 });
