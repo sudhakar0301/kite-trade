@@ -1148,7 +1148,7 @@ function App() {
 
       // 🎯 LIMIT TRADING: Only trade the FIRST stock from each category to avoid overwhelming orders
       const maxOrdersPerType = 1;
-      const buyStocksToTrade = [];
+      const buyStocksToTrade = buyStocks.slice(0, maxOrdersPerType);
       const sellStocksToTrade = sellStocks.slice(0, maxOrdersPerType);
       
       console.log(`🎯 CONTROLLED TRADING: Selected ${buyStocksToTrade.length} BUY + ${sellStocksToTrade.length} SELL from ${buyStocks.length + sellStocks.length} total signals`);
@@ -1514,6 +1514,45 @@ function App() {
       return { success: false, error: error.message };
     }
   }, [openNamedChart, voiceEnabled, speak]);
+
+  const handleManualLowPriceTrade = useCallback(async (side, row) => {
+    const token = accessToken || localStorage.getItem('kite_access_token');
+    if (!token || token === 'demo_token') {
+      setOrderNotification({
+        type: 'error',
+        title: '❌ Manual Order Blocked',
+        message: 'Login required',
+        details: 'No valid Kite access token available for manual order.',
+        timestamp: new Date().toLocaleTimeString()
+      });
+      setTimeout(() => setOrderNotification(null), 6000);
+      return { success: false, error: 'No valid access token' };
+    }
+
+    const normalizedSide = String(side || '').toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
+    const symbol = String(row?.symbol || '').trim();
+    const ltp = Number(row?.ltp || 0);
+
+    if (!symbol || !(ltp > 0)) {
+      setOrderNotification({
+        type: 'error',
+        title: `❌ Manual ${normalizedSide} Order Blocked`,
+        message: symbol || 'Unknown symbol',
+        details: 'Missing symbol or invalid LTP in selected row.',
+        timestamp: new Date().toLocaleTimeString()
+      });
+      setTimeout(() => setOrderNotification(null), 6000);
+      return { success: false, error: 'Missing symbol or invalid LTP' };
+    }
+
+    const stockPayload = {
+      symbol,
+      ltp,
+      preCalculated: row?.preCalculated || undefined
+    };
+
+    return executeOrder(normalizedSide, stockPayload, token, false);
+  }, [accessToken, executeOrder]);
 
   // Scanner data fetch function
   const fetchScannerData = useCallback(async () => {
@@ -3095,6 +3134,7 @@ function App() {
               <SubscribedStockTracker 
                 tickData={tickData}
                 onOpenChart={openNamedChart}
+                onManualTrade={handleManualLowPriceTrade}
                 subscribedCount={trackerSubscribedSymbols.length}
                 buySignalsCount={trackerBuyRows.length}
                 sellSignalsCount={trackerSellRows.length}

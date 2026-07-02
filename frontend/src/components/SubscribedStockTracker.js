@@ -304,6 +304,7 @@ const LevelQuantity = styled.div`
 const SubscribedStockTracker = ({ 
   tickData, 
   onOpenChart, // Add onOpenChart prop
+  onManualTrade,
   subscribedCount = 0,
   buySignalsCount = 0,
   sellSignalsCount = 0,
@@ -1536,6 +1537,275 @@ const SubscribedStockTracker = ({
             <div>
               {renderOrderbookTable(buyRows, 'BUY Order Book Analyzer', '#166534', '#bbf7d0')}
               {renderOrderbookTable(sellRows, 'SELL Order Book Analyzer', '#991b1b', '#fecaca')}
+            </div>
+          );
+        })()}
+
+        {/* Low Price Scanner Stocks (shown below subscribed stocks as requested) */}
+        {(() => {
+          const normalizeSymbol = (value) => String(extractSymbolName(value || '') || '').trim().toUpperCase();
+          const subscribedSet = new Set((getSubscribedStocks() || []).map((symbol) => normalizeSymbol(symbol)));
+          const effectiveSignalStocks = emaCheckSignalStocks || signalStocks;
+          const gapThresholdPct = 0.04;
+          const buyConditionLabels = [
+            '1m EMA3-UBB gap <= threshold',
+            '1m LTP-UBB gap <= threshold'
+          ];
+          const sellConditionLabels = [
+            '1m EMA3-LBB gap <= threshold',
+            '1m LTP-LBB gap <= threshold'
+          ];
+          const buySignalSet = new Set(
+            (effectiveSignalStocks?.buySignals || []).map((row) =>
+              normalizeSymbol(typeof row === 'string' ? row : (row?.symbol || row?.s))
+            )
+          );
+          const sellSignalSet = new Set(
+            (effectiveSignalStocks?.sellSignals || []).map((row) =>
+              normalizeSymbol(typeof row === 'string' ? row : (row?.symbol || row?.s))
+            )
+          );
+
+          const normalizedRows = (Array.isArray(technicalDetailRows) ? technicalDetailRows : [])
+            .map((row) => {
+              const symbol = extractSymbolName(row?.symbol || row?.s || '');
+              const normalizedSymbol = normalizeSymbol(symbol);
+              const ltp = Number(row?.ltp || row?.d?.[0] || 0);
+              const ema3_1 = Number(row?.ema3_1 || row?.d?.[36] || 0);
+              const ubb_1 = Number(row?.ubb_1 || row?.d?.[41] || 0);
+              const lbb_1 = Number(row?.lbb_1 || row?.d?.[40] || 0);
+              const candidateType = String(row?.candidateType || row?.signalType || '').toUpperCase();
+              const conditionEvaluation = row?.conditionEvaluation || null;
+
+              const buyEma3UbbGapPct = ubb_1 > 0 ? (Math.abs(ema3_1 - ubb_1) / ubb_1) * 100 : Number.POSITIVE_INFINITY;
+              const buyLtpUbbGapPct = ubb_1 > 0 ? (Math.abs(ltp - ubb_1) / ubb_1) * 100 : Number.POSITIVE_INFINITY;
+              const sellEma3LbbGapPct = lbb_1 > 0 ? (Math.abs(ema3_1 - lbb_1) / lbb_1) * 100 : Number.POSITIVE_INFINITY;
+              const sellLtpLbbGapPct = lbb_1 > 0 ? (Math.abs(ltp - lbb_1) / lbb_1) * 100 : Number.POSITIVE_INFINITY;
+
+              let subscribeReasonLines = ['Waiting for auto-subscription sync.'];
+              if (!normalizedSymbol) {
+                subscribeReasonLines = ['Missing symbol in scanner row.'];
+              } else if (subscribedSet.has(normalizedSymbol)) {
+                subscribeReasonLines = ['Already subscribed.'];
+              } else if (
+                candidateType === 'BUY' &&
+                Array.isArray(conditionEvaluation?.buyChecks)
+              ) {
+                const failedChecks = conditionEvaluation.buyChecks
+                  .map((passed, index) => {
+                    const baseLabel = buyConditionLabels[index] || `BUY check #${index + 1}`;
+                    if (Boolean(passed)) {
+                      return { passed: true, detail: baseLabel };
+                    }
+
+                    if (index === 0) {
+                      const valueText = Number.isFinite(buyEma3UbbGapPct) ? `${buyEma3UbbGapPct.toFixed(4)}%` : 'N/A';
+                      return {
+                        passed: false,
+                        detail: `${baseLabel} (EMA3=${ema3_1.toFixed(2)}, UBB1=${ubb_1.toFixed(2)}, gap=${valueText}, expected<=${gapThresholdPct}%)`
+                      };
+                    }
+
+                    if (index === 1) {
+                      const valueText = Number.isFinite(buyLtpUbbGapPct) ? `${buyLtpUbbGapPct.toFixed(4)}%` : 'N/A';
+                      return {
+                        passed: false,
+                        detail: `${baseLabel} (LTP=${ltp.toFixed(2)}, UBB1=${ubb_1.toFixed(2)}, gap=${valueText}, expected<=${gapThresholdPct}%)`
+                      };
+                    }
+
+                    return { passed: false, detail: baseLabel };
+                  })
+                  .filter((item) => !item.passed)
+                  .map((item) => item.detail);
+                if (failedChecks.length > 0) {
+                  subscribeReasonLines = ['Failed filters:', ...failedChecks];
+                } else if (!buySignalSet.has(normalizedSymbol)) {
+                  subscribeReasonLines = ['Passed checks but not in BUY signal list.'];
+                } else {
+                  subscribeReasonLines = ['Eligible for BUY subscription.'];
+                }
+              } else if (
+                candidateType === 'SELL' &&
+                Array.isArray(conditionEvaluation?.sellChecks)
+              ) {
+                const failedChecks = conditionEvaluation.sellChecks
+                  .map((passed, index) => {
+                    const baseLabel = sellConditionLabels[index] || `SELL check #${index + 1}`;
+                    if (Boolean(passed)) {
+                      return { passed: true, detail: baseLabel };
+                    }
+
+                    if (index === 0) {
+                      const valueText = Number.isFinite(sellEma3LbbGapPct) ? `${sellEma3LbbGapPct.toFixed(4)}%` : 'N/A';
+                      return {
+                        passed: false,
+                        detail: `${baseLabel} (EMA3=${ema3_1.toFixed(2)}, LBB1=${lbb_1.toFixed(2)}, gap=${valueText}, expected<=${gapThresholdPct}%)`
+                      };
+                    }
+
+                    if (index === 1) {
+                      const valueText = Number.isFinite(sellLtpLbbGapPct) ? `${sellLtpLbbGapPct.toFixed(4)}%` : 'N/A';
+                      return {
+                        passed: false,
+                        detail: `${baseLabel} (LTP=${ltp.toFixed(2)}, LBB1=${lbb_1.toFixed(2)}, gap=${valueText}, expected<=${gapThresholdPct}%)`
+                      };
+                    }
+
+                    return { passed: false, detail: baseLabel };
+                  })
+                  .filter((item) => !item.passed)
+                  .map((item) => item.detail);
+                if (failedChecks.length > 0) {
+                  subscribeReasonLines = ['Failed filters:', ...failedChecks];
+                } else if (!sellSignalSet.has(normalizedSymbol)) {
+                  subscribeReasonLines = ['Passed checks but not in SELL signal list.'];
+                } else {
+                  subscribeReasonLines = ['Eligible for SELL subscription.'];
+                }
+              } else if (candidateType === 'BUY' && !buySignalSet.has(normalizedSymbol)) {
+                subscribeReasonLines = ['Not in BUY signal list after filters.'];
+              } else if (candidateType === 'SELL' && !sellSignalSet.has(normalizedSymbol)) {
+                subscribeReasonLines = ['Not in SELL signal list after filters.'];
+              } else if (candidateType !== 'BUY' && candidateType !== 'SELL') {
+                subscribeReasonLines = ['No BUY/SELL candidate type from scanner.'];
+              }
+
+              return {
+                symbol,
+                normalizedSymbol,
+                ltp,
+                candidateType,
+                subscribeReasonLines
+              };
+            })
+            .filter((row) => row.symbol);
+
+          const uniqueBySymbol = new Map();
+          normalizedRows.forEach((row) => {
+            uniqueBySymbol.set(String(row.symbol).toUpperCase(), row);
+          });
+
+          const rows = Array.from(uniqueBySymbol.values())
+            .sort((a, b) => String(a.symbol).localeCompare(String(b.symbol)));
+
+          return (
+            <div style={{
+              background: '#f9fafb',
+              border: '1px solid #d1d5db',
+              borderRadius: '6px',
+              padding: '10px',
+              marginBottom: '10px'
+            }}>
+              <div style={{
+                fontSize: '13px',
+                fontWeight: 700,
+                color: '#1f2937',
+                marginBottom: '8px',
+                fontFamily: 'system-ui, -apple-system, sans-serif'
+              }}>
+                Low Price Scanner Stocks ({rows.length})
+              </div>
+
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{
+                  width: '100%',
+                  borderCollapse: 'collapse',
+                  minWidth: '820px',
+                  fontSize: '12px',
+                  lineHeight: 1.5,
+                  fontFamily: '"Segoe UI", "Inter", "Roboto", system-ui, -apple-system, sans-serif'
+                }}>
+                  <thead>
+                    <tr style={{ background: '#f8fafc' }}>
+                      <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937', fontWeight: 700 }}>Symbol / Chart</th>
+                      <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937', fontWeight: 700 }}>Type</th>
+                      <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937', fontWeight: 700 }}>LTP</th>
+                      <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937', fontWeight: 700 }}>Not Subscribed Reason</th>
+                      <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', textAlign: 'center', color: '#1f2937', fontWeight: 700 }}>Manual Trade</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} style={{ padding: '10px', color: '#64748b', borderBottom: '1px solid #f1f5f9' }}>
+                          No low price scanner stocks available yet.
+                        </td>
+                      </tr>
+                    ) : rows.map((row, idx) => (
+                      <tr key={`low-price-row-${row.symbol}-${idx}`}>
+                        <td style={{ padding: '8px 8px', borderBottom: '1px solid #f1f5f9', color: '#0f172a' }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onOpenChart) {
+                                onOpenChart(row.symbol);
+                              }
+                            }}
+                            style={{
+                              background: 'transparent',
+                              border: 'none',
+                              color: '#2563eb',
+                              padding: 0,
+                              cursor: 'pointer',
+                              fontWeight: 700,
+                              textDecoration: 'underline'
+                            }}
+                          >
+                            {row.symbol}
+                          </button>
+                        </td>
+                        <td style={{ padding: '8px 8px', borderBottom: '1px solid #f1f5f9', color: '#374151', fontWeight: 600 }}>
+                          {row.candidateType || 'LOW_PRICE'}
+                        </td>
+                        <td style={{ padding: '8px 8px', borderBottom: '1px solid #f1f5f9', textAlign: 'right', color: '#0f172a' }}>
+                          {row.ltp > 0 ? `₹${row.ltp.toFixed(2)}` : '-'}
+                        </td>
+                        <td style={{ padding: '8px 8px', borderBottom: '1px solid #f1f5f9', color: '#334155' }}>
+                          <ul style={{ margin: 0, paddingLeft: '18px', lineHeight: 1.45 }}>
+                            {(Array.isArray(row.subscribeReasonLines) ? row.subscribeReasonLines : ['-']).map((line, reasonIdx) => (
+                              <li key={`${row.symbol}-reason-${reasonIdx}`} style={{ marginBottom: '4px' }}>{line}</li>
+                            ))}
+                          </ul>
+                        </td>
+                        <td style={{ padding: '8px 8px', borderBottom: '1px solid #f1f5f9', textAlign: 'center' }}>
+                          {(() => {
+                            const actionType = row.candidateType === 'SELL' ? 'SELL' : (row.candidateType === 'BUY' ? 'BUY' : null);
+                            if (!actionType) {
+                              return <span style={{ color: '#94a3b8', fontSize: '10px' }}>-</span>;
+                            }
+
+                            const isBuy = actionType === 'BUY';
+                            const isDisabled = !onManualTrade || !row.symbol || !(row.ltp > 0);
+
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => onManualTrade && onManualTrade(actionType, row)}
+                                disabled={isDisabled}
+                                style={{
+                                  border: isBuy ? '1px solid #16a34a' : '1px solid #dc2626',
+                                  background: isBuy ? '#16a34a' : '#dc2626',
+                                  color: '#ffffff',
+                                  borderRadius: '4px',
+                                  padding: '3px 10px',
+                                  fontSize: '10px',
+                                  fontWeight: 700,
+                                  minWidth: '52px',
+                                  cursor: isDisabled ? 'not-allowed' : 'pointer',
+                                  opacity: isDisabled ? 0.6 : 1
+                                }}
+                              >
+                                {actionType}
+                              </button>
+                            );
+                          })()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           );
         })()}

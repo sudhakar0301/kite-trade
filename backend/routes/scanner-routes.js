@@ -2114,40 +2114,38 @@ async function runStreakAllScansWithGap(streakToken, pollIntervalMs = 0, conditi
             .map((row) => [String(row.symbol).trim().toUpperCase(), row])
     );
 
-    const FIXED_GAP_THRESHOLD_PCT = 0.04;
+    const FIXED_1M_GAP_THRESHOLD_PCT = 0.04;
 
     const qualifiesLowPriceForSide = (lowPriceRow, side) => {
         if (!lowPriceRow) return false;
 
-        const ltp = Number(lowPriceRow.ltp || 0);
         const ema3_1 = Number(lowPriceRow.ema3_1 || 0);
-        const ema3_5 = Number(lowPriceRow.ema3_5 || 0);
         const ubb_1 = Number(lowPriceRow.ubb_1 || 0);
         const lbb_1 = Number(lowPriceRow.lbb_1 || 0);
-        const ubb_5 = Number(lowPriceRow.ubb_5 || 0);
-        const lbb_5 = Number(lowPriceRow.lbb_5 || 0);
-        const thresholdPct = FIXED_GAP_THRESHOLD_PCT;
+        const thresholdPct = FIXED_1M_GAP_THRESHOLD_PCT;
 
         const gap1mUbbPct = ubb_1 > 0 ? (Math.abs(ema3_1 - ubb_1) / ubb_1) * 100 : Number.POSITIVE_INFINITY;
-        const gap5mUbbPct = ubb_5 > 0 ? (Math.abs(ema3_5 - ubb_5) / ubb_5) * 100 : Number.POSITIVE_INFINITY;
         const gap1mLbbPct = lbb_1 > 0 ? (Math.abs(ema3_1 - lbb_1) / lbb_1) * 100 : Number.POSITIVE_INFINITY;
-        const gap5mLbbPct = lbb_5 > 0 ? (Math.abs(ema3_5 - lbb_5) / lbb_5) * 100 : Number.POSITIVE_INFINITY;
 
         if (side === 'BUY') {
-            return (
-                gap1mUbbPct <= thresholdPct &&
-                gap5mUbbPct <= thresholdPct &&
-                ((ubb_1 > 0 && ltp < ubb_1) || (ema3_1 > 0 && ltp < ema3_1))
-            );
+            return gap1mUbbPct <= thresholdPct;
         }
 
-        return (
-            gap1mLbbPct <= thresholdPct &&
-            gap5mLbbPct <= thresholdPct &&
-            ((lbb_1 > 0 && ltp > lbb_1) || (ema3_1 > 0 && ltp > ema3_1)) &&
-            (ema3_1 > 0 && ltp > ema3_1)
-        );
+        return gap1mLbbPct <= thresholdPct;
     };
+
+    const lowPriceBuyPrefilterSymbolSet = new Set(
+        lowPriceCommonEnrichedRows
+            .filter((row) => Number(row?.ubb_5 || 0) > 0 && Number(row?.ltp || 0) < Number(row?.ubb_5 || 0))
+            .map((row) => String(row?.symbol || '').trim().toUpperCase())
+            .filter(Boolean)
+    );
+    const lowPriceSellPrefilterSymbolSet = new Set(
+        lowPriceCommonEnrichedRows
+            .filter((row) => Number(row?.lbb_5 || 0) > 0 && Number(row?.ltp || 0) > Number(row?.lbb_5 || 0))
+            .map((row) => String(row?.symbol || '').trim().toUpperCase())
+            .filter(Boolean)
+    );
 
     const baseBuyStocks = intersectStreakStocksBySymbol(buy1MinStocks, buy5MinStocks);
     const baseSellStocks = intersectStreakStocksBySymbol(sell1MinStocks, sell5MinStocks);
@@ -2155,11 +2153,13 @@ async function runStreakAllScansWithGap(streakToken, pollIntervalMs = 0, conditi
     const finalBuyStocks = baseBuyStocks.filter((stock) => {
         const symbol = getStreakStockSymbol(stock);
         if (!lowPriceCommonSymbolSet.has(symbol)) return false;
+        if (!lowPriceBuyPrefilterSymbolSet.has(symbol)) return false;
         return qualifiesLowPriceForSide(lowPriceBySymbol.get(symbol), 'BUY');
     });
     const finalSellStocks = baseSellStocks.filter((stock) => {
         const symbol = getStreakStockSymbol(stock);
         if (!lowPriceCommonSymbolSet.has(symbol)) return false;
+        if (!lowPriceSellPrefilterSymbolSet.has(symbol)) return false;
         return qualifiesLowPriceForSide(lowPriceBySymbol.get(symbol), 'SELL');
     });
 
@@ -2206,6 +2206,8 @@ async function runStreakAllScansWithGap(streakToken, pollIntervalMs = 0, conditi
                 lowPriceFilterApplied: true,
                 preLowPriceBuyCount: baseBuyStocks.length,
                 preLowPriceSellCount: baseSellStocks.length,
+                    buyBandPrefilterUniverseCount: lowPriceBuyPrefilterSymbolSet.size,
+                    sellBandPrefilterUniverseCount: lowPriceSellPrefilterSymbolSet.size,
                 postLowPriceBuyCount: finalBuyStocks.length,
                 postLowPriceSellCount: finalSellStocks.length,
                 lowPriceEnrichedRowsCount: lowPriceCommonEnrichedRows.length,
@@ -2955,11 +2957,25 @@ function setupTickerEventHandlers() {
                     sell: rawSellDepth
                 };
 
-                const marketImpactForExecution = calculateMarketImpact(fiveLevelDepth, ltp, scanType, globalUsableFunds);
+                // Slippage gate uses 1.5x of calculated quantity (quantity-based check).
+                const baseMarketImpact = calculateMarketImpact(fiveLevelDepth, ltp, scanType, globalUsableFunds);
+                const calculatedQuantity = Math.abs(Number(baseMarketImpact?.quantity || 0));
+                if (!Number.isFinite(calculatedQuantity) || calculatedQuantity <= 0) {
+                    return;
+                }
+
+                const SLIPPAGE_CHECK_QTY_MULTIPLIER = 1.5;
+                const slippageCheckQuantity = Math.max(1, Math.floor(calculatedQuantity * SLIPPAGE_CHECK_QTY_MULTIPLIER));
+                const marketImpactForExecution = calculateMarketImpact(
+                    fiveLevelDepth,
+                    ltp,
+                    scanType,
+                    slippageCheckQuantity * ltp
+                );
                 const expectedSlippagePercent = Number(marketImpactForExecution?.totalSlippage || 0);
                 if (!Number.isFinite(expectedSlippagePercent) || Math.abs(expectedSlippagePercent) > MAX_EXECUTION_SLIPPAGE_PERCENT) {
                     if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
-                        console.log(`⛔ ${symbol} execution blocked: slippage ${expectedSlippagePercent.toFixed(4)}% exceeds max ${MAX_EXECUTION_SLIPPAGE_PERCENT}%`);
+                        console.log(`⛔ ${symbol} execution blocked: slippage ${expectedSlippagePercent.toFixed(4)}% exceeds max ${MAX_EXECUTION_SLIPPAGE_PERCENT}% (qty x${SLIPPAGE_CHECK_QTY_MULTIPLIER})`);
                     }
                     return;
                 }
@@ -2995,6 +3011,9 @@ function setupTickerEventHandlers() {
                     if (ENABLE_VERBOSE_MARKET_IMPACT_LOGS) {
                         console.log(`📊 ${symbol} Execution Gate:`);
                         console.log(`   Depth levels used (buy/sell): ${rawBuyDepth.length}/${rawSellDepth.length}`);
+                        console.log(`   Calculated quantity: ${Math.abs(Number(calculatedQuantity || 0)).toLocaleString('en-IN')}`);
+                        console.log(`   Slippage quantity multiplier: x${SLIPPAGE_CHECK_QTY_MULTIPLIER}`);
+                        console.log(`   Slippage-check quantity: ${Math.abs(Number(slippageCheckQuantity || 0)).toLocaleString('en-IN')}`);
                         console.log(`   Expected slippage: ${expectedSlippagePercent.toFixed(4)}%`);
                     }
                     
@@ -3609,31 +3628,27 @@ router.post('/low-price-scanners', async (req, res) => {
             { left: 'MACD.macd|1', operation: 'greater', right: 'MACD.signal|1' },
             { left: 'MACD.macd|1', operation: 'greater', right: 0 },
             { left: 'ADX+DI|1', operation: 'greater', right: 25 },
-            { left: 'ADX+DI|1', operation: 'greater', right: 'ADX|1' },
             { left: 'ADX|1', operation: 'greater', right: 'ADX-DI|1' },
-            { left: 'RSI|1', operation: 'greater', right: 60 },
+            { left: 'RSI|1', operation: 'greater', right: 70 },
+            { left: 'close', operation: 'less', right: 'BB.upper|5' },
             { left: 'EMA3|1', operation: 'greater', right: 'EMA5|1' }
         ];
 
         const sellTechnicalPrefilters = [
             // 15m direct filters
-            { left: 'ADX-DI|15', operation: 'greater', right: 25 },
             { left: 'MACD.macd|15', operation: 'less', right: 'MACD.signal|15' },
 
             // 5m direct filters
             { left: 'MACD.macd|5', operation: 'less', right: 'MACD.signal|5' },
-            { left: 'ADX-DI|5', operation: 'greater', right: 25 },
             { left: 'ADX-DI|5', operation: 'greater', right: 'ADX|5' },
             { left: 'ADX|5', operation: 'greater', right: 'ADX+DI|5' },
-            { left: 'RSI|5', operation: 'less', right: 40 },
+            { left: 'RSI|5', operation: 'less', right: 45 },
 
             // 1m direct filters
             { left: 'MACD.macd|1', operation: 'less', right: 'MACD.signal|1' },
             { left: 'MACD.macd|1', operation: 'less', right: 0 },
             { left: 'ADX-DI|1', operation: 'greater', right: 25 },
-            { left: 'ADX-DI|1', operation: 'greater', right: 'ADX|1' },
             { left: 'ADX|1', operation: 'greater', right: 'ADX+DI|1' },
-            { left: 'RSI|1', operation: 'less', right: 40 },
             { left: 'EMA3|1', operation: 'less', right: 'EMA5|1' }
         ];
 
@@ -3724,24 +3739,8 @@ router.post('/low-price-scanners', async (req, res) => {
             orders_failed: 0
         };
 
-        function getDynamicGapThresholdsByPrice(price) {
-            const ltp = Number(price || 0);
-
-            // First value = 1m threshold (%), second value = 5m threshold (%).
-            if (ltp >= 50 && ltp < 250) {
-                return { gap1mPct: 0.016, gap5mPct: 0.08 };
-            }
-
-            if (ltp >= 250 && ltp < 1000) {
-                return { gap1mPct: 0.02, gap5mPct: 0.08 };
-            }
-
-            if (ltp >= 1000 && ltp < 5000) {
-                return { gap1mPct: 0.008, gap5mPct: 0.04 };
-            }
-
-            // 5000+
-            return { gap1mPct: 0.02, gap5mPct: 0.08 };
+        function getDynamic1mGapThresholdByPrice(price) {
+            return 0.04;
         }
 
         console.log('🎛️ Low-price scan using strict multi-timeframe BUY filters (15m + 5m + 1m).');
@@ -3758,45 +3757,21 @@ router.post('/low-price-scanners', async (req, res) => {
             stock.candidateType = candidateType;
             
             const ubb1 = Number(stock.ubb_1 || 0);
-            const ubb5 = Number(stock.ubb_5 || 0);
-            const ema3_5 = Number(stock.ema3_5 || 0);
             const ema3_1 = Number(stock.ema3_1 || 0);
             const ltp = Number(stock.ltp || 0);
-            const { gap1mPct, gap5mPct } = getDynamicGapThresholdsByPrice(ltp);
+
+            const gap1mPct = getDynamic1mGapThresholdByPrice(ltp);
             const ema3GapPctFromUbb1 = ubb1 > 0
                 ? (Math.abs(ema3_1 - ubb1) / ubb1) * 100
-                : Number.POSITIVE_INFINITY;
-            const ema3GapPctFromUbb5 = ubb5 > 0
-                ? (Math.abs(ema3_5 - ubb5) / ubb5) * 100
                 : Number.POSITIVE_INFINITY;
             const ltpGapPctFromUbb1 = ubb1 > 0
                 ? (Math.abs(ltp - ubb1) / ubb1) * 100
                 : Number.POSITIVE_INFINITY;
 
-            // BUY CONDITIONS (strict multi-timeframe filters)
+            // BUY CONDITIONS (post-scan: gap filters only)
             const buyConditions = [
-                // 15m
-                Number(stock.plusDI15 || 0) > 25,
-                Number(stock.macd15 || 0) > Number(stock.signal15 || 0),
-
-                // 5m
-                Number(stock.macd5 || 0) > Number(stock.signal5 || 0),
-                Number(stock.plusDI5 || 0) > 25,
-                Number(stock.plusDI5 || 0) > Number(stock.adx5 || 0),
-                Number(stock.adx5 || 0) > Number(stock.minusDI5 || 0),
-                Number(stock.rsi5 || 0) > 60,
-                ema3GapPctFromUbb5 < gap5mPct,
-
-                // 1m
-                Number(stock.macd1 || 0) > Number(stock.signal1 || 0),
-                Number(stock.macd1 || 0) > 0,
-                Number(stock.plusDI1 || 0) > 25,
-                Number(stock.plusDI1 || 0) > Number(stock.adx1 || 0),
-                Number(stock.adx1 || 0) > Number(stock.minusDI1 || 0),
-                Number(stock.rsi1 || 0) > 60,
                 ema3GapPctFromUbb1 < gap1mPct,
-                ltpGapPctFromUbb1 <= gap1mPct,
-                Number(stock.ema3_1 || 0) > Number(stock.ema5_1 || 0)
+                ltpGapPctFromUbb1 <= gap1mPct
             ];
 
             // Track condition pass counts
@@ -3804,42 +3779,18 @@ router.post('/low-price-scanners', async (req, res) => {
                 if (pass) conditionStats.buy_condition_passes[i]++;
             });
             
-            // SELL CONDITIONS (low-price gates only)
+            // SELL CONDITIONS (post-scan: gap filters only)
             const lbb1 = Number(stock.lbb_1 || 0);
-            const lbb5 = Number(stock.lbb_5 || 0);
             const ema3GapPctFromLbb = lbb1 > 0
                 ? (Math.abs(Number(stock.ema3_1 || 0) - lbb1) / lbb1) * 100
-                : Number.POSITIVE_INFINITY;
-            const ema3GapPctFromLbb5 = lbb5 > 0
-                ? (Math.abs(ema3_5 - lbb5) / lbb5) * 100
                 : Number.POSITIVE_INFINITY;
             const ltpGapPctFromLbb1 = lbb1 > 0
                 ? (Math.abs(ltp - lbb1) / lbb1) * 100
                 : Number.POSITIVE_INFINITY;
 
             const sellConditions = [
-                // 15m
-                Number(stock.minusDI15 || 0) > 25,
-                Number(stock.macd15 || 0) < Number(stock.signal15 || 0),
-
-                // 5m
-                Number(stock.macd5 || 0) < Number(stock.signal5 || 0),
-                Number(stock.minusDI5 || 0) > 25,
-                Number(stock.minusDI5 || 0) > Number(stock.adx5 || 0),
-                Number(stock.adx5 || 0) > Number(stock.plusDI5 || 0),
-                Number(stock.rsi5 || 0) < 40,
-                ema3GapPctFromLbb5 < gap5mPct,
-
-                // 1m
-                Number(stock.macd1 || 0) < Number(stock.signal1 || 0),
-                Number(stock.macd1 || 0) < 0,
-                Number(stock.minusDI1 || 0) > 25,
-                Number(stock.minusDI1 || 0) > Number(stock.adx1 || 0),
-                Number(stock.adx1 || 0) > Number(stock.plusDI1 || 0),
-                Number(stock.rsi1 || 0) < 40,
                 ema3GapPctFromLbb < gap1mPct,
-                ltpGapPctFromLbb1 <= gap1mPct,
-                Number(stock.ema3_1 || 0) < Number(stock.ema5_1 || 0)
+                ltpGapPctFromLbb1 <= gap1mPct
             ];
             
             
