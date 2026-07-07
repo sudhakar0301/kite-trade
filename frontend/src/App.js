@@ -39,7 +39,7 @@ const STREAK_SELL_5MIN_CONDITION_STORAGE_KEY = 'streak_sell_5min_condition';
 const EXECUTED_ORDER_DETAILS_STORAGE_KEY = 'executed_order_details_history';
 const EXECUTION_METADATA_STORAGE_KEY = 'executed_order_metadata_by_symbol_v1';
 const USE_POSITIONS_ONLY_EXECUTED_DETAILS = true;
-const USE_STREAK_SCAN_ONLY = false;
+const USE_STREAK_SCAN_ONLY = true;
 const BUY_FILTER_KEYS = [
   'plusDiAbove25_1mBuy',
   'plusDiAboveAdx_1mBuy',
@@ -792,10 +792,9 @@ function App() {
   const tickTradeInFlightRef = useRef(false);
   const lastTickTradeAttemptRef = useRef({});
   const streakScanInFlightRef = useRef(false);
-  const lastStreakScanStartedAtRef = useRef(0);
   const streakNextAllowedAtRef = useRef(null);
   const TICK_TRADE_COOLDOWN_MS = 10000;
-  const STREAK_CLIENT_MIN_GAP_MS = 5200;
+  const STREAK_CLIENT_MIN_GAP_MS = 1000;
   const mainOrdersAllowedRef = useRef(false);
 
   // Refs for WebSocket handler to access current values (avoiding stale closure)
@@ -1557,13 +1556,12 @@ function App() {
   // Scanner data fetch function
   const fetchScannerData = useCallback(async () => {
     try {
-      const nowMs = Date.now();
       const nextAllowedMs = streakNextAllowedAtRef.current
         ? new Date(streakNextAllowedAtRef.current).getTime()
         : 0;
-      const withinClientGap = (nowMs - lastStreakScanStartedAtRef.current) < STREAK_CLIENT_MIN_GAP_MS;
+      const nowMs = Date.now();
       const withinServerGap = nextAllowedMs > nowMs;
-      const canCallStreakNow = !streakScanInFlightRef.current && !withinClientGap && !withinServerGap;
+      const canCallStreakNow = !streakScanInFlightRef.current && !withinServerGap;
 
       if (USE_STREAK_SCAN_ONLY) {
         if (!canCallStreakNow) {
@@ -1603,7 +1601,6 @@ function App() {
         let activeStreakToken = storedStreakToken || '';
         let streakPayload = null;
         streakScanInFlightRef.current = true;
-        lastStreakScanStartedAtRef.current = Date.now();
 
         try {
           for (let attempt = 0; attempt < 3; attempt++) {
@@ -1623,15 +1620,26 @@ function App() {
 
             const errorPayload = await response.json().catch(() => ({}));
 
-            if (response.status === 429 && errorPayload?.reason === 'scan_throttled') {
+            if ((response.status === 429 || response.ok) && errorPayload?.reason === 'scan_throttled') {
               const waitMs = Number(errorPayload?.waitMs || STREAK_CLIENT_MIN_GAP_MS);
               const nextAllowedAt = errorPayload?.nextScanAllowedAt || new Date(Date.now() + waitMs).toISOString();
               streakNextAllowedAtRef.current = nextAllowedAt;
-              setStreakScanData((prev) => ({
-                ...prev,
-                lastUpdated: new Date().toISOString(),
-                error: errorPayload?.message || 'Streak scan throttled'
-              }));
+
+              // Do not mark throttle as an error; keep last successful rows visible.
+              if (!response.ok) {
+                setStreakScanData((prev) => ({
+                  ...prev,
+                  lastUpdated: new Date().toISOString(),
+                  error: null
+                }));
+              }
+
+              if (response.ok) {
+                streakPayload = errorPayload;
+                streakNextAllowedAtRef.current = null;
+                break;
+              }
+
               return;
             }
 
@@ -1657,7 +1665,15 @@ function App() {
           throw new Error('Unable to run streak scan after token retries.');
         }
 
-        const rows = Array.isArray(streakPayload?.rows) ? streakPayload.rows : [];
+        const rows = Array.isArray(streakPayload?.rows)
+          ? streakPayload.rows
+          : (Array.isArray(streakPayload?.stocks)
+            ? streakPayload.stocks.map((row) => ({
+              ...row,
+              symbol: row?.symbol || (row?.seg_sym && row.seg_sym.includes(':') ? row.seg_sym.split(':')[1] : row?.seg_sym || ''),
+              signalType: row?.signalType || 'BUY'
+            }))
+            : []);
         const extractRawStreakRows = (rawScan, signalTypeLabel) => {
           const candidates = [
             rawScan?.stocks,
@@ -1711,7 +1727,10 @@ function App() {
         const buy5MinRowsRaw = extractRawStreakRows(streakPayload?.raw?.buy5Min, 'BUY_5MIN');
         const buyRows = Array.isArray(streakPayload?.buyRows)
           ? streakPayload.buyRows
-          : rows.filter((row) => String(row?.signalType || '').toUpperCase() === 'BUY');
+          : rows.filter((row) => {
+            const type = String(row?.signalType || '').toUpperCase();
+            return !type || type === 'BUY' || type === 'BUY_5MIN';
+          });
         const sellRows = Array.isArray(streakPayload?.sellRows)
           ? streakPayload.sellRows
           : rows.filter((row) => String(row?.signalType || '').toUpperCase() === 'SELL');
@@ -1745,30 +1764,27 @@ function App() {
             .map((row) => [String(row.symbol).toUpperCase(), row])
         );
 
-        const signalBackfillRows = [...formattedBuyStocks, ...formattedSellStocks]
+        const streakOnlyRowsForTracker = [...formattedBuyStocks, ...formattedSellStocks]
           .map((row) => {
             const symbol = String(row?.symbol || '').toUpperCase();
-            if (!symbol || technicalRowsBySymbol.has(symbol)) {
-              return null;
-            }
+            const tech = technicalRowsBySymbol.get(symbol);
 
             return {
               symbol: row.symbol,
               ltp: Number(row.ltp || 0),
-              ema3_1: 0,
-              ema3_5: 0,
-              ubb_1: 0,
-              lbb_1: 0,
-              ubb_5: 0,
-              lbb_5: 0,
+              ema3_1: Number(tech?.ema3_1 || 0),
+              ema3_5: Number(tech?.ema3_5 || 0),
+              ubb_1: Number(tech?.ubb_1 || 0),
+              lbb_1: Number(tech?.lbb_1 || 0),
+              ubb_5: Number(tech?.ubb_5 || 0),
+              lbb_5: Number(tech?.lbb_5 || 0),
               timestamp: nowIso,
               timeFormatted: nowTime,
-              side: row.signalType || 'SIGNAL_ONLY'
+              signalType: row.signalType || 'BUY',
+              side: row.signalType || 'BUY'
             };
           })
-          .filter(Boolean);
-
-        const mergedTechnicalRows = [...lowPriceTechnicalRows, ...signalBackfillRows];
+          .filter((row) => String(row?.symbol || '').trim().length > 0);
 
         const streakTrackedSymbols = [...new Set(
           [...formattedBuyStocks, ...formattedSellStocks]
@@ -1800,7 +1816,7 @@ function App() {
           error: null
         });
 
-        setLowPriceScanStocks(mergedTechnicalRows);
+        setLowPriceScanStocks(streakOnlyRowsForTracker);
 
         setScanResults((prev) => ({
           ...prev,

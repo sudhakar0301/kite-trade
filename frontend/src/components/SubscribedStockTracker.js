@@ -7,9 +7,10 @@ const STREAK_BUY_5MIN_CONDITION_STORAGE_KEY = 'streak_buy_5min_condition';
 const STREAK_SELL_1MIN_CONDITION_STORAGE_KEY = 'streak_sell_1min_condition';
 const STREAK_SELL_5MIN_CONDITION_STORAGE_KEY = 'streak_sell_5min_condition';
 const DEFAULT_BUY_1MIN_CONDITION = 'RSI(14,0) higher than 65 and Plus DI(14,0) higher than 25 and ADX(14,0) higher than Minus DI(14,0) and EMA(close, 25, 0) higher than MBB(Close,20,2,simple,0) and MACD(12,26,9,macd,0) higher than MACD(12,26,9,signal,0) and ADX(14,0) higher than Minus DI(14,0)';
-const DEFAULT_BUY_5MIN_CONDITION = 'MACD(12,26,9,macd,0) higher than MACD(12,26,9,signal,0) and Plus DI(14,0) higher than 25 and Plus DI(14,0) higher than ADX(14,0) and ADX(14,0) higher than Minus DI(14,0) and Minus DI(14,0) lower than 15 and RSI(14,0) higher than 60 and MACD(12,26,9,signal,0) higher than MACD(12,26,9,histogram,0)';
+const DEFAULT_BUY_5MIN_CONDITION = 'multitime frame completed(5min,period min(14,RSI(14,-1)) higher than equal to 60)';
 const DEFAULT_SELL_1MIN_CONDITION = 'RSI(14,0) lower than 35 and Minus DI(14,0) higher than 25 and ADX(14,0) higher than Plus DI(14,0) and ADX(14,0) higher than 25 and EMA(close, 25, 0) lower than MBB(Close,20,2,simple,0) and MACD(12,26,9,macd,0) lower than MACD(12,26,9,signal,0) and ( EMA(close, 3, 0) lower than equal to LBB(Close,20,2,simple,0) )';
 const DEFAULT_SELL_5MIN_CONDITION = DEFAULT_SELL_1MIN_CONDITION;
+const STREAK_TABLE_CONDITION_LABEL = 'multitime frame completed(5min,period min(14,RSI(14,-1)) higher than equal to 60)';
 const ENABLE_SUBSCRIBED_TRACKER_DEBUG = false;
 const trackerDebugLog = (...args) => {
   if (ENABLE_SUBSCRIBED_TRACKER_DEBUG) {
@@ -313,6 +314,7 @@ const SubscribedStockTracker = ({
   signalStocks = { buySignals: [], sellSignals: [] },
   emaCheckSignalStocks = null,
   marginsData = null,
+  streakScanRows = [],
   technicalDetailRows = [],
   executedTradeDetails = []
 }) => {
@@ -1541,7 +1543,7 @@ const SubscribedStockTracker = ({
           );
         })()}
 
-        {/* Low Price Scanner Stocks (shown below subscribed stocks as requested) */}
+        {/* Streak scanner stocks (shown below subscribed stocks as requested) */}
         {(() => {
           const normalizeSymbol = (value) => String(extractSymbolName(value || '') || '').trim().toUpperCase();
           const subscribedSet = new Set((getSubscribedStocks() || []).map((symbol) => normalizeSymbol(symbol)));
@@ -1566,11 +1568,13 @@ const SubscribedStockTracker = ({
             )
           );
 
-          const normalizedRows = (Array.isArray(technicalDetailRows) ? technicalDetailRows : [])
+          const rawRows = Array.isArray(streakScanRows) ? streakScanRows : [];
+
+          const normalizedRows = rawRows
             .map((row) => {
-              const symbol = extractSymbolName(row?.symbol || row?.s || '');
+              const symbol = extractSymbolName(row?.symbol || row?.s || row?.seg_sym || '');
               const normalizedSymbol = normalizeSymbol(symbol);
-              const ltp = Number(row?.ltp || row?.d?.[0] || 0);
+              const ltp = Number(row?.ltp || row?.at || row?.d?.[0] || 0);
               const ema3_1 = Number(row?.ema3_1 || row?.d?.[36] || 0);
               const ubb_1 = Number(row?.ubb_1 || row?.d?.[41] || 0);
               const lbb_1 = Number(row?.lbb_1 || row?.d?.[40] || 0);
@@ -1664,11 +1668,11 @@ const SubscribedStockTracker = ({
                   subscribeReasonLines = ['Eligible for SELL subscription.'];
                 }
               } else if (candidateType === 'BUY' && !buySignalSet.has(normalizedSymbol)) {
-                subscribeReasonLines = ['Not in BUY signal list after filters.'];
+                subscribeReasonLines = ['Matched streak BUY scan; pending signal sync.'];
               } else if (candidateType === 'SELL' && !sellSignalSet.has(normalizedSymbol)) {
-                subscribeReasonLines = ['Not in SELL signal list after filters.'];
+                subscribeReasonLines = ['Matched streak SELL scan; pending signal sync.'];
               } else if (candidateType !== 'BUY' && candidateType !== 'SELL') {
-                subscribeReasonLines = ['No BUY/SELL candidate type from scanner.'];
+                subscribeReasonLines = ['No BUY/SELL signal type in streak row.'];
               }
 
               return {
@@ -1704,7 +1708,14 @@ const SubscribedStockTracker = ({
                 marginBottom: '8px',
                 fontFamily: 'system-ui, -apple-system, sans-serif'
               }}>
-                Low Price Scanner Stocks ({rows.length})
+                Streak Scanner Stocks ({rows.length})
+              </div>
+              <div style={{
+                fontSize: '11px',
+                color: '#334155',
+                marginBottom: '8px'
+              }}>
+                Condition: {STREAK_TABLE_CONDITION_LABEL}
               </div>
 
               <div style={{ overflowX: 'auto' }}>
@@ -1721,7 +1732,7 @@ const SubscribedStockTracker = ({
                       <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937', fontWeight: 700 }}>Symbol / Chart</th>
                       <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937', fontWeight: 700 }}>Type</th>
                       <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', textAlign: 'right', color: '#1f2937', fontWeight: 700 }}>LTP</th>
-                      <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937', fontWeight: 700 }}>Not Subscribed Reason</th>
+                      <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', textAlign: 'left', color: '#1f2937', fontWeight: 700 }}>Status</th>
                       <th style={{ padding: '8px 8px', borderBottom: '1px solid #e5e7eb', textAlign: 'center', color: '#1f2937', fontWeight: 700 }}>Manual Trade</th>
                     </tr>
                   </thead>
@@ -1729,11 +1740,11 @@ const SubscribedStockTracker = ({
                     {rows.length === 0 ? (
                       <tr>
                         <td colSpan={5} style={{ padding: '10px', color: '#64748b', borderBottom: '1px solid #f1f5f9' }}>
-                          No low price scanner stocks available yet.
+                          No streak scanner stocks available yet.
                         </td>
                       </tr>
                     ) : rows.map((row, idx) => (
-                      <tr key={`low-price-row-${row.symbol}-${idx}`}>
+                      <tr key={`streak-row-${row.symbol}-${idx}`}>
                         <td style={{ padding: '8px 8px', borderBottom: '1px solid #f1f5f9', color: '#0f172a' }}>
                           <button
                             type="button"
